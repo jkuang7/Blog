@@ -1,0 +1,244 @@
+About Chai With Jai & Princeton Idea Exchange
+
+We help founders and legacy businesses turn big ideas into fundable proof with GTM-engineered systems—from positioning and sales motions to MVPs and dashboards. We don't chase theory; we build systems that work. Our philosophy is simple: the work has to work. We specialize in creating fundable narratives, operational excellence, and execution frameworks that convert vision into investment-ready outcomes.
+
+
+Founded by Jai Bhagat, we operate at the intersection of strategy, technical execution, and go-to-market engineering—helping companies achieve product-market fit and build the operational infrastructure to scale.
+
+
+
+Role Overview
+
+This is not your typical Chief of Staff role. Think of it as a Jason Bourne apprenticeship in company building.
+
+
+You'll start as a 3-month, part-time (~20 hrs/week) Founder's Apprentice working directly with Jai across strategy, operations, and technical execution. If you crush it, you'll transition into a full-time Technical Chief of Staff.
+
+
+This is an intensive, hands-on apprenticeship designed to compress years of learning into months while shipping outcomes that unlock revenue and investment. You'll be the "get-it-done" node—equal parts systems architect, execution engine, and strategic thought partner.
+
+
+This role is ideal for someone who:
+
+    Has technical literacy but isn't precious about writing code
+    Thrives in 0-to-1 environments where nothing is documented yet
+    Writes first, meets second
+    Ships imperfect solutions fast, then iterates
+    Wants to learn company-building from the inside out
+
+
+
+What You'll Do
+
+
+Operational Systems (Writing-First)
+
+    Implement GTD methodology across the organization; establish OKRs, company wiki, and SOPs
+    Apply the principle: "When you say it twice, write it down"—document every repeatable process
+    Own the tooling stack (project management, CRM, documentation) and keep it humming
+    Run calendar, priorities, and information flow with ruthless clarity
+    Create and maintain the company folder system and wiki (per Chapter 19 principles)
+
+Strategic & GTM Support
+
+    Translate vision into quarterly, measurable bets with clear OKRs
+    Build crisp briefs, decision memos, and "brief → deck → decision" packets
+    Conduct competitive intelligence and customer research
+    Spot issues early; propose and run experiments that de-risk them
+    Support the RAPID decision-making framework for complex issues
+    Turn fuzzy problems into structured, written proposals with clear solutions
+
+Technical Execution
+
+    Ship small but high-leverage builds: automations, integrations, internal tools, dashboards
+    Orchestrate vendors and contractors; keep costs low and velocity high
+    Maintain the GTM engineering backbone that converts ideas to proof
+    Basic scripting/data work to unblock analysis and automation
+    Bridge the gap between technical and non-technical stakeholders
+
+Communication & Knowledge Management
+
+    Draft founder communications, investor/customer updates, and decision documents
+    Maintain the wiki so knowledge is easy to find and act on
+    Practice Inbox Zero and teach it to others
+    Facilitate writing over talking—require pre-reads before meetings
+    Implement feedback loops using "Like/Wish That" framework
+
+Business Operations
+
+    Support fundraising materials preparation
+    Assist with recruiting funnels and candidate experience
+    Run special projects end-to-end
+    Track company KPIs and keep them visible
+    Help implement performance management systems (1-on-1s, team meetings, OKRs)
+
+
+
+What Success Looks Like
+
+
+
+30 Days
+
+    GTD working for you and founder
+    5+ processes documented in the wiki
+    3 operational pain points identified and solutions in progress
+    One quick proof asset shipped (e.g., CRM dashboard, working automation, or tracking system)
+
+90 Days
+
+    You're the "get-it-done" node—the person who makes things happen
+    OKR tracking system live and adopted
+    You own 2-3 critical workstreams end-to-end
+    At least one fundable-proof artifact delivered (investor-ready deck, KPI dashboard, or MVP component)
+
+1 Year (Chief of Staff)
+
+    True force multiplier for the founder
+    Systems you built are scaling the company
+    You drive cross-functional execution
+    You protect founder focus by triaging effectively
+    Junior team members look to you for operational excellence
+
+
+
+
+Required Qualifications
+
+
+Systems Builder with Bias to Ship
+
+    You've stood up processes, tools, or systems that others actually use
+    You can point to examples of creating order from chaos
+    You finish what you start
+
+
+Writing-First Operator
+
+    Briefs over meetings—you make decisions easier and faster with documents
+    Strong written communication; can create clear, concise documentation
+    Comfortable writing proposals even when only 10% confident in the answer
+
+
+Technical Literacy
+
+    Can wire automations and manage a modern tech stack
+    Comfortable with tools like Notion, Airtable, Zapier, Google Apps Script
+    Basic scripting (Python/SQL) or willingness to learn quickly
+    You don't need to be an engineer, but you can talk to engineers
+
+
+Extreme Ownership
+
+    Resourceful and coachable
+    Fast learner across ambiguous domains
+    You figure things out or figure out who can
+    Comfortable with "I don't know, but I'll find out"
+
+
+Organizational Excellence
+
+    Personally organized using GTD or similar methodology
+    Nothing falls through the cracks in your world
+    Experience with OKRs, KPIs, or similar goal-tracking frameworks
+
+
+
+
+Preferred Qualifications
+
+
+    Evidence of GTM work: positioning, sales motions, or experiments that led to fundable outcomes
+    Management consulting background: You can do your own analysis on a case study that would pass a final round interview at Bain, BCG, McKinsey, or similar (but not required)
+    Early-stage startup operations experience
+    Executive support or Chief of Staff experience
+    Experience implementing systems from books like High Output Management, Getting Things Done, or The 15 Commitments of Conscious Leadership
+    Venture capital or fundraising experience
+
+
+
+Working Model
+
+
+
+    In-person strongly preferred in NYC or Princeton during apprenticeship phase (first 3 months)
+    Hybrid possible after successful onboarding and trust is established
+    Flexible hours around core collaboration time
+    Some travel for key meetings/events
+    This is a roll-up-your-sleeves, in-the-trenches role—not a remote-only position
+
+
+
+Compensation & Growth Path
+
+
+Apprenticeship Phase (3 months, ~20 hrs/week)
+
+    Competitive hourly rate or contract arrangement (DOE)
+    Milestone bonus potential based on shipped outcomes
+    Direct mentorship from Jai throughout
+
+
+Conversion to Full-Time Technical Chief of Staff
+
+    Competitive compensation package
+    Equity or profit-share potential based on contribution and company structure
+    Path to COO/GM/VP Operations as impact scales
+    Steep learning curve with real responsibility
+
+This role offers direct exposure to company building, fundraising, product-market fit discovery, and operational excellence—condensed learning that typically takes years in traditional paths.
+
+
+How to Apply
+
+Email (jai@chaiwithjai.com) with subject line: "Wildcard Apprentice → Chief of Staff – [Your Name]"
+
+
+Include:
+
+    300-500 word note covering:
+
+    Why this role, why now
+    Your unique edge or unfair advantage
+    One time you figured out something far outside your lane
+
+    Resume/LinkedIn plus links to:
+
+    Writing samples (memos, documentation, proposals)
+    Projects or systems you've built
+    GitHub or portfolio (if applicable)
+
+    Answer this question: "Describe your current personal productivity system. How do you ensure nothing falls through the cracks?"
+    (Optional) Proof artifact: A small example of something you've shipped that created leverage for yourself or a team
+
+Interview Process:
+
+    15-minute initial screen
+    Short written exercise (real problem, real stakes)
+    3-4 hour in-person working session
+    Reference calls
+    Fast decision
+
+We move quickly. Expect a decision within 2 weeks of application.
+
+
+Our Values
+
+
+Execution > Theory We're anti-guru. We build, test, and iterate. No pontificating.
+
+Writing > Talking If it matters, write it down. Meetings are for decisions, not information transfer.
+
+Speed to Proof Perfect is the enemy of fundable. Ship proof, then iterate.
+
+Radical Responsibility Own outcomes. No blame, no excuses. Just solutions.
+
+Extreme Candor Say what's true. Build trust through transparency, not politics.
+
+We hire for talent, integrity, and cultural contribution. We welcome applicants from all backgrounds.
+
+
+Evaluation is based on demonstrated ability to do the work, alignment with our operating principles, and potential for growth.
+
+
+If you're the type of person who gets energized by bringing order to chaos, who writes proposals for fun, and who wants to learn company-building by doing it alongside an experienced founder—this role is for you.
