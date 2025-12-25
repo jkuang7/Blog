@@ -3,10 +3,10 @@
 ---
 ## Session State
 last_phase: 4
-last_step: 4.2
+last_step: 4.4
 timestamp: 2025-12-25T00:00:00Z
-stories_hardened: [STORY-03]
-stories_in_progress: [STORY-05]
+stories_hardened: [STORY-03, STORY-05]
+stories_in_progress: []
 ---
 
 ## Professional Summary
@@ -102,26 +102,40 @@ Tests slow you down when requirements change. I debug through the app and valida
 
 ---
 
-## IN PROGRESS: STORY-05 (Blue/Green Deploys) 🔄
+## HARDENED: STORY-05 (Blue/Green Deploys) ✅
 
 **Hook**: Pushed blue/green adoption, cut deploy latency P99 4.77s→150ms
 
 **Stats**:
 - P99 latency: 4.77s → 150ms (cutover time)
-- Migrated team to blue/green
+- Migrated team to blue/green (all 4 apps)
 
 **What I Did**:
-- Pushed for blue/green after seeing outages across company
-- Migrated team to blue/green deploys
-- Cut deploy risk — test on green, instant cutover to prod
+- Implemented blue/green on PBRI first as proof of concept
+- Demoed to manager (Jessi) and team (Chanana, Ron) — showed value, explained why
+- Got manager sponsorship → she pushed team in team meeting
+- Provided ROSA framework links/resources for teams
+- Made myself available for questions, enabled team leads to trickle down
 
 **Tradeoffs**:
 - Cost of second env vs developer velocity (minimal — storage only)
+- Skipped docs — demo was faster, teams could figure out implementation
 
-**Clarified**:
-- P99 improvement = cutover latency (not app latency)
-- Services: team's apps (FIMS, NBUS, Xactware, PBRI)
-- Onboarding: [still needs answer]
+**Answer Versions**:
+
+**1-Line**:
+Pushed blue/green adoption across team, cut deploy cutover latency from 4.77s to 150ms.
+
+**2-Minute**:
+After seeing outages across the company during cloud migrations, I implemented blue/green on PBRI as a proof of concept. Demoed to my manager and key engineers — showed the value: test on green, instant cutover, easy rollback. Got manager buy-in, she pushed it in a team meeting. I provided ROSA framework resources, made myself available for questions. Team leads adopted it for their projects and trained their engineers. Result: P99 cutover latency dropped from 4.77s to 150ms.
+
+**Follow-Ups**:
+| Question | Answer |
+|----------|--------|
+| Why not write docs? | Demo was faster, teams could figure out implementation details |
+| Any resistance? | No — once manager sponsored it, team leads adopted it |
+| What if someone didn't use ROSA? | Pointed them to Terraform approach, let them figure it out |
+| How did you measure P99? | ROSA/OpenShift metrics during cutover window |
 
 ---
 
