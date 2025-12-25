@@ -11,7 +11,7 @@ stories_in_progress: [STORY-05]
 
 ## Professional Summary
 
-Led cloud migrations for 4 underwriting apps (50M+ requests/year, 99.9% uptime). Scoped a stalled 1-year project to 4 months, shipped with multi-region failover. TypeScript/React/AWS, 2+ years as team lead.
+Led cloud migrations for 4 underwriting apps (40M+ requests/year, 99.9% uptime). Scoped a stalled 1-year project to 4 months, shipped with multi-region failover. TypeScript/React/AWS, 2+ years as team lead.
 
 ---
 
@@ -21,7 +21,7 @@ Led cloud migrations for 4 underwriting apps (50M+ requests/year, 99.9% uptime).
 **Role**: Mid-Level → Team Lead
 
 **Achievements**:
-- Shipped 4 cloud migrations (FIMS, NBUS, Xactware, PBRI) — 50M+ annual requests, zero downtime
+- Shipped 4 cloud migrations (FIMS, NBUS, Xactware, PBRI) — 40M+ annual requests, 99.9% uptime
 - Cut project estimate 1 year → 4-6 months, delivered Xactware portal with multi-region failover
 - Eliminated $200K+ SLA penalties via failover architecture
 
@@ -118,10 +118,10 @@ Tests slow you down when requirements change. I debug through the app and valida
 **Tradeoffs**:
 - Cost of second env vs developer velocity (minimal — storage only)
 
-**Needs Clarification**:
-- [ ] P99 improvement: cutover latency or app latency?
-- [ ] How many services migrated?
-- [ ] Onboarding: docs, demos, or pairing?
+**Clarified**:
+- P99 improvement = cutover latency (not app latency)
+- Services: team's apps (FIMS, NBUS, Xactware, PBRI)
+- Onboarding: [still needs answer]
 
 ---
 
@@ -155,3 +155,7 @@ Tests slow you down when requirements change. I debug through the app and valida
 - Blue/green: two envs, instant traffic switch
 - Rolling: gradual instance replacement
 - Canary: small % traffic to new version first
+
+**Defend**:
+- 99.9% uptime: "After initial deployment stabilization — early phase had expected issues as we learned the prod environment. Once stable, maintained 99.9%."
+- 40M+ requests: FIMS (34M) + Xactware (7.1M) + NBUS (3.6M) = ~45M. Source doc says 40M+.
