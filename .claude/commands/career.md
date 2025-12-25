@@ -46,6 +46,37 @@ Startups ask: **"Can this person explain the problem succinctly and back up thei
 
 ---
 
+## Senior Voice (Signal Over Noise)
+
+**Your job is to CUT noise, not add polish. Interviewer should see the signal in 5 seconds.**
+
+### Kill List (always remove)
+- "helped with" / "assisted in" → say what YOU did
+- "was responsible for" → just say the action
+- "worked on" / "worked closely with" → say the outcome
+- "basically" / "kind of" / "sort of" → delete
+- "really" / "very" / "extremely" → delete
+- "successfully completed" → completion is assumed
+- "had the opportunity to" → just say you did it
+- "various" / "multiple" → use specific number or delete
+
+### Transformation Rule
+**Messy input** → **Tight, clear, sounds capable (fast to comprehend, not dumbed down)**
+
+BEFORE: "Was part of a team that worked on improving the system performance which was really challenging"
+AFTER: "Found redundant DB calls on every request, added caching, dropped latency from 800ms to 200ms."
+
+BEFORE: "We decided to use Redis after many discussions"
+AFTER: "Ran benchmarks, Redis was 3x faster for our workload, so I pushed for that."
+
+BEFORE: "I helped the team with the migration project"
+AFTER: "Owned the data migration - wrote the scripts, ran dry runs, was on call for cutover."
+
+### The One Rule
+If the user can't defend a claim under 3 follow-up questions, cut it or soften it.
+
+---
+
 ## Arguments
 
 `$ARGUMENTS` = phase number(s) for navigation
@@ -179,24 +210,34 @@ Proceeding to Phase 2.
 
 ## PHASE 2: Summary Generation
 
-### Step 2.1: Generate Career Timeline
+### Step 2.1: Generate Career Timeline (Filtered)
+
+**Before generating output, apply these filters:**
+1. Apply Kill List to every phrase
+2. Lead each bullet with IMPACT, not context
+3. Flag any "we" for clarification (was it you or the team?)
+4. Cut vague metrics ("improved performance" → ask for number or delete)
+5. One line per achievement max
+
 ```
 ## Career Summary: {name}
 
 ### Professional Summary
-{2-3 sentences positioning for startup senior roles}
+{1-2 sentences max. Lead with strongest differentiator.}
 
 ### Timeline
 
 #### {Company} ({dates})
 **Role**: {title}
-**Context**: {what the company does}
 
-**Key Projects**:
-1. **{Project Name}**
-   - What: {1 sentence}
-   - Your Role: {1 sentence}
-   - Impact: {metrics}
+**Achievements** (max 3, one line each):
+- {Impact verb} {metric} by {action}
+- {Impact verb} {metric} by {action}
+- {Impact verb} {metric} by {action}
+
+**Needs Clarification**:
+- {Any "we" claims that need ownership clarity}
+- {Any vague metrics that need numbers}
 ```
 
 ### Step 2.2: GATE - Present Summary
@@ -678,15 +719,24 @@ Does this capture your intent?
 [WAITING FOR YOUR RESPONSE]
 ```
 
-### Step 7.5: Generate Follow-Up Bank
+### Step 7.5: Generate Follow-Ups Based on Actual Claims
+
+Look at what the user ACTUALLY said and probe it:
+
+**If they claimed a metric**: "How did you measure that?" / "What was it before?"
+**If they claimed a decision**: "What alternatives did you consider?" / "Why not X?"
+**If they claimed leadership**: "Who disagreed?" / "How did you get buy-in?"
+**If they claimed speed**: "What did you cut to ship faster?"
+**If ownership is unclear**: "What specifically did YOU do vs the team?"
+
 ```
 ## Expected Follow-Ups for This Answer
 
-1. "What if you had chosen {alternative}?"
-2. "Who pushed back? How did you handle it?"
-3. "How do you know {metric} is accurate?"
-4. "What would you do differently now?"
-5. "How did you prioritize when everything felt urgent?"
+Based on claims made in your answer:
+
+1. "{claim-specific question based on what they said}"
+2. "{claim-specific question based on what they said}"
+3. "{claim-specific question based on what they said}"
 ```
 
 ### Step 7.6: Generate Answer Versions
@@ -841,6 +891,23 @@ Quick Reference: "| Ownership | STORY-01 | 50M+ | B-01, B-03 |"
 | Phase 6 | Parallel agents per competency (but use approved content only) |
 
 **Rule**: Subagents must NOT fabricate details. If missing info, mark `[NEEDS INPUT]`.
+
+---
+
+## Safety Rails
+
+**NEVER**:
+- Keep filler words (basically, really, kind of)
+- Keep vague metrics ("improved performance")
+- Keep weak attribution ("helped with", "was part of")
+- Add claims the user didn't make
+- Generate generic follow-ups not tied to actual claims
+
+**ALWAYS**:
+- Lead with impact, not context
+- Ask about "we" statements (you or team?)
+- Cut rather than pad when in doubt
+- Generate follow-ups based on what they actually claimed
 
 ---
 

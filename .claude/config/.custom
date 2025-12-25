@@ -21,7 +21,7 @@ alias claude='claude --dangerously-skip-permissions'
 #=======================================
 # Development Aliases
 #=======================================
-alias deck='cd $DEV/DeckFoundry && source .venv/bin/activate && ./deck'
+alias deck='cd $DEV/Repos/DeckFoundry && source .venv/bin/activate && ./deck'
 
 #=======================================
 # Package Manager Aliases
