@@ -5,7 +5,7 @@
 last_phase: 4
 last_step: 4.4
 timestamp: 2025-12-25T00:00:00Z
-stories_hardened: [STORY-03, STORY-05]
+stories_hardened: [STORY-02, STORY-03, STORY-05]
 stories_in_progress: []
 ---
 
@@ -139,12 +139,56 @@ After seeing outages across the company during cloud migrations, I implemented b
 
 ---
 
+## HARDENED: STORY-02 (NBUS Architecture) ✅
+
+**Hook**: Designed divide-and-conquer architecture for IBM BPM migration, shipped 6 months early
+
+**Stats**:
+- Delivered 6 months ahead of schedule
+- 10K daily requests
+- 5 engineers working in parallel without blocking
+
+**What I Did**:
+- Designed master state pattern: pass full state into each Step Function, destructure what you need, update, return updated state
+- Built skeleton architecture, let team leads (Abit, Vijaya) own parallel tracks
+- Created living documentation (Migration Runbook) on main branch — PRs required to update it
+- "Measure twice, cut once": internal meeting with leads first, got buy-in, then presented to whole team
+- Centralized ticket ownership to Abit for single source of truth
+- Used TypeScript for type safety on data contracts between Steps
+
+**Why Step Functions**:
+- Waiting states for vendor responses (async by nature)
+- State snapshots stored automatically — can resume from any point
+- Test each Step in isolation before integration
+
+**Tradeoffs**:
+- More upfront architecture time → paid off with parallel execution
+- Centralized ticket ownership → slight bottleneck but eliminated confusion
+
+**Answer Versions**:
+
+**1-Line**:
+Designed divide-and-conquer architecture for IBM BPM migration, enabled 5 engineers to work in parallel, shipped 6 months early.
+
+**2-Minute**:
+IBM BPM was a monolith — you couldn't touch one piece without breaking another. I designed a master state pattern: each Step Function receives full state, destructures what it needs, updates its piece, returns the merged state. This let engineers work on different Steps without stepping on each other. I built the skeleton, then let team leads own their tracks. Created a Migration Runbook on main branch — PRs required to update it, so it stayed current. Met with leads first to get buy-in, then presented the strategy to the whole team. Centralized ticket ownership to Abit so there was one source of truth. Result: 5 engineers working in parallel, shipped 6 months early.
+
+**Follow-Ups**:
+| Question | Answer |
+|----------|--------|
+| Why Step Functions? | Waiting states for vendor responses, state snapshots for debugging, test Steps in isolation |
+| Why centralize tickets? | Single source of truth, avoided duplicate work and confusion |
+| How did you get buy-in? | Met with leads first, showed the architecture, addressed concerns, then presented together to team |
+| What if someone didn't follow the pattern? | PRs required to update Runbook — code review caught deviations |
+| What was the hardest part? | Getting the state contract right upfront — once that was stable, parallel work flowed |
+
+---
+
 ## PENDING STORIES
 
 | ID | Hook | Key Stat | Status |
 |----|------|----------|--------|
 | STORY-01 | FIMS API migration | 34M calls/year | Not probed |
-| STORY-02 | NBUS divide-and-conquer | 6 months early | Not probed |
 | STORY-04 | PBRI auth modernization | 15 product lines | Not probed |
 | STORY-06 | Self-serve UI | 80% ticket reduction | Not probed |
 | STORY-07 | Pixel SDK CSS hacks | 15% attribution lift | Not probed |
