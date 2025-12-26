@@ -70,6 +70,33 @@ Phase 4: Completion
 
 Generate steps as **behavioral outcomes** (not implementation details).
 
+### Risk Assessment (Before Breakdown)
+
+Before generating steps, identify risks that could derail execution:
+
+**Categories to scan:**
+- **Integration risks**: External APIs, third-party libraries, auth flows
+- **State risks**: Database migrations, cache invalidation, session handling
+- **Complexity risks**: Areas you don't fully understand yet
+- **Dependency risks**: Steps that must succeed for others to work
+
+**Format:**
+```
+## Risks Identified
+
+1. {risk}: {why it matters}
+   → Mitigation: {how step design addresses it}
+
+2. {risk}: {why it matters}
+   → Mitigation: {how step design addresses it}
+```
+
+**How risks inform steps:**
+- High-risk areas → Place CHECKPOINT immediately after
+- Integration risks → Add exploration/spike step first
+- Dependency risks → Sequence steps to validate early
+- Complexity risks → Add to step's Context section
+
 ### Step Template
 
 ```markdown
@@ -101,15 +128,17 @@ Generate steps as **behavioral outcomes** (not implementation details).
 
 Place CHECKPOINTs:
 - Every 3-5 AUTO steps
+- **Immediately after steps addressing identified risks**
 - After risky or complex changes
 - At natural "demo points" where behavior is testable
 
 ### Step Sizing
 
-Ask three questions:
+Ask four questions:
 1. **"Can I verify this worked?"** → If no, too granular
 2. **"Single behavioral focus?"** → If multiple, too broad
 3. **"Can model adapt if codebase differs?"** → If not, too brittle
+4. **"Does this address an identified risk?"** → If yes, add CHECKPOINT after
 
 ### Code Patterns
 
@@ -449,16 +478,17 @@ Should I try this approach?
 
 ## Key Reminders
 
-1. **Behavioral outcomes** - Steps describe WHAT, not HOW
-2. **Context reset** - Re-read step at start, don't rely on memory
-3. **Get approval first** - Present plan, wait for user before executing
-4. **Course-correct welcome** - User can adjust approach before work is done
-5. **CHECKPOINT = verification** - User tests actual behavior
-6. **Human tests** - No automated tests unless requested
-7. **Fix bugs only** - Skip style/nice-to-haves in audit
-8. **One refactor max** - Conservative, apply litmus test
-9. **Update master file** - Keep progress tracked
-10. **Match existing patterns** - Follow codebase conventions, don't improve during execution
+1. **Assess risks first** - Identify risks before generating steps
+2. **Behavioral outcomes** - Steps describe WHAT, not HOW
+3. **Context reset** - Re-read step at start, don't rely on memory
+4. **Get approval first** - Present plan, wait for user before executing
+5. **Course-correct welcome** - User can adjust approach before work is done
+6. **CHECKPOINT = verification** - User tests actual behavior
+7. **Human tests** - No automated tests unless requested
+8. **Fix bugs only** - Skip style/nice-to-haves in audit
+9. **One refactor max** - Conservative, apply litmus test
+10. **Update master file** - Keep progress tracked
+11. **Match existing patterns** - Follow codebase conventions, don't improve during execution
 
 ---
 
