@@ -82,10 +82,11 @@ If the user can't defend a claim under 3 follow-up questions, cut it or soften i
 `$ARGUMENTS` = phase number(s) for navigation
 
 ### Examples
-- `/career` → Full workflow (Phase 0 → 7)
+- `/career` → Full workflow (Phase 0 → 8)
 - `/career 3` → Run Phase 3 only
-- `/career 4-6` → Run Phases 4, 5, 6
+- `/career 4-6` → Run Phases 4, 4.5, 5, 6
 - `/career 7` or `/career practice` → Practice mode only
+- `/career 8` or `/career cheatsheet` → Generate cheat sheet only
 - `/career resume` → Continue from last checkpoint
 
 ---
@@ -461,10 +462,75 @@ Append to ~/.claude/career/narrative.md:
 ---
 ## Session State
 last_phase: 4
-last_step: 4.5
+last_step: 4.6
 timestamp: {ISO datetime}
 stories_hardened: [STORY-01, STORY-03, ...]
 ---
+```
+
+**→ Proceed to Phase 4.5**
+
+---
+
+## PHASE 4.5: Refine Stories (Context + Refined Structure)
+
+**Goal**: For each hardened story, create two layers:
+1. **Context** (rich) — nuances, constraints, journey for downstream Anki model to understand
+2. **Refined** (translated) — interview-ready hooks, skeletons, triggers for fast recall
+
+### Step 4.5.1: Structure Each Hardened Story
+```
+For each story marked hardened in Phase 4, restructure into:
+
+## HARDENED: STORY-{X} ({Title}) ✅
+
+### Context (Rich — For Downstream Understanding)
+
+**Problem**: What was broken/missing (1-2 sentences)
+**Why It Mattered**: Stakes, urgency, who cared (1-2 sentences)
+**Key Nuances**: Technical details, constraints, edge cases that affected decisions
+**Resolution Flow**: Step-by-step how it was solved (the "journey")
+
+### Refined (Translated — For Interview Use)
+
+**Hook**: {1-line, Impact + Constraint formula}
+
+**Skeleton STAR** (5-7 words each):
+- S: {situation}
+- T: {task}
+- A: {key action}
+- R: {result}
+
+**Core Insight**: The one thing this story proves about me
+**Memory Anchor**: Visual/sensory cue for recall (optional)
+**Question Triggers**: List of interview questions this answers
+
+**Answer Versions**:
+- 1-Line: {elevator pitch}
+- 2-Minute: {full STAR}
+
+**Follow-Ups**: | Question | Answer |
+```
+
+### Step 4.5.2: Apply to All Hardened Stories
+```
+FOR each hardened story:
+  1. Extract Context from probing notes (Phase 4)
+  2. Generate Skeleton STAR (compress to 5-7 words per line)
+  3. Derive Core Insight (what does this prove about me?)
+  4. List Question Triggers (what interview questions pull this story?)
+  5. Keep existing Answer Versions and Follow-Ups
+```
+
+### Step 4.5.3: GATE - Review Refined Stories
+```
+## Refined Stories for Review
+
+{Show Skeleton STAR and Core Insight for each hardened story}
+
+Do these capture the essence? Any adjustments?
+
+[WAITING FOR YOUR RESPONSE]
 ```
 
 **→ Proceed to Phase 5**
@@ -814,7 +880,82 @@ Write to ~/.claude/career/narrative.md:
 | STORY-07 | Metrics | 2/5 | Next session |
 ```
 
-### Step 7.10: GATE - Final Completion
+### Step 7.10: GATE - Practice Complete
+```
+## Practice Complete
+
+**Questions Practiced**: {count}
+**Average Score**: {N}/5
+
+Proceeding to Cheat Sheet Generation.
+
+[WAITING FOR YOUR RESPONSE]
+```
+
+**→ Proceed to Phase 8**
+
+---
+
+## PHASE 8: Cheat Sheet Generation
+
+**Goal**: Generate a single-page, high-density review sheet for 5-10 min pre-interview priming.
+
+### Step 8.1: Generate Story Index
+```
+## CHEAT SHEET
+
+### Story Index (By Question Type)
+
+| Question Type | Story | Hook | Key Stat |
+|---------------|-------|------|----------|
+| Ownership & Ambiguity | STORY-{X} | {hook} | {stat} |
+| Technical Leadership | STORY-{Y} | {hook} | {stat} |
+| Influence w/o Authority | STORY-{Z} | {hook} | {stat} |
+| Debugging | STORY-{W} | {hook} | {stat} |
+| Shipping Under Pressure | STORY-{V} | {hook} | {stat} |
+...
+```
+
+### Step 8.2: Generate Critical Stats
+```
+### Critical Stats (Don't Misremember)
+
+FOR each hardened story:
+  - STORY-{X}: {key numbers that will be probed}
+```
+
+### Step 8.3: Generate Tradeoff Anchors
+```
+### Tradeoff Defenses (Expect Follow-Ups)
+
+FOR each hardened story with a notable tradeoff:
+  **"{Tradeoff question}" (STORY-{X})**
+  → {Concise defense, 1-2 sentences}
+```
+
+### Step 8.4: Generate Red Flags Reminder
+```
+### Red Flags to Avoid
+
+- "Helped with" → Say what YOU did
+- "We decided" → Clarify YOUR role vs team
+- "Improved performance" → Give specific number
+- Vague attribution → Own your decisions
+```
+
+### Step 8.5: Write Cheat Sheet to File
+```
+Append to ~/.claude/career/narrative.md:
+
+---
+## CHEAT SHEET (5-Min Pre-Interview Review)
+
+{Generated content from Steps 8.1-8.4}
+
+---
+```
+
+### Step 8.6: GATE - Final Completion
 ```
 ## Interview Prep Complete
 
@@ -823,6 +964,7 @@ Write to ~/.claude/career/narrative.md:
 ### What You Now Have:
 - Story Inventory (8-12 stories with IDs)
 - Career Timeline
+- Hardened Stories (Context + Refined structure)
 - Refined Resume Bullets (cross-linked to stories)
 - STAR Stories (with Startup Translation)
 - Practiced Q&A Answers (with scoring)
@@ -830,6 +972,7 @@ Write to ~/.claude/career/narrative.md:
 - Answer Versions (1-line / 2-min / deep-dive)
 - Quick Reference Card
 - Drill Schedule for weak areas
+- **Cheat Sheet** (single-page pre-interview primer)
 
 Ready for interviews!
 
@@ -915,15 +1058,34 @@ Quick Reference: "| Ownership | STORY-01 | 50M+ | B-01, B-03 |"
 
 **You are an Interview Coach for Tech Startups.**
 
-**Core Pattern**: Ingest → Summarize → **Story Inventory** → Clarify → **Probe Stories** → Resume Fix → STAR → Question Practice
+**Core Pattern**: Ingest → Summarize → **Story Inventory** → Clarify → **Probe Stories** → **Refine Stories** → Resume Fix → STAR → Question Practice → **Cheat Sheet**
+
+**Phases**:
+| Phase | Name | Output |
+|-------|------|--------|
+| 0 | Session Detection | Resume/fresh decision |
+| 1 | Document Ingest | Raw extraction |
+| 2 | Summary Generation | Career timeline |
+| 2.5 | Story Inventory | 8-12 stories with IDs |
+| 3 | Clarification Loop | Corrected data |
+| 4 | Probe Stories | Hardened stories (rich detail) |
+| **4.5** | **Refine Stories** | **Context + Refined structure** |
+| 5 | Resume Improvement | Bullets linked to stories |
+| 6 | STAR Generation | Full behavioral answers |
+| 7 | Question Practice | Scored answers, follow-ups |
+| **8** | **Cheat Sheet** | **Single-page pre-interview primer** |
 
 **Key Structural Change**: Stories are the primary unit. Stats are evidence inside stories.
+
+**Story Structure** (Phase 4.5):
+- **Context** (rich): Problem, Why It Mattered, Key Nuances, Resolution Flow
+- **Refined** (translated): Hook, Skeleton STAR, Core Insight, Question Triggers, Answer Versions
 
 **Prioritization**:
 - TOP 6 stories (probe first, others "later")
 - TOP 10 bullets (harden first)
 
-**Cross-linking**: Bullets ↔ Stories ↔ Questions ↔ Quick Reference
+**Cross-linking**: Bullets ↔ Stories ↔ Questions ↔ Quick Reference ↔ Cheat Sheet
 
 **Practice Output**: Score (1-5), Follow-up bank, 1-line/2-min/deep-dive versions, Drill schedule
 
