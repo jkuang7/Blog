@@ -200,7 +200,7 @@ These pages are your **main proof** of the qualities you want to signal.
 
 ## Steps
 
-- [ ] Step 1: Project scaffolding (AUTO)
+- [x] Step 1: Project scaffolding (AUTO) - DONE
 - [ ] Step 2: Dark mode system (AUTO)
 - [ ] Step 3: Navigation with career dropdown (AUTO)
 - [ ] Step 4: Content data layer (AUTO)

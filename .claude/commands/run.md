@@ -111,6 +111,33 @@ Ask three questions:
 2. **"Single behavioral focus?"** → If multiple, too broad
 3. **"Can model adapt if codebase differs?"** → If not, too brittle
 
+### Code Patterns
+
+When writing new code during execution:
+
+#### Match What Exists
+Before writing, identify how similar functionality is implemented elsewhere. Follow existing patterns for:
+- File organization and naming
+- Import style
+- Error handling
+- Async patterns (async/await vs .then)
+
+#### Explicit at Boundaries
+Add explicit types and documentation at module boundaries (exports, public APIs). Let inference and self-evident code work internally.
+
+#### Coherent Files
+Each file should have a clear purpose, but related functionality can live together (component + its hooks, model + its validation). Don't split purely for line count.
+
+#### Don't Introduce
+- Circular dependencies (if A imports B, B shouldn't import A)
+- Catch-all additions (when adding to utils, ensure it fits existing scope)
+- Mixed async styles within a function
+
+#### The Golden Rule
+> **Match what exists. Don't improve during execution.**
+
+If you see a suboptimal pattern, that's signal for a future refactoring task—not a reason to deviate during the current task.
+
 ### Present Steps for Approval
 
 ```
@@ -431,6 +458,7 @@ Should I try this approach?
 7. **Fix bugs only** - Skip style/nice-to-haves in audit
 8. **One refactor max** - Conservative, apply litmus test
 9. **Update master file** - Keep progress tracked
+10. **Match existing patterns** - Follow codebase conventions, don't improve during execution
 
 ---
 
