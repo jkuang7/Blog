@@ -198,14 +198,46 @@ These pages are your **main proof** of the qualities you want to signal.
 
 ---
 
+## Risks Identified
+
+1. **Content data layer structure** (Step 4): Dependency risk
+   → Mitigation: Design schema that serves all consumers (homepage, blog, career, projects) before implementing
+
+2. **MDX + Shiki + Next.js 15** (Step 6): Integration risk
+   → Mitigation: Use @next/mdx with app router pattern; Shiki via rehype-pretty-code
+
+3. **OG image generation** (Step 14): Complexity risk
+   → Mitigation: Use Next.js ImageResponse API (not external services)
+
+4. **Cloudflare Pages build** (Step 15): Integration risk
+   → Mitigation: Use @cloudflare/next-on-pages or static export; verify build locally first
+
+---
+
 ## Steps
 
 - [x] Step 1: Project scaffolding (AUTO) - DONE
 - [x] Step 2: Dark mode system (AUTO) - DONE
 - [ ] Step 3: Navigation with career dropdown (AUTO)
-- [ ] Step 4: Content data layer (AUTO)
+
+### Step 4: Content data layer (AUTO)
+**Outcome**: Typed data files exist that all pages can import
+**Context**:
+- Design schema to serve: homepage (hook, links), blog (posts list), career (experiences), projects (grid)
+- Use `content/data/*.ts` with TypeScript types exported
+- Keep flat structure, avoid over-abstraction
+**NOT in scope**: Actual page implementations
+
 - [ ] Step 5: Homepage (CHECKPOINT)
-- [ ] Step 6: MDX blog infrastructure (AUTO)
+
+### Step 6: MDX blog infrastructure (AUTO)
+**Outcome**: MDX files in `content/blog/` render as pages with syntax highlighting
+**Context**:
+- Use `@next/mdx` with app router (`mdx-components.tsx`)
+- Syntax highlighting via `rehype-pretty-code` + Shiki (no runtime JS)
+- Frontmatter via `gray-matter` in a loader or generateStaticParams
+**NOT in scope**: Blog index page, styling
+
 - [ ] Step 7: Blog index page (AUTO)
 - [ ] Step 8: Blog post page (CHECKPOINT)
 - [ ] Step 9: About page (AUTO)
@@ -213,8 +245,22 @@ These pages are your **main proof** of the qualities you want to signal.
 - [ ] Step 11: Projects page (CHECKPOINT)
 - [ ] Step 12: RSS feed (AUTO)
 - [ ] Step 13: new-post script (AUTO)
-- [ ] Step 14: Meta tags & OG images (AUTO)
-- [ ] Step 15: Cloudflare deployment (CHECKPOINT)
+
+### Step 14: Meta tags & OG images (AUTO)
+**Outcome**: Pages have proper meta tags; OG images generate dynamically
+**Context**:
+- Use Next.js Metadata API in layout/page files
+- OG images via `ImageResponse` from `next/og` (edge runtime)
+- Template: name + page title on simple background
+**NOT in scope**: Custom per-post OG images
+
+### Step 15: Cloudflare deployment (CHECKPOINT)
+**Outcome**: Site live at jian.pages.dev
+**Context**:
+- Option A: Static export (`output: 'export'`) — simpler, no edge functions
+- Option B: `@cloudflare/next-on-pages` — if dynamic features needed
+- Test build locally with `npx wrangler pages dev` before pushing
+**NOT in scope**: Custom domain setup
 
 ---
 
