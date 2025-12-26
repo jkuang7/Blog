@@ -4,8 +4,8 @@
 ## Session State
 last_phase: 4
 last_step: 4.4
-timestamp: 2025-12-25T00:00:00Z
-stories_hardened: [STORY-02, STORY-03, STORY-05]
+timestamp: 2025-12-26T00:00:00Z
+stories_hardened: [STORY-02, STORY-03, STORY-05, STORY-08]
 stories_in_progress: []
 ---
 
@@ -184,6 +184,54 @@ IBM BPM was a monolith — you couldn't touch one piece without breaking another
 
 ---
 
+## HARDENED: STORY-08 (Data Pipeline Memory Fix) ✅
+
+**Hook**: Debugged memory-hogging ETL pipeline, achieved 50× lighter memory footprint
+
+**Stats**:
+- 98% memory reduction (50× lighter)
+- Tier 1 clients sending 20GB Excel files
+- Reduced debug cycle from 15-min deploys to local testing
+
+**What I Did**:
+- Identified memory spike only occurred with large files — suspected file ingestion code
+- Problem: 15-min Airflow deploy cycles, couldn't replicate S3 locally
+- Solution: copied offending code portion, ran locally with actual file to isolate issue
+- Found bug: loading entire file into memory instead of row-by-row streaming
+- Fix: batch streaming — load rows X to Y, process, next block, repeat
+- Before/after memory comparison proved 98% reduction
+
+**Why Batch Streaming**:
+- Row-by-row too slow for large files
+- Full file load crashed on 20GB files
+- Batches: fast enough + memory-safe
+
+**Tradeoffs**:
+- Batch size tuning — too small = slow, too large = memory spike
+- Local testing required copying code snippet — not full integration test
+
+**Lesson Learned**:
+First-principle thinking: if something isn't testable locally, find a way to make it testable. Offline testing beats 15-min deploy cycles.
+
+**Answer Versions**:
+
+**1-Line**:
+Debugged ETL pipeline memory bug by isolating code locally, fixed with batch streaming, 98% memory reduction.
+
+**2-Minute**:
+Enterprise clients were sending 20GB Excel files for SMS campaign analytics. Pipeline kept crashing — memory would spike and never come down. Hard to debug: 15-minute Airflow deploy cycles, couldn't replicate S3 locally. I suspected the file ingestion code. Copied just that portion, ran it locally with an actual file. Found the bug: loading entire file into memory instead of streaming. Fix was batch streaming — load rows X to Y, process, move to next block. Before/after comparison showed 98% memory reduction. Lesson: if something isn't testable, make it testable. First-principle thinking.
+
+**Follow-Ups**:
+| Question | Answer |
+|----------|--------|
+| How did you pick batch size? | Tuned empirically — small enough for memory safety, large enough for throughput |
+| Why not row-by-row? | Too slow for 20GB files. Batching balanced speed and memory |
+| How did you measure 98%? | Before/after memory profiling on same file |
+| Why was original code loading full file? | Bug — looked like streaming but was accumulating in memory |
+| Could you have caught this in code review? | Hard to spot — code looked like normal file loading, issue only surfaced with large files |
+
+---
+
 ## PENDING STORIES
 
 | ID | Hook | Key Stat | Status |
@@ -192,7 +240,6 @@ IBM BPM was a monolith — you couldn't touch one piece without breaking another
 | STORY-04 | PBRI auth modernization | 15 product lines | Not probed |
 | STORY-06 | Self-serve UI | 80% ticket reduction | Not probed |
 | STORY-07 | Pixel SDK CSS hacks | 15% attribution lift | Not probed |
-| STORY-08 | Data pipeline fix | 50×, 98% memory | Not probed |
 | STORY-09 | Mentorship | 40% faster ramp | Not probed |
 
 ---
