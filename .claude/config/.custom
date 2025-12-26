@@ -115,3 +115,31 @@ ci() {
 bootstrap() {
   "$DEV/.claude/config/bootstrap.sh"
 }
+
+repos() {
+  local output=""
+  for dir in "$DEV/Repos"/*/; do
+    if [ -d "$dir/.git" ]; then
+      local name=$(basename "$dir")
+      local git_status=$(git -C "$dir" status -s)
+      if [ -n "$git_status" ]; then
+        local diff=$(git -C "$dir" diff --stat 2>/dev/null)
+        output+="=== $name ===
+$git_status
+$diff
+
+"
+      fi
+    fi
+  done
+
+  if [ -z "$output" ]; then
+    echo "All repos clean - no uncommitted changes"
+  else
+    claude -p "Here are git changes across my repos:
+
+$output
+
+Summarize these changes. For each repo, explain what was modified in plain English and whether it looks like intentional work or drift. Be concise."
+  fi
+}
