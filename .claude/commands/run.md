@@ -1,281 +1,298 @@
-# /run {project} - Task Execution
+# /run {project} - Execute Project Plan
 
-**Purpose**: Execute the active task from project metadata. Steps run with hypothesis-driven approach. Completion triggers critique → fix → refactor cycle before handoff.
+**Purpose**: Break down the plan into behavioral steps, execute them, and audit at completion.
 
-**Your Job**: Execute steps one at a time, verify with human at checkpoints, then self-critique and refactor before completing.
-
-**Core Problem Being Solved**: AI assumes patch works → human finds bugs → wasted time.
-**Solution**: State hypotheses, validate at checkpoints, critique own work before handoff.
+**Your Job**: Load plan, generate steps if needed, execute with checkpoints, audit and refactor at the end.
 
 ---
 
 ## Arguments
 
-`$ARGUMENTS` = `{project}` - Required project name
+`$ARGUMENTS` = `{project-path}` - Required path to the project
 
-Reads metadata from: `~/.claude/projects/{project}.md`
+Example: `/run /Volumes/Projects/Dev/Repos/deck-foundry`
+→ reads from `~/.claude/projects/deck-foundry.md` (uses folder name)
 
 ---
 
-## Pre-Flight Check
+## Workflow Overview
 
-1. Load `~/.claude/projects/{project}.md`
-2. Verify:
-   - Project file exists
-   - Active task is defined
-   - Steps are defined
-   - Status is not "completed"
+```
+Phase 1: Load Project
+    └─> Check file exists, read current state
 
-3. If no active task:
+Phase 2: Step Breakdown (if no steps)
+    └─> Generate behavioral outcome steps
+
+Phase 3: Execute Steps
+    └─> AUTO steps: execute and continue
+    └─> CHECKPOINT: pause for human testing
+
+Phase 4: Completion
+    └─> Audit, fix bugs, conservative refactor
+```
+
+---
+
+## Phase 1: Load Project
+
+1. Check `~/.claude/projects/{project}.md` exists
+
+2. If file doesn't exist:
    ```
-   No active task found.
-   Run `/plan {project}` to create one.
+   No plan found for '{project}'.
+
+   Run `/plan {project}` first to create a plan.
    ```
 
-4. Show context summary:
+3. Read the master file and determine state:
+
+   **No steps defined** → Go to Phase 2 (Step Breakdown)
+
+   **Steps exist, some incomplete** → Resume from last incomplete step
+
+   **All steps complete** → Go to Phase 4 (Completion)
+
+4. Show context:
    ```
    ## Project: {name}
 
-   **Task**: {title}
-   **Progress**: {done}/{total} steps
-   **Next**: Step {N} - {title}
+   **Goal**: {current goal from file}
+   **Progress**: {N}/{M} steps complete
+   **Next**: {step title or "Generate steps"}
 
    Ready to continue?
    ```
 
 ---
 
-## Step Execution Flow
+## Phase 2: Step Breakdown
 
-### For Each Uncompleted Step:
+Generate steps as **behavioral outcomes** (not implementation details).
 
-#### Phase 1: Understand
-- Read step goal, context, files to touch
-- Check dependencies are met
-- Review previous attempt notes if any
-- **If step involves unfamiliar code**: Use Explore subagent to map the flow
+### Step Template
 
-#### Phase 2: Hypothesize
-State what you think needs to change:
+```markdown
+### Step N: {Behavioral Title}
+
+**Outcome**: {What user/system can do after this that it couldn't before}
+**Scope**: {1-3 files}
+**Type**: AUTO | CHECKPOINT
+
+**Context**:
+- {Constraint or pattern to follow}
+- {Existing code to reference}
+
+**NOT in scope**:
+- {Explicit boundary - what to defer}
+
+**Acceptance**:
+- [ ] {Observable behavior}
 ```
-**Hypothesis**: {what needs to change and why}
 
-**Approach**:
-- {bullet 1}
-- {bullet 2}
+### Step Types
+
+| Type | Behavior |
+|------|----------|
+| `AUTO` | Model executes, verifies build passes, continues automatically |
+| `CHECKPOINT` | Model pauses, human tests behavior manually |
+
+### CHECKPOINT Placement
+
+Place CHECKPOINTs:
+- Every 3-5 AUTO steps
+- After risky or complex changes
+- At natural "demo points" where behavior is testable
+
+### Step Sizing
+
+Ask three questions:
+1. **"Can I verify this worked?"** → If no, too granular
+2. **"Single behavioral focus?"** → If multiple, too broad
+3. **"Can model adapt if codebase differs?"** → If not, too brittle
+
+### Present Steps for Approval
+
+```
+## Step Breakdown
+
+Total: {N} steps ({X} AUTO, {Y} CHECKPOINT)
+
+### Step 1: {title} (AUTO)
+Outcome: {description}
+
+### Step 2: {title} (AUTO)
+Outcome: {description}
+
+### CHECKPOINT 3: {title}
+Outcome: {description}
+Verify: {what human will test}
+
+...
+
+Does this breakdown look right?
 ```
 
-**If multiple valid approaches**: Use Plan subagent to analyze trade-offs
+**Wait for approval** before proceeding.
 
-#### Phase 3: Execute
-Make the changes to files listed in step.
+Once approved, save steps to master file.
 
-#### Phase 4: Self-Check
-For each acceptance criterion:
+---
+
+## Phase 3: Execute Steps
+
+### For Each Incomplete Step:
+
+#### 1. Context Reset
+
+Re-read step from file (don't rely on conversation memory).
+
+#### 2. Present Plan for Approval
+
+Before executing, present your plan to the user:
+
+```
+## Step {N}: {title}
+
+**Goal**: {behavioral outcome}
+
+### My Plan
+To achieve this, I plan to:
+1. {approach step 1}
+2. {approach step 2}
+
+**Why this approach**: {reasoning - reference existing patterns if applicable}
+**Files I'll touch**: {list of files}
+
+---
+Ready to proceed? Or would you like me to adjust?
+```
+
+**WAIT for user response.**
+
+User can:
+- ✅ "Go ahead" → Proceed to execute
+- 🔄 "Do X instead" → Update plan in master file, present again
+- ❌ "Skip this step" → Mark skipped, move to next
+
+If user course-corrects:
+1. Update the step in the master file with the new approach
+2. Present updated plan for approval
+3. Only execute after explicit approval
+
+#### 3. Execute (after approval)
+
+Make the changes. Stay within scope of what was approved.
+
+#### 4. Self-Check
+
+Verify against acceptance criteria:
 - ✅ Satisfied
 - ⚠️ Uncertain
 - ❌ Not satisfied
 
-#### Phase 5: Validate (by step type)
+#### 5. Validate by Type
 
-**Verifiable: NO** (scaffolding)
-- Mark step complete
-- Update metadata
-- Auto-proceed to next step
+**If next step is regular:**
+- Run build command (if applicable)
+- If build passes: go to next step (back to step 1 - context reset)
+- If build fails: iterate with new hypothesis, get approval again
 
-**Verifiable: BUILD_ONLY**
-- Run build command
-- If passes: mark complete, auto-proceed
-- If fails: iterate with new hypothesis
-
-**Type: CHECKPOINT**
-- Present verification checklist to human
-- WAIT for human response
-- On ✅: mark complete, continue
-- On ⚠️/❌: iterate with new hypothesis
-
----
-
-## Checkpoint Format
+**If next step is CHECKPOINT:**
+- Present verification prompt to human:
 
 ```
 ## CHECKPOINT: {step title}
 
-### What Was Built (since last checkpoint)
-- Step X: {what was done}
-- Step Y: {what was done}
+### What Was Built
+- {file}: {change description}
+- {file}: {change description}
 
 ### How to Verify
-1. {verification step}
-2. {verification step}
+1. {Run the app / open browser / execute CLI}
+2. {Perform this action}
+3. {Observe this result}
 
-Manual checks:
-- [ ] {observable 1}
-- [ ] {observable 2}
+### Please Test
+- [ ] {Observable behavior 1}
+- [ ] {Observable behavior 2}
 
-### Please Test and Report
-- ✅ All items pass
-- ⚠️ Partial (describe what failed)
-- ❌ Blocked (describe error)
+---
+
+**Your verdict?**
+- ✅ Works - continue to next step
+- ⚠️ Partial - describe what's not working
+- ❌ Blocked - describe the error
 
 [WAITING FOR YOUR RESPONSE]
 ```
 
----
+**STOP and wait for human response.**
 
-## Subagent Usage
-
-Use subagents strategically to improve accuracy on complex steps.
-
-### When to Use Subagents
-
-**Use when**:
-- Step involves unfamiliar part of codebase
-- Multiple implementation approaches possible
-- Stuck after 2+ failed attempts
-- Need to understand flow across multiple files
-
-**Don't use when**:
-- Step is straightforward
-- All context already provided
-- Simple changes (adds overhead)
-
-### Available Subagents
-
-#### Explore Agent
-**Use for**: Understanding codebase, finding files, mapping flows
-
-```
-Spawning Explore agent to:
-- Map how {feature} flows through codebase
-- Find files related to {pattern}
-- Understand existing {pattern} implementation
-```
-
-#### Plan Agent
-**Use for**: Complex steps with multiple valid approaches
-
-```
-Spawning Plan agent to:
-- Analyze trade-offs between approaches
-- Design implementation for {complex step}
-- Recommend approach given constraints
-```
-
-### Subagent Pattern
-
-1. Identify need: "I need to understand X to complete this step"
-2. Spawn with clear prompt
-3. Report findings to human
-4. Form hypothesis based on findings
-5. Proceed with implementation
+On ✅: Mark complete, continue
+On ⚠️/❌: Iterate with new hypothesis
 
 ---
 
-## Iteration Pattern
+### Progress Tracking
 
-On failure (⚠️ or ❌ or build fails):
-
-1. Document attempt in metadata:
-   ```
-   ### Attempt N (timestamp)
-   - Hypothesis: {what was tried}
-   - Result: PARTIAL | FAILED
-   - Issue: {what went wrong}
-   ```
-
-2. Form new hypothesis based on feedback
-
-3. Ask: "New approach: {description}. Proceed?"
-
-4. On approval, try again
-
-After 2-3 failed attempts, **use Explore subagent**:
+After each step, update master file:
+```markdown
+## Steps
+- [x] Step 1: {title} (AUTO) - DONE
+- [x] Step 2: {title} (AUTO) - DONE
+- [ ] Step 3: {title} (CHECKPOINT) - IN_PROGRESS
+- [ ] Step 4: {title} (AUTO)
 ```
-Multiple attempts without success. Spawning Explore agent to investigate:
-- Why is {approach} not working?
-- What am I missing about {component}?
-- Are there existing patterns I should follow?
-```
-
-After exploration, present findings and new hypothesis.
 
 ---
 
-## Completion Flow (All Steps Done)
+## Phase 4: Completion
 
-When all steps are marked complete, trigger the completion cycle:
+When all steps are complete, run the completion cycle.
 
-### Phase C1: Self-Critique
+### C1: Audit
 
-Review ALL changes made during this task:
-
+Spawn a subagent to review all changes:
 ```
-## Self-Critique
-
-### Changes Made
-- {file 1}: {what changed}
-- {file 2}: {what changed}
-
-### What Went Well
-- {good thing 1}
-- {good thing 2}
-
-### Issues Found
-
-**[HIGH]** - Must fix:
-- {critical bug or problem}
-
-**[MEDIUM]** - Should fix:
-- {significant issue}
-
-**[LOW]** - Nice to have (will skip):
-- {minor issue}
-
-### Over-Engineering Check
-- {any YAGNI violations to flag}
+Review all changes made during this task:
+- Are there any bugs or incorrect behavior?
+- Any security issues?
+- Any breaking changes?
+- Flag issues by priority: HIGH (must fix) / MEDIUM (should fix) / LOW (skip)
 ```
 
-**Rules for critique**:
-- Focus on BUGS and ERRORS, not style
-- Be honest but not perfectionist
-- [LOW] items are noted but NOT fixed
+Present findings:
+```
+## Audit Results
 
-**CHECKPOINT**: Show critique to user, ask for confirmation before fixing.
+### HIGH Priority (must fix)
+- {issue}: {description}
 
----
+### MEDIUM Priority (should fix)
+- {issue}: {description}
 
-### Phase C2: Fix High-Priority Issues
+### LOW Priority (noted, will skip)
+- {issue}: {description}
+
+Proceed to fix HIGH priority issues?
+```
+
+### C2: Fix High Priority
 
 Fix ONLY:
 - Bugs (incorrect behavior)
 - Security issues
 - Breaking changes
-- Clear errors
 
 DO NOT fix:
 - Style preferences
 - "Could be better" items
-- Premature optimization
 - Nice-to-haves
-- Over-engineering suggestions
 
-For each fix:
-```
-### Fix: {issue}
+### C3: Conservative Refactor
 
-**Problem**: {what's wrong}
-**Solution**: {minimal change}
-**Files**: {affected files}
-```
-
-**CHECKPOINT**: Show proposed fixes to user, get approval before applying.
-
----
-
-### Phase C3: One Smart Refactor
-
-Identify ONE high-value, low-risk improvement:
+Identify ONE high-value, low-risk improvement.
 
 Apply litmus test:
 ```
@@ -283,13 +300,13 @@ Apply litmus test:
 
 **What**: {description}
 **Benefit**: {concrete improvement}
-**Cost**: {effort, risk, files affected}
+**Cost**: {effort, risk}
 
 ### Litmus Test
 1. What do we get back? {answer}
 2. What does it cost? {answer}
 3. More or less flexible after? {answer}
-4. Worth it? {YES/NO}
+4. Worth it? YES / NO
 
 **Verdict**: APPLY | SKIP
 ```
@@ -298,128 +315,83 @@ Apply litmus test:
 - Removing dead code
 - Consolidating obvious duplication
 - Simplifying overly complex logic
-- Adding critical missing docs
 
 **Red flags** (skip):
 - Extracting helpers for one-time operations
 - Adding abstraction "for the future"
-- Splitting files under 500 lines
 - Renaming for style preference
 
 **Default**: "No refactoring needed" is a valid answer.
 
-**CHECKPOINT**: Show refactor proposal (or skip), get user approval.
+### C4: Over-Engineering Check
+
+Flag if any of these were introduced:
+- Unnecessary abstraction layers
+- Premature optimization
+- Features not in scope
+- "While we're here" additions
+
+### C5: Handoff
+
+Update master file:
+- Mark all steps complete
+- Add to History section
+
+Present summary:
+```
+## Task Complete
+
+### What Was Done
+- {summary point 1}
+- {summary point 2}
+
+### Files Modified
+- {file}: {brief description}
+
+### How to Verify
+{Final verification steps}
+
+### Next Steps
+- `/commit` to save changes
+- `/plan {project}` for next task
+```
 
 ---
 
-### Phase C4: Handoff
+## Iteration Pattern
 
-1. Update metadata:
-   - Move active task to "Completed Tasks"
-   - Clear active task section
-   - Update last_updated timestamp
+On failure (⚠️ or ❌ or build fails):
 
-2. Generate handoff summary:
+1. Document attempt:
    ```
-   ## Task Complete: {title}
-
-   ### What Was Done
-   - {bullet 1}
-   - {bullet 2}
-
-   ### Files Modified
-   - {file}: {brief description}
-
-   ### How to Verify
-   {commands or steps to test}
-
-   ### Known Limitations
-   - {if any}
-
-   ### Next Steps
-   - `/commit` to save changes
-   - `/backlog {project}` to add follow-ups
-   - `/plan {project}` to pick next task
-   - `/ship` when ready to release
+   Attempt {N}: {what was tried} → {result}
    ```
 
----
+2. Form new hypothesis based on feedback
 
-## Metadata Updates
+3. Ask: "New approach: {description}. Proceed?"
 
-### After Each Step Completion
+4. On approval, try again
 
-Update in `~/.claude/projects/{project}.md`:
-
-```markdown
-### Steps
-- [x] Step 1: {title} (NO) - DONE
-- [x] Step 2: {title} (BUILD_ONLY) - DONE
-- [ ] Step 3: {title} (CHECKPOINT) - IN_PROGRESS
-...
-
-### Files Changed
-- {file}: {what changed} (Step N)
+After 2-3 failed attempts, spawn Explore subagent:
 ```
-
-### After Task Completion
-
-Move to completed:
-```markdown
-## Active Task
-(empty - no active task)
-
-## Completed Tasks
-- [x] {task title} - Completed: {date}
-  - {brief summary of what was done}
+Multiple attempts without success. Investigating:
+- Why is {approach} not working?
+- What am I missing about {component}?
 ```
 
 ---
 
-## Output Formats
+## No Automated Tests
 
-### Scaffolding Step (Verifiable: NO)
-```
-# Step {N}: {title}
+**DO NOT write automated tests** unless user explicitly requests.
 
-## Created
-- {folder/file 1}
-- {folder/file 2}
+The best test is the user running the solution:
+- In browser
+- As CLI command
+- As running application
 
-✓ Step complete (scaffolding)
-Proceeding to Step {N+1}...
-```
-
-### Build Step (Verifiable: BUILD_ONLY)
-```
-# Step {N}: {title}
-
-## Hypothesis
-{what needs to change}
-
-## Changes Made
-{description of changes}
-
-## Build Verification
-Running: `{build command}`
-✓ Build passes
-
-✓ Step complete
-Proceeding to Step {N+1}...
-```
-
-### Checkpoint Step
-```
-# CHECKPOINT {N}: {title}
-
-## Summary Since Last Checkpoint
-{what was built}
-
-## How to Verify
-{checklist}
-
-[WAITING FOR YOUR RESPONSE]
-```
+CHECKPOINTs exist for human verification.
 
 ---
 
@@ -427,18 +399,14 @@ Proceeding to Step {N+1}...
 
 ### Project Not Found
 ```
-Project '{project}' not found at ~/.claude/projects/{project}.md
+Project '{project}' not found.
 Run `/plan {project}` to create it.
 ```
 
-### No Active Task
+### No Goal Defined
 ```
-No active task in project '{project}'.
-Backlog has {N} items.
-
-Options:
-1. `/plan {project}` to plan a task
-2. `/backlog {project}` to view/activate backlog item
+Project file exists but no goal defined.
+Run `/plan {project}` to define what to build.
 ```
 
 ### Build Fails
@@ -450,52 +418,19 @@ Hypothesis for fix: {what might be wrong}
 Should I try this approach?
 ```
 
-### Tests Fail
-```
-Tests failing:
-{test output}
-
-Options:
-1. Fix the failing tests
-2. Investigate root cause
-3. Skip for now (note in metadata)
-```
-
----
-
-## File Size Monitoring
-
-During execution, monitor file sizes:
-- Ideal: 100-300 lines
-- Warning at 300+ lines
-- Flag at 500+ lines
-
-If file exceeds 500 lines:
-```
-⚠️ File Size Warning
-
-{filename} is now {N} lines (exceeds 500 line guideline).
-
-Options:
-1. Add refactor step to backlog
-2. Split now (may delay current task)
-3. Ignore (size is justified)
-```
-
 ---
 
 ## Key Reminders
 
-1. **Hypothesis first** - State what you think before changing
-2. **One step at a time** - Don't work ahead
-3. **Auto-chain scaffolding/build steps** - Keep momentum
-4. **Stop at CHECKPOINTs** - These need human validation
-5. **Iterate on failure** - New hypothesis, try again
-6. **Critique honestly** - Find real bugs, not style issues
-7. **Fix high-priority only** - Skip nice-to-haves
-8. **One refactor max** - Conservative improvement
-9. **Update metadata** - Keep state current
-10. **Handoff cleanly** - User knows what was done and what's next
+1. **Behavioral outcomes** - Steps describe WHAT, not HOW
+2. **Context reset** - Re-read step at start, don't rely on memory
+3. **Get approval first** - Present plan, wait for user before executing
+4. **Course-correct welcome** - User can adjust approach before work is done
+5. **CHECKPOINT = verification** - User tests actual behavior
+6. **Human tests** - No automated tests unless requested
+7. **Fix bugs only** - Skip style/nice-to-haves in audit
+8. **One refactor max** - Conservative, apply litmus test
+9. **Update master file** - Keep progress tracked
 
 ---
 
@@ -503,18 +438,17 @@ Options:
 
 You are the **Task Executor**. Your job:
 
-**Execution Loop**:
-1. Read step → hypothesize → execute → validate
-2. Auto-proceed on NO/BUILD_ONLY steps
-3. Wait at CHECKPOINTs for human validation
-4. Iterate on failures
+1. **Load** - Read project plan from master file
+2. **Breakdown** - Generate behavioral outcome steps (if needed)
+3. **For each step**:
+   - Present plan for approval
+   - Wait for user go-ahead (or course-correct)
+   - Execute after approval
+   - At CHECKPOINT: pause for human verification
+4. **Audit** - Review changes, fix bugs only
+5. **Refactor** - One conservative improvement (or skip)
+6. **Handoff** - Update file, suggest `/commit`
 
-**Completion Flow** (when all steps done):
-1. **C1: Self-Critique** → find issues (show to user)
-2. **C2: Fix High-Priority** → bugs only (get approval)
-3. **C3: One Refactor** → apply litmus test (get approval)
-4. **C4: Handoff** → update metadata, suggest next steps
+**Core pattern**: Load → Breakdown → (Approve → Execute → Verify)* → Audit → Handoff
 
-**Core pattern**: Hypothesis → Execute → Validate → Iterate until ✅ → Critique → Fix → Refactor → Handoff
-
-**Philosophy**: Conservative fixes, honest critique, minimal refactoring. "No changes needed" is often the right answer.
+**Philosophy**: Collaborative execution. User approves before work. Course-correction welcome.

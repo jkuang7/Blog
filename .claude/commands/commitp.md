@@ -1,8 +1,8 @@
-# /commit - Git Commit
+# /commit-push - Git Commit & Push
 
-**Purpose**: Create git commits with intelligent message generation.
+**Purpose**: Create git commits with intelligent message generation, then push to remote.
 
-**Your Job**: Analyze changes, generate commit message, stage and commit.
+**Your Job**: Analyze changes, generate commit message, stage, commit, and push.
 
 ---
 
@@ -11,7 +11,7 @@
 If the provided path contains multiple git repositories (subdirectories with `.git` folders), process each repo independently:
 
 1. **Detect repos**: Check if path has subdirectories containing `.git`
-2. **Iterate**: For each repo found, run the full commit workflow
+2. **Iterate**: For each repo found, run the full commit + push workflow
 3. **Summary**: After processing all repos, show a summary table
 
 ```
@@ -29,11 +29,11 @@ After all repos processed:
 ```
 ## Summary
 
-| Repo | Status | Commit |
-|------|--------|--------|
-| Banksy | Committed | abc123 |
-| DeckFoundry | No changes | - |
-| stonks | Committed | def456 |
+| Repo | Status | Commit | Pushed |
+|------|--------|--------|--------|
+| Banksy | Committed | abc123 | Yes |
+| DeckFoundry | No changes | - | - |
+| stonks | Committed | def456 | Yes |
 ```
 
 ---
@@ -149,9 +149,37 @@ Committed: {short hash}
 
 ---
 
-### Step 5: Show Recent History
+### Step 5: Push to Remote
 
-After commit:
+After successful commit, push to origin:
+```bash
+git push
+```
+
+If no upstream is set:
+```bash
+git push -u origin {current-branch}
+```
+
+Show result:
+```
+Pushed: {branch} → origin/{branch}
+```
+
+If push fails (e.g., behind remote):
+```
+⚠️ Push failed: {error message}
+
+Options:
+- Pull and merge first
+- Force push (not recommended)
+```
+
+---
+
+### Step 6: Show Recent History
+
+After commit and push:
 ```
 ## Recent Commits
 
@@ -160,7 +188,7 @@ After commit:
 {hash} {message} ({time ago})
 
 Branch: {branch}
-Ahead of origin: {N} commits
+Status: Up to date with origin
 ```
 
 ---
@@ -218,12 +246,14 @@ Merged into single formatDate() with options parameter.
 - Use `--force` or `--no-verify`
 - Amend commits not authored by you
 - Commit to main/master without confirmation
+- Force push without explicit user request
 
 **ALWAYS**:
 - Show diff summary before committing
 - Warn on large commits (>500 lines changed)
 - Warn on credential-like files
 - Confirm branch before committing
+- Verify push succeeded
 
 ---
 
@@ -258,6 +288,13 @@ You're on branch: {branch}
 Is this the correct branch to commit to? [y/n]
 ```
 
+### Push Rejected
+```
+⚠️ Push rejected: remote has changes
+
+Run `git pull` first, then retry.
+```
+
 ---
 
 ## Key Reminders
@@ -270,19 +307,21 @@ Is this the correct branch to commit to? [y/n]
 6. **Explain why** - Body explains reasoning, not just what
 7. **Small commits** - Warn on large changesets
 8. **Safety first** - Never force, never skip hooks
+9. **Push after commit** - Always push to keep remote in sync
 
 ---
 
 ## Summary
 
-You are the **Commit Helper**. Your job:
+You are the **Commit & Push Helper**. Your job:
 
 1. **Analyze** - Understand what changed
 2. **Stage** - Smart staging with safety checks
 3. **Message** - Generate conventional commit message
 4. **Commit** - Execute with confirmation
-5. **Report** - Show result and recent history
+5. **Push** - Push to remote origin
+6. **Report** - Show result and sync status
 
-**Core pattern**: Analyze → Stage → Generate message → Commit → Report
+**Core pattern**: Analyze → Stage → Generate message → Commit → Push → Report
 
-**Philosophy**: Safe, well-documented commits. Never commit secrets.
+**Philosophy**: Safe, well-documented commits. Never commit secrets. Keep remote in sync.
