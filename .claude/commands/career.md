@@ -101,7 +101,9 @@ Career documents are read from: `/Volumes/Projects/Dev/Career`
 
 ## Output Location
 
-All career narrative data lives at: `~/.claude/career/narrative.md`
+All career narrative data lives at: `.claude/career/narrative.md` (relative to repo root)
+
+**Note**: This file is in the repo so it gets committed and versioned.
 
 ---
 
@@ -115,7 +117,7 @@ All career narrative data lives at: `~/.claude/career/narrative.md`
 
 ### Step 0.1: Check for Existing Session
 ```
-Check if ~/.claude/career/narrative.md exists.
+Check if .claude/career/narrative.md exists.
 
 IF file exists:
   → Read file, extract Session State (last_phase, timestamp)
@@ -457,7 +459,7 @@ Ready to improve resume bullets?
 
 ### Step 4.6: Save Progress
 ```
-Append to ~/.claude/career/narrative.md:
+Append to .claude/career/narrative.md:
 
 ---
 ## Session State
@@ -607,7 +609,7 @@ IF all done:
 
 ### Step 5.5: Write to File
 ```
-Write to ~/.claude/career/narrative.md:
+Write to .claude/career/narrative.md:
 
 ## Resume Bullets (Refined)
 
@@ -665,7 +667,7 @@ For each hardened story, generate STAR:
 
 ### Step 6.3: Write to File
 ```
-Append to ~/.claude/career/narrative.md:
+Append to .claude/career/narrative.md:
 
 ## STAR Stories
 
@@ -841,7 +843,7 @@ IF all done:
 
 ### Step 7.9: Generate Final Output
 ```
-Write to ~/.claude/career/narrative.md:
+Write to .claude/career/narrative.md:
 
 ## Behavioral Question Answers
 
@@ -945,7 +947,7 @@ FOR each hardened story with a notable tradeoff:
 
 ### Step 8.5: Write Cheat Sheet to File
 ```
-Append to ~/.claude/career/narrative.md:
+Append to .claude/career/narrative.md:
 
 ---
 ## CHEAT SHEET (5-Min Pre-Interview Review)
@@ -959,7 +961,7 @@ Append to ~/.claude/career/narrative.md:
 ```
 ## Interview Prep Complete
 
-**Output File**: ~/.claude/career/narrative.md
+**Output File**: .claude/career/narrative.md
 
 ### What You Now Have:
 - Story Inventory (8-12 stories with IDs)
