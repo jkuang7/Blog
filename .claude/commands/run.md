@@ -91,11 +91,11 @@ Before generating steps, identify risks that could derail execution:
    → Mitigation: {how step design addresses it}
 ```
 
-**How risks inform steps:**
-- High-risk areas → Place CHECKPOINT immediately after
-- Integration risks → Add exploration/spike step first
-- Dependency risks → Sequence steps to validate early
-- Complexity risks → Add to step's Context section
+**How risks inform step design:**
+- Integration risks → Add exploration/spike step first to validate approach
+- Dependency risks → Sequence steps to validate critical paths early
+- Complexity risks → Add detail to step's Context section with patterns/references
+- All risks → Enhance step design, NOT CHECKPOINT frequency
 
 ### Step Template
 
@@ -126,11 +126,11 @@ Before generating steps, identify risks that could derail execution:
 
 ### CHECKPOINT Placement
 
-Place CHECKPOINTs:
+Place CHECKPOINTs at **verifiable behavioral milestones**:
 - Every 3-5 AUTO steps
-- **Immediately after steps addressing identified risks**
-- After risky or complex changes
-- At natural "demo points" where behavior is testable
+- At natural "demo points" where user can test behavior
+- When acceptance criteria are observable by humans
+- After groups of related changes that form a testable feature
 
 ### Step Sizing
 
@@ -138,7 +138,7 @@ Ask four questions:
 1. **"Can I verify this worked?"** → If no, too granular
 2. **"Single behavioral focus?"** → If multiple, too broad
 3. **"Can model adapt if codebase differs?"** → If not, too brittle
-4. **"Does this address an identified risk?"** → If yes, add CHECKPOINT after
+4. **"Are identified risks addressed in Context?"** → If not, add detail
 
 ### Code Patterns
 
@@ -478,7 +478,7 @@ Should I try this approach?
 
 ## Key Reminders
 
-1. **Assess risks first** - Identify risks before generating steps
+1. **Assess risks first** - Identify risks before generating steps; informs step design, not CHECKPOINT frequency
 2. **Behavioral outcomes** - Steps describe WHAT, not HOW
 3. **Context reset** - Re-read step at start, don't rely on memory
 4. **Get approval first** - Present plan, wait for user before executing
