@@ -1,3 +1,5 @@
 Repos/*
 .DS_Store
 current.txt
+.claude/
+._*
