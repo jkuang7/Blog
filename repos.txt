@@ -3,6 +3,6 @@
 # Add line to include new repo in bootstrap
 
 git@github.com:jkuang7/Banksy.git
-git@github.com:jkuang7/blog.git
+git@github.com:jkuang7/Blog.git
 git@github.com:jkuang7/DeckFoundry.git
 git@github.com:jkuang7/stonks.git
