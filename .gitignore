@@ -1,4 +1,5 @@
 Repos/*
+worktrees/
 .DS_Store
 current.txt
 .claude/
