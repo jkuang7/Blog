@@ -1,0 +1,58 @@
+---
+title: "How We Migrated 2TB of Data Without Downtime"
+date: "2024-01-15"
+tags: ["backend", "migration", "postgres"]
+slug: "placeholder-migration"
+excerpt: "The database was growing 40% monthly. We had six weeks before storage costs tripled. Here's how we pulled off a zero-downtime migration to a new architecture."
+placeholder: true
+---
+
+## The Problem
+
+Our analytics database hit 2TB and was growing 40% monthly. The existing PostgreSQL instance couldn't handle the load anymore—queries that once took seconds were now timing out after minutes. Finance gave us six weeks before storage costs tripled.
+
+## What Was at Stake
+
+This wasn't just a technical problem. Real-time dashboards powered executive decisions. If they went down, product teams would fly blind during our biggest product launch of the year. Customer SLAs guaranteed 99.9% uptime on reporting endpoints.
+
+## The Constraint
+
+Zero downtime. We couldn't take the system offline for migration—not even for planned maintenance windows. The business ran 24/7 across three continents.
+
+Traditional migration approaches—dump and restore, scheduled maintenance, even blue-green deployments—all required some period where writes were paused. We had none of that luxury. Every second of the migration had to maintain full read-write capability.
+
+## The Key Moves
+
+We designed a dual-write architecture. Every write went to both the old and new databases simultaneously:
+
+```typescript
+async function writeAnalyticsEvent(event: AnalyticsEvent) {
+  await Promise.all([
+    oldDatabase.insert(event),
+    newDatabase.insert(event),
+  ]);
+
+  // Verify consistency asynchronously
+  queue.push({ type: 'verify', eventId: event.id });
+}
+```
+
+The verification queue ran a background worker that compared records between databases. Any discrepancies triggered alerts.
+
+For historical data, we built an incremental sync that processed 10GB batches during off-peak hours. Checksums validated each batch before marking it complete.
+
+The switchover happened gradually—1% of read traffic to the new database, then 5%, then 25%, then 100%. Each stage had automated rollback triggers.
+
+## The Result
+
+Migration completed in 4 weeks with zero incidents. Query performance improved 10x. Storage costs dropped 60% thanks to better compression on the new architecture.
+
+The team celebrated, but quietly. The whole point was that nothing happened—no pages, no rollbacks, no emergency meetings. The best migrations are boring ones.
+
+## The Lesson
+
+The hardest part wasn't the migration itself—it was convincing stakeholders that "slow and safe" beats "fast and risky." Building incremental verification gave everyone confidence to proceed. The two extra weeks we spent on tooling saved us from what could have been a career-defining outage.
+
+I learned that communication matters as much as code. Weekly status updates to stakeholders kept everyone aligned. Detailed runbooks meant any engineer could handle the switchover, not just the migration team. And the verification dashboard—visible to everyone—turned skeptics into supporters.
+
+Sometimes the most impactful engineering work is the work that makes nothing break.
