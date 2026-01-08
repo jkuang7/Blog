@@ -1,0 +1,52 @@
+---
+title: "How I Got Three Teams to Agree on One API"
+date: "2024-01-05"
+tags: ["leadership", "api-design", "cross-team"]
+slug: "placeholder-leadership"
+excerpt: "Three teams, three different API styles, one integration deadline. Without formal authority, I had to find a way to align everyone before the product launch."
+placeholder: true
+---
+
+## The Problem
+
+We were building a new customer portal that needed data from three different backend teams. Each team had their own API conventions, authentication methods, and response formats. The frontend team was drowning in adapter code.
+
+## What Was at Stake
+
+The product launch was eight weeks away. At the current pace, the frontend team would spend six of those weeks just normalizing data instead of building features. The VP was already asking why the timeline kept slipping.
+
+## The Constraint
+
+I wasn't the tech lead. I couldn't mandate anything. Each team had their own priorities, their own sprints, their own definitions of "done." I had to convince three teams to change their APIs without any formal authority.
+
+## The Key Moves
+
+I started by listening. Coffee chats with each team's senior engineers, understanding why they made the choices they made. Most weren't arbitrary—they reflected real constraints I hadn't considered.
+
+Then I documented everything. Not just the differences, but the reasoning behind them. I created a shared document showing the current state:
+
+```
+Team A: REST, snake_case, JWT auth, ISO timestamps
+Team B: REST, camelCase, API keys, Unix timestamps
+Team C: GraphQL, camelCase, OAuth, ISO timestamps
+
+Frontend cost: 3 adapters, 2 auth flows, 2 date parsers
+```
+
+The visualization made the problem concrete. People could see the duplication. I proposed a minimal common standard—not perfect for anyone, but workable for everyone.
+
+The breakthrough came when I framed it as a frontend problem, not a backend problem. I wasn't telling them their API was wrong. I was showing them how the frontend struggled with inconsistency. That changed the conversation from defensive to collaborative.
+
+## The Result
+
+We agreed on a common response envelope and timestamp format. Two teams moved to camelCase (the GraphQL team was already there). Auth stayed separate—that was a bigger lift than we could handle in eight weeks—but we documented a migration path.
+
+The frontend shipped on time with one adapter instead of three.
+
+Six months later, a new team joined the company. They reviewed our API guidelines doc and built their service to match. The investment in standardization paid dividends we hadn't anticipated. What started as a desperate timeline fix became institutional knowledge.
+
+## The Lesson
+
+Influence without authority requires empathy first, solutions second. You can't win by proving others wrong—you win by helping them see a shared problem. Documentation isn't just for posterity; it's a persuasion tool. When people can see the cost of inconsistency, alignment becomes their idea too.
+
+The experience changed how I approach cross-team problems. I no longer try to find the "right" answer first. I start by understanding each team's context, constraints, and concerns. The best solutions emerge from that understanding, not from technical superiority. Engineering is ultimately about people agreeing to work together—the code follows.
