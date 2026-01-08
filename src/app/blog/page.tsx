@@ -11,7 +11,7 @@ export default function BlogPage() {
 
   if (posts.length === 0) {
     return (
-      <main className="max-w-4xl mx-auto px-4 py-12">
+      <main className="max-w-3xl mx-auto px-4 py-12">
         <h1 className="text-3xl font-bold mb-8">Blog</h1>
         <p className="text-gray-600 dark:text-gray-400">
           No posts yet. Check back soon!
@@ -21,16 +21,24 @@ export default function BlogPage() {
   }
 
   return (
-    <main className="max-w-4xl mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold mb-8">Blog</h1>
-      <div className="space-y-8">
+    <main className="max-w-3xl mx-auto px-4 py-12">
+      <header className="mb-12">
+        <h1 className="text-4xl font-bold mb-4">Blog</h1>
+        <p className="text-gray-600 dark:text-gray-400 text-lg">
+          Technical case studies and engineering stories from my career.
+        </p>
+      </header>
+      <div className="space-y-10">
         {posts.map((post) => (
-          <article key={post.slug} className="group">
+          <article
+            key={post.slug}
+            className="group border-b border-gray-100 dark:border-gray-800 pb-10 last:border-0"
+          >
             <Link href={`/blog/${post.slug}`} className="block">
-              <h2 className="text-xl font-semibold group-hover:text-blue-600 dark:group-hover:text-blue-400 mb-2">
+              <h2 className="text-2xl font-semibold group-hover:text-blue-600 dark:group-hover:text-blue-400 mb-3 transition-colors">
                 {post.title}
               </h2>
-              <div className="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400 mb-2">
+              <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500 dark:text-gray-400 mb-3">
                 <time dateTime={post.date}>
                   {new Date(post.date).toLocaleDateString("en-US", {
                     year: "numeric",
@@ -38,23 +46,29 @@ export default function BlogPage() {
                     day: "numeric",
                   })}
                 </time>
-                {post.tags && post.tags.length > 0 && (
-                  <div className="flex gap-2">
-                    {post.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="px-2 py-0.5 bg-gray-100 dark:bg-gray-800 rounded text-xs"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
+                {post.readingTime && (
+                  <>
+                    <span className="text-gray-300 dark:text-gray-600">•</span>
+                    <span>{post.readingTime} min read</span>
+                  </>
                 )}
               </div>
               {post.excerpt && (
-                <p className="text-gray-600 dark:text-gray-400 line-clamp-2">
+                <p className="text-gray-600 dark:text-gray-400 leading-relaxed mb-4">
                   {post.excerpt}
                 </p>
+              )}
+              {post.tags && post.tags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {post.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="px-2.5 py-1 bg-gray-100 dark:bg-gray-800 rounded-full text-xs font-medium text-gray-600 dark:text-gray-400"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
               )}
             </Link>
           </article>

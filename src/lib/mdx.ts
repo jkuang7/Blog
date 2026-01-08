@@ -18,6 +18,16 @@ export interface PostFrontmatter {
 
 export interface PostMeta extends PostFrontmatter {
   slug: string;
+  readingTime?: number;
+}
+
+/**
+ * Calculate reading time in minutes
+ */
+function calculateReadingTime(content: string): number {
+  const wordsPerMinute = 200;
+  const words = content.trim().split(/\s+/).length;
+  return Math.ceil(words / wordsPerMinute);
 }
 
 export interface Post {
@@ -46,11 +56,12 @@ export function getAllPostsMeta(): PostMeta[] {
   const posts = slugs.map((slug) => {
     const filePath = path.join(contentDir, `${slug}.mdx`);
     const fileContents = fs.readFileSync(filePath, "utf8");
-    const { data } = matter(fileContents);
+    const { data, content } = matter(fileContents);
 
     return {
       ...(data as PostFrontmatter),
       slug,
+      readingTime: calculateReadingTime(content),
     };
   });
 
@@ -95,6 +106,7 @@ export async function getPostBySlug(slug: string): Promise<Post | null> {
     meta: {
       ...(data as PostFrontmatter),
       slug,
+      readingTime: calculateReadingTime(rawContent),
     },
     content,
   };
