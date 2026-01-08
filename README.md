@@ -1,63 +1,36 @@
-# Dev Environment
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-Umbrella repo for shell configs, utilities, and project repositories.
+## Getting Started
 
-## Structure
-
-```
-Dev/
-├── .claude/config/     # Shell aliases, bootstrap script
-├── Archive/            # Archived projects
-├── Career/             # Career-related materials
-└── Repos/              # Active project repos (git-ignored)
-```
-
-## Prerequisites
-
-- SSH key configured for GitHub (`ssh -T git@github.com` should work)
-- Ensure `.custom` is sourced in your shell config
-
-## Setup
-
-Add this to your `~/.zshrc` if not already present:
+First, run the development server:
 
 ```bash
-source /Volumes/Projects/Dev/.claude/config/.custom
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
 ```
 
-Then reload:
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-```bash
-source ~/.zshrc
-```
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-## Commands
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-| Command | Description |
-|---------|-------------|
-| `bootstrap` | Clone all repos defined in `bootstrap.sh` |
-| `repos` | Claude-powered summary of uncommitted changes across all repos |
+## Learn More
 
-## Adding New Repos
+To learn more about Next.js, take a look at the following resources:
 
-Edit `/Volumes/Projects/Dev/.claude/config/bootstrap.sh` and add to the `REPOS` array:
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
-```bash
-REPOS=(
-    "git@github.com:jkuang7/Banksy.git"
-    "git@github.com:jkuang7/DeckFoundry.git"
-    "git@github.com:jkuang7/stonks.git"
-    "git@github.com:jkuang7/NewRepo.git"  # Add here
-)
-```
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-Then run `bootstrap` to clone new repos (existing ones are skipped).
+## Deploy on Vercel
 
-## Git Workflow
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
-This repo tracks configs only. Each repo in `Repos/` is a separate git repo:
-
-- **Dev changes** (bootstrap, aliases): commit here
-- **Project changes**: `cd` into the specific repo and commit there
-
-Use `repos` to check status across all projects at once.
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
