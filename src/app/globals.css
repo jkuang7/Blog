@@ -2,6 +2,7 @@
 @plugin "@tailwindcss/typography";
 
 :root {
+  color-scheme: light dark;
   --background: #ffffff;
   --foreground: #171717;
 }
@@ -33,13 +34,16 @@ body {
   --tw-prose-links: #2563eb;
   --tw-prose-code: #111827;
   line-height: 1.75;
+  color: var(--tw-prose-body);
 }
 
-.dark .prose {
-  --tw-prose-body: #d1d5db;
-  --tw-prose-headings: #f9fafb;
-  --tw-prose-links: #60a5fa;
-  --tw-prose-code: #f9fafb;
+@media (prefers-color-scheme: dark) {
+  .prose {
+    --tw-prose-body: #d1d5db;
+    --tw-prose-headings: #ffffff;
+    --tw-prose-links: #60a5fa;
+    --tw-prose-code: #f9fafb;
+  }
 }
 
 /* Heading hierarchy */
@@ -49,6 +53,7 @@ body {
   margin-top: 2rem;
   margin-bottom: 1rem;
   line-height: 1.25;
+  color: var(--tw-prose-headings);
 }
 
 .prose h2 {
@@ -58,10 +63,13 @@ body {
   margin-bottom: 0.75rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid #e5e7eb;
+  color: var(--tw-prose-headings);
 }
 
-.dark .prose h2 {
-  border-bottom-color: #374151;
+@media (prefers-color-scheme: dark) {
+  .prose h2 {
+    border-bottom-color: #374151;
+  }
 }
 
 .prose h3 {
@@ -69,6 +77,7 @@ body {
   font-weight: 600;
   margin-top: 1.5rem;
   margin-bottom: 0.5rem;
+  color: var(--tw-prose-headings);
 }
 
 /* Paragraph spacing */
@@ -99,8 +108,10 @@ body {
   font-family: var(--font-mono), ui-monospace, monospace;
 }
 
-.dark .prose :not(pre) > code {
-  background: #374151;
+@media (prefers-color-scheme: dark) {
+  .prose :not(pre) > code {
+    background: #374151;
+  }
 }
 
 /* List styling */
@@ -130,9 +141,11 @@ body {
   color: #6b7280;
 }
 
-.dark .prose blockquote {
-  border-left-color: #60a5fa;
-  color: #9ca3af;
+@media (prefers-color-scheme: dark) {
+  .prose blockquote {
+    border-left-color: #60a5fa;
+    color: #9ca3af;
+  }
 }
 
 /* Link styling */
@@ -147,10 +160,11 @@ body {
   color: #1d4ed8;
 }
 
-.dark .prose a {
-  color: #60a5fa;
-}
-
-.dark .prose a:hover {
-  color: #93c5fd;
+@media (prefers-color-scheme: dark) {
+  .prose a {
+    color: #60a5fa;
+  }
+  .prose a:hover {
+    color: #93c5fd;
+  }
 }
