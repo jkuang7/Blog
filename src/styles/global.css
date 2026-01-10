@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* Custom styles */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Prose overrides for better readability */
+.prose {
+  max-width: 65ch;
+}
+
+/* Code block styling */
+pre {
+  @apply rounded-lg p-4 overflow-x-auto;
+}
+
+code {
+  @apply text-sm;
+}
+
+/* Dark mode transitions */
+* {
+  transition: background-color 0.2s ease-in-out, color 0.2s ease-in-out;
+}
