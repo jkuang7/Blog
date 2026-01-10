@@ -1,0 +1,52 @@
+---
+title: "Code Syntax Example"
+description: "Testing syntax highlighting across different languages."
+pubDate: 2026-01-04
+tags: ["code", "syntax", "demo"]
+---
+
+# Code Syntax Example
+
+This post demonstrates syntax highlighting across multiple programming languages.
+
+## JavaScript
+
+```javascript
+async function fetchData(url) {
+  const response = await fetch(url);
+  const data = await response.json();
+  return data;
+}
+```
+
+## Python
+
+```python
+def fibonacci(n):
+    if n <= 1:
+        return n
+    return fibonacci(n - 1) + fibonacci(n - 2)
+```
+
+## Bash
+
+```bash
+npm run build
+npm run preview
+```
+
+## TypeScript
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email?: string;
+}
+
+const getUser = (id: number): User => {
+  return { id, name: 'Jian' };
+};
+```
+
+If you can see colored syntax in all the code blocks above, syntax highlighting is working correctly!

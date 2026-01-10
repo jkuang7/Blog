@@ -1,15 +1,45 @@
 ---
 import Base from '../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+
+const posts = (await getCollection('blog'))
+  .filter(post => !post.data.draft)
+  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
+
+function formatDate(date: Date): string {
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
 ---
 
-<Base title="Home">
-  <main class="max-w-3xl mx-auto px-4 py-8">
-    <h1 class="text-4xl font-bold mb-4">Welcome</h1>
-    <p class="text-lg text-gray-600 dark:text-gray-300">
-      This is a placeholder homepage. More content coming soon.
-    </p>
-    <p class="mt-4 text-red-500">
-      Tailwind test: this text should be red.
-    </p>
-  </main>
+<Base title="Blog" description="Writing about software, engineering, and building things.">
+  <h1 class="text-4xl font-bold mb-8">Blog</h1>
+
+  {posts.length === 0 ? (
+    <p class="text-gray-600 dark:text-gray-400">No posts yet.</p>
+  ) : (
+    <ul class="space-y-8">
+      {posts.map((post) => (
+        <li>
+          <a
+            href={`/blog/${post.slug}/`}
+            class="group block"
+          >
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+              {post.data.title}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {formatDate(post.data.pubDate)}
+              {post.data.description && (
+                <span> &middot; {post.data.description}</span>
+              )}
+            </p>
+          </a>
+        </li>
+      ))}
+    </ul>
+  )}
 </Base>
