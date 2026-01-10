@@ -1,1 +1,0 @@
-Daemon factory E2E test passed
