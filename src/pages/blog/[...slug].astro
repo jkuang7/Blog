@@ -56,9 +56,12 @@ function formatDate(date: Date): string {
       {post.data.tags && post.data.tags.length > 0 && (
         <div class="flex flex-wrap gap-2 mt-4">
           {post.data.tags.map((tag: string) => (
-            <span class="px-2 py-1 bg-gray-100 dark:bg-gray-800 text-sm rounded text-gray-600 dark:text-gray-400">
+            <a
+              href={`/blog/tags/${tag}/`}
+              class="px-2 py-1 bg-gray-100 dark:bg-gray-800 text-sm rounded text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+            >
               {tag}
-            </span>
+            </a>
           ))}
         </div>
       )}
