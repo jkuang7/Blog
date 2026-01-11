@@ -20,26 +20,28 @@ const { name, description, tech, github, demo } = Astro.props;
       </span>
     ))}
   </div>
-  <div class="flex gap-4 mt-4">
-    {github && (
-      <a
-        href={github}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-      >
-        GitHub
-      </a>
-    )}
-    {demo && (
-      <a
-        href={demo}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-      >
-        Demo
-      </a>
-    )}
-  </div>
+  {(github && github !== '#') || (demo && demo !== '#') ? (
+    <div class="flex gap-4 mt-4">
+      {github && github !== '#' && (
+        <a
+          href={github}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          GitHub
+        </a>
+      )}
+      {demo && demo !== '#' && (
+        <a
+          href={demo}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+        >
+          Demo
+        </a>
+      )}
+    </div>
+  ) : null}
 </div>
