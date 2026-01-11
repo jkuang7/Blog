@@ -17,7 +17,15 @@ function formatDate(date: Date): string {
 
 <Base title="Blog" description="Articles about software engineering, web development, and what I'm learning.">
   <section>
-    <h1 class="text-3xl font-bold mb-8">Blog</h1>
+    <div class="flex items-baseline justify-between mb-8">
+      <h1 class="text-3xl font-bold">Blog</h1>
+      <a
+        href="/blog/tags/"
+        class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+      >
+        Browse by tag &rarr;
+      </a>
+    </div>
     {posts.length === 0 ? (
       <p class="text-gray-600 dark:text-gray-400">No posts yet.</p>
     ) : (
