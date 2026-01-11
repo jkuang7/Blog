@@ -16,7 +16,11 @@ export async function GET(context) {
       pubDate: post.data.pubDate,
       description: post.data.description,
       link: `/blog/${post.slug}/`,
+      author: "jian@jiankuang.dev (Jian Kuang)",
     })),
-    customData: `<language>en-us</language>`,
+    customData: `<language>en-us</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <managingEditor>jian@jiankuang.dev (Jian Kuang)</managingEditor>
+    <webMaster>jian@jiankuang.dev (Jian Kuang)</webMaster>`,
   });
 }
