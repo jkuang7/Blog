@@ -45,6 +45,15 @@ function formatDate(date: Date): string {
                   <span> &middot; {post.data.description}</span>
                 )}
               </p>
+              {post.data.tags && post.data.tags.length > 0 && (
+                <div class="flex flex-wrap gap-1 mt-2">
+                  {post.data.tags.map((tag: string) => (
+                    <span class="px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-xs rounded text-gray-500 dark:text-gray-400">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
             </a>
           </li>
         ))}
