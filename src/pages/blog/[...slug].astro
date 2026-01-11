@@ -28,6 +28,25 @@ function getReadingTime(content: string): string {
 }
 
 const readingTime = getReadingTime(post.body);
+const canonicalURL = new URL(`/blog/${post.slug}`, Astro.site);
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": post.data.title,
+  "datePublished": post.data.pubDate.toISOString(),
+  "dateModified": (post.data.updatedDate || post.data.pubDate).toISOString(),
+  "author": {
+    "@type": "Person",
+    "name": "Jian Kuang",
+    "url": "https://jiankuang.dev/about"
+  },
+  "description": post.data.description,
+  "mainEntityOfPage": {
+    "@type": "WebPage",
+    "@id": canonicalURL.href
+  }
+};
 
 function formatDate(date: Date): string {
   return date.toLocaleDateString('en-US', {
@@ -39,6 +58,7 @@ function formatDate(date: Date): string {
 ---
 
 <Base title={post.data.title} description={post.data.description}>
+  <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} slot="head" />
   <article class="prose dark:prose-invert prose-gray max-w-none">
     <header class="mb-8 not-prose">
       <a
