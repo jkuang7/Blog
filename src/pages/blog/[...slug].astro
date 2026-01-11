@@ -4,13 +4,19 @@ import Base from '../../layouts/Base.astro';
 
 export async function getStaticPaths() {
   const posts = await getCollection('blog');
-  return posts.map(post => ({
+  const sortedPosts = posts.sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
+
+  return sortedPosts.map((post, index) => ({
     params: { slug: post.slug },
-    props: { post },
+    props: {
+      post,
+      prevPost: index < sortedPosts.length - 1 ? sortedPosts[index + 1] : null,
+      nextPost: index > 0 ? sortedPosts[index - 1] : null,
+    },
   }));
 }
 
-const { post } = Astro.props;
+const { post, prevPost, nextPost } = Astro.props;
 const { Content } = await post.render();
 
 function getReadingTime(content: string): string {
@@ -58,4 +64,39 @@ function formatDate(date: Date): string {
     </header>
     <Content />
   </article>
+
+  <nav class="mt-12 pt-8 border-t border-gray-200 dark:border-gray-700">
+    <div class="flex justify-between items-start gap-4">
+      {prevPost ? (
+        <a
+          href={`/blog/${prevPost.slug}`}
+          class="group flex-1 max-w-[45%]"
+        >
+          <span class="text-sm text-gray-500 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-100">
+            &larr; Previous
+          </span>
+          <span class="block mt-1 text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 font-medium truncate">
+            {prevPost.data.title}
+          </span>
+        </a>
+      ) : (
+        <div class="flex-1" />
+      )}
+      {nextPost ? (
+        <a
+          href={`/blog/${nextPost.slug}`}
+          class="group flex-1 max-w-[45%] text-right"
+        >
+          <span class="text-sm text-gray-500 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-100">
+            Next &rarr;
+          </span>
+          <span class="block mt-1 text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 font-medium truncate">
+            {nextPost.data.title}
+          </span>
+        </a>
+      ) : (
+        <div class="flex-1" />
+      )}
+    </div>
+  </nav>
 </Base>
