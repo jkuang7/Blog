@@ -57,7 +57,16 @@ function formatDate(date: Date): string {
 }
 ---
 
-<Base title={post.data.title} description={post.data.description}>
+<Base
+  title={post.data.title}
+  description={post.data.description}
+  article={{
+    publishedTime: post.data.pubDate.toISOString(),
+    modifiedTime: post.data.updatedDate?.toISOString(),
+    author: "https://jiankuang.dev/about",
+    tags: post.data.tags,
+  }}
+>
   <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} slot="head" />
   <article class="prose dark:prose-invert prose-gray max-w-none">
     <header class="mb-8 not-prose">
