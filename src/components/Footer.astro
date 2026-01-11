@@ -4,6 +4,7 @@ const currentYear = new Date().getFullYear();
 const socialLinks = [
   { href: 'https://github.com/jkuang7', label: 'GitHub' },
   { href: 'https://linkedin.com/in/jiankuang', label: 'LinkedIn' },
+  { href: '/rss.xml', label: 'RSS' },
 ];
 ---
 
@@ -14,8 +15,8 @@ const socialLinks = [
         {socialLinks.map(link => (
           <a
             href={link.href}
-            target="_blank"
-            rel="noopener noreferrer"
+            target={link.href.startsWith('http') ? '_blank' : undefined}
+            rel={link.href.startsWith('http') ? 'noopener noreferrer' : undefined}
             class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
           >
             {link.label}
