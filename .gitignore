@@ -17,3 +17,7 @@ npm-debug.log*
 
 # astro
 .astro/
+
+current.txt
+
+.playwright-mcp/*
