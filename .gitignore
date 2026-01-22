@@ -1,23 +1,42 @@
-# dependencies
+# Subprojects (have their own git)
+Repos/
+landing-pages/
+.claude/
+
+# Archived content
+Archive/
+Career/
+
+# Blog files (canonical in Repos/Blog)
+astro.config.mjs
+package.json
+package-lock.json
+tsconfig.json
+README.md
+src/
+public/
+
+# Dependencies
 node_modules/
 
-# build output
+# Build output
 dist/
 
-# env files
+# Env files
 .env*
 
-# misc
+# Misc
 .DS_Store
 *.pem
 npm-debug.log*
+*.lock.yaml
+current*.txt
 
-# worktrees
+# Worktrees
 .worktrees/
 
-# astro
+# Astro
 .astro/
 
-current.txt
-
+# Playwright
 .playwright-mcp/*
