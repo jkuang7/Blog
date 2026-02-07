@@ -41,3 +41,4 @@ current*.txt
 
 # Playwright
 .playwright-mcp/*
+.vscode/
