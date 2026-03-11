@@ -1,0 +1,88 @@
+{
+  "trace_id": "2026-02-28T11-58-33_on_window_safari_open",
+  "source": {
+    "callback": "on-window-detected",
+    "entrypoint": "on_window.sh",
+    "argv": ["com.apple.Safari"],
+    "workspace": "w1"
+  },
+  "normalized_context": {
+    "workspace": "w1",
+    "event_bundle": "com.apple.Safari",
+    "state_before": {
+      "browser": "zen",
+      "upnote_tiled": true
+    },
+    "focused": {
+      "app_bundle_id": "com.apple.Safari"
+    },
+    "guards": {
+      "is_home_workspace": true,
+      "is_managed_bundle": true,
+      "snapshot_changed": true,
+      "popup_intent": false
+    }
+  },
+  "planner_context": {
+    "callback": {
+      "kind": "on_window",
+      "workspace": "w1",
+      "bundleId": "com.apple.Safari",
+      "argv": ["com.apple.Safari"],
+      "timestampMs": 1740743913000
+    },
+    "workspaceState": {
+      "workspace": "w1",
+      "browser": "zen",
+      "upnoteTiled": true,
+      "tiledOrder": [11410, 441, 80, 11670]
+    },
+    "focusedWindow": {
+      "windowId": 11446,
+      "workspace": "w1",
+      "bundleId": "com.apple.Safari",
+      "layout": "floating",
+      "title": "Start Page"
+    },
+    "windows": [
+      {
+        "windowId": 441,
+        "workspace": "w1",
+        "bundleId": "com.microsoft.VSCode",
+        "layout": "h_tiles",
+        "title": "AGENTS.md"
+      },
+      {
+        "windowId": 80,
+        "workspace": "w1",
+        "bundleId": "com.openai.codex",
+        "layout": "h_tiles",
+        "title": "Codex"
+      },
+      {
+        "windowId": 11410,
+        "workspace": "w1",
+        "bundleId": "com.getupnote.desktop",
+        "layout": "h_tiles",
+        "title": "UpNote"
+      },
+      {
+        "windowId": 11446,
+        "workspace": "w1",
+        "bundleId": "com.apple.Safari",
+        "layout": "floating",
+        "title": "Start Page"
+      }
+    ],
+    "guards": {
+      "isHomeWorkspace": true,
+      "isManagedBundle": true,
+      "isPopupIntent": false
+    }
+  },
+  "notes": [
+    "Raw callback payload from AeroSpace does not include full window snapshot; context is normalized from callback argument + state + log evidence.",
+    "This trace defines semantic expectations used by replay/parity tests.",
+    "planner_context is the canonical replay payload for the typed planner."
+  ]
+}

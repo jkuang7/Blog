@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BillingEntitlementLevel {
+  free
+  premium
+  lifetime
+}
+
+model BillingAccount {
+  id               String                  @id @default(cuid())
+  userId           String                  @unique
+  stripeCustomerId String                  @unique
+  entitlementLevel BillingEntitlementLevel @default(free)
+  premium          Boolean                 @default(false)
+  lifetime         Boolean                 @default(false)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+}
+
+model StripeWebhookEvent {
+  id          String   @id @default(cuid())
+  eventId     String   @unique
+  eventType   String
+  customerId  String?
+  processedAt DateTime @default(now())
+}

@@ -1,0 +1,81 @@
+{
+  "trace_id": "2026-02-28T12-00-25_on_focus_safari_closed",
+  "source": {
+    "callback": "on-focus-changed",
+    "entrypoint": "on_focus.sh",
+    "argv": [],
+    "workspace": "w1"
+  },
+  "normalized_context": {
+    "workspace": "w1",
+    "state_before": {
+      "browser": "safari",
+      "upnote_tiled": true
+    },
+    "window_inventory": {
+      "safari_primary_present": false,
+      "zen_primary_present": true
+    },
+    "guards": {
+      "is_home_workspace": true,
+      "requires_browser_promotion": true,
+      "focus_is_transient": false
+    }
+  },
+  "planner_context": {
+    "callback": {
+      "kind": "on_focus",
+      "workspace": "w1",
+      "argv": [],
+      "timestampMs": 1740744025000
+    },
+    "workspaceState": {
+      "workspace": "w1",
+      "browser": "safari",
+      "upnoteTiled": true,
+      "tiledOrder": [11410, 441, 80, 11446]
+    },
+    "focusedWindow": {
+      "windowId": 441,
+      "workspace": "w1",
+      "bundleId": "com.microsoft.VSCode",
+      "layout": "h_tiles",
+      "title": "AGENTS.md"
+    },
+    "windows": [
+      {
+        "windowId": 441,
+        "workspace": "w1",
+        "bundleId": "com.microsoft.VSCode",
+        "layout": "h_tiles",
+        "title": "AGENTS.md"
+      },
+      {
+        "windowId": 80,
+        "workspace": "w1",
+        "bundleId": "com.openai.codex",
+        "layout": "h_tiles",
+        "title": "Codex"
+      },
+      {
+        "windowId": 11410,
+        "workspace": "w1",
+        "bundleId": "com.getupnote.desktop",
+        "layout": "h_tiles",
+        "title": "UpNote"
+      },
+      {
+        "windowId": 9817,
+        "workspace": "w1",
+        "bundleId": "app.zen-browser.zen",
+        "layout": "h_tiles",
+        "title": "Zen"
+      }
+    ],
+    "guards": {
+      "isHomeWorkspace": true,
+      "isManagedBundle": true,
+      "isPopupIntent": false
+    }
+  }
+}

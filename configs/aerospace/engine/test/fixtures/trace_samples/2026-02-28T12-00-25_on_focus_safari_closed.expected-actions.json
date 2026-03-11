@@ -1,0 +1,32 @@
+{
+  "trace_id": "2026-02-28T12-00-25_on_focus_safari_closed",
+  "expected_semantic_actions": [
+    {
+      "order": 10,
+      "type": "STATE_MUTATION",
+      "target": "workspace_state",
+      "reason": "active-browser-closed-promote-zen",
+      "guard_result": "passed",
+      "details": {
+        "browser": "zen"
+      }
+    },
+    {
+      "order": 20,
+      "type": "WRITE_STATE",
+      "target": "w1.state",
+      "reason": "persist-state-after-focus-transition",
+      "guard_result": "passed",
+      "details": {}
+    },
+    {
+      "order": 30,
+      "type": "REBUILD",
+      "target": "workspace:w1",
+      "reason": "focus-transition-rebuild",
+      "guard_result": "passed",
+      "details": {
+      }
+    }
+  ]
+}

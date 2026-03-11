@@ -1,0 +1,15 @@
+11:58:33: on_window: com.apple.Safari opened in w1 (snapshot changed)
+11:58:33: on_window: delegating com.apple.Safari layout to ctrl+e
+11:58:33: balance: rebalancing w1
+11:58:33: rebuild_workspace w1 (browser=safari, upnote=true)
+11:58:34: showing safari
+11:58:34: showing UpNote
+11:58:34: hiding inactive zen
+11:58:34: rebuild: forced by user action
+11:58:34: full rebuild - untile then retile by precedence
+11:58:35: tiling browser safari (wid=11446)
+11:58:35: apply_sizing: screen_w=3440, upnote=true, vscode=441, codex=80
+11:58:35: apply_sizing: 4-col deltas(upnote=0,vscode=0,codex=-34,browser=34)
+11:58:35: restore overlays: non-browser floating windows raised
+11:58:35: balance: w1 balanced
+11:58:35: on_window: com.apple.Safari handled

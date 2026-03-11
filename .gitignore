@@ -1,44 +1,52 @@
-# Subprojects (have their own git)
-Repos/
-landing-pages/
-.claude/
-helix-work/
+# ignore everything by default
+*
 
-# Archived content
-Archive/
-Career/
+# let git traverse folders
+!*/
 
-# Blog files (canonical in Repos/Blog)
-astro.config.mjs
-package.json
-package-lock.json
-tsconfig.json
-README.md
-src/
-public/
+# unignore one exact file at repo root
+!/AGENTS.md
+!/.custom
+!/repos.txt
 
-# Dependencies
-node_modules/
+!/configs/
+!/configs/**
 
-# Build output
-dist/
+!/hooks/
+!/hooks/**
 
-# Env files
-.env*
+# unignore one exact directory and everything inside it
+!/scripts/
+!/scripts/**
 
-# Misc
-.DS_Store
-*.pem
-npm-debug.log*
-*.lock.yaml
-current*.txt
+!/.vscode/
+!/.vscode/**
 
-# Worktrees
-.worktrees/
+!/.githooks/
+!/.githooks/**
 
-# Astro
-.astro/
+!/tmux-codex/
+!/tmux-codex/**
 
-# Playwright
-.playwright-mcp/*
-.vscode/
+/.archive/
+/.archive/**
+/.codex/
+/.codex/**
+/.opencode/
+/.opencode/**
+/Repos/
+/Repos/**
+/helix-work/
+/helix-work/**
+/landing-pages/
+/landing-pages/**
+/Career/
+/Career/**
+/ASPIDA/
+/ASPIDA/**
+/.playwright-mcp/
+/.playwright-mcp/**
+/worktrees/
+/worktrees/**
+/current*.txt
+/configs/aerospace/engine/node_modules/

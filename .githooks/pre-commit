@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [ -z "$staged_files" ]; then
+  exit 0
+fi
+
+if ! printf '%s\n' "$staged_files" | grep -Eq '\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$'; then
+  exit 0
+fi
+
+"$(dirname "$0")/_run-lint.sh"

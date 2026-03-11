@@ -1,0 +1,454 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const DEV_ROOT = "/Users/jian/Dev";
+const REPOS_BOOTSTRAP = path.join(DEV_ROOT, "scripts", "repos-bootstrap.mjs");
+
+function makeTempDir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function writeFile(filePath, contents) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, contents);
+}
+
+function runScript(args, options = {}) {
+  return spawnSync(process.execPath, [REPOS_BOOTSTRAP, ...args], {
+    cwd: options.cwd ?? DEV_ROOT,
+    env: options.env ?? process.env,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 128,
+  });
+}
+
+function assertSuccess(result) {
+  assert.equal(result.status, 0, `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`);
+}
+
+function assertFailure(result, pattern) {
+  assert.notEqual(result.status, 0, `Expected failure but succeeded:\n${result.stdout}\n${result.stderr}`);
+  if (pattern) {
+    assert.match(`${result.stdout}\n${result.stderr}`, pattern);
+  }
+}
+
+function git(args, cwd) {
+  execFileSync("git", args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 64,
+  });
+}
+
+function createBareOrigin(tempRoot, name, files) {
+  const seedRoot = path.join(tempRoot, "seed", name);
+  const originPath = path.join(tempRoot, "origins", `${name}.git`);
+  fs.mkdirSync(seedRoot, { recursive: true });
+
+  for (const [relativePath, contents] of Object.entries(files)) {
+    writeFile(path.join(seedRoot, relativePath), contents);
+  }
+
+  git(["init"], seedRoot);
+  git(["config", "user.name", "Test User"], seedRoot);
+  git(["config", "user.email", "test@example.com"], seedRoot);
+  git(["add", "."], seedRoot);
+  git(["commit", "-m", "initial"], seedRoot);
+  git(["branch", "-M", "main"], seedRoot);
+  git(["init", "--bare", originPath], tempRoot);
+  git(["remote", "add", "origin", originPath], seedRoot);
+  git(["push", "--set-upstream", "origin", "main"], seedRoot);
+
+  return originPath;
+}
+
+function createDevLayout(tempRoot) {
+  const devRoot = path.join(tempRoot, "Dev");
+  const reposRoot = path.join(devRoot, "Repos");
+  const configPath = path.join(devRoot, "repos.txt");
+  fs.mkdirSync(reposRoot, { recursive: true });
+  return { devRoot, reposRoot, configPath };
+}
+
+function createFakeTooling(tempRoot) {
+  const binDir = path.join(tempRoot, "fake-bin");
+  const logPath = path.join(tempRoot, "tool.log");
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const shellLogger = `#!/bin/sh
+set -eu
+LOG="\${TEST_BOOTSTRAP_LOG:?}"
+printf '%s|%s|%s\\n' "$(basename "$0")" "$(pwd)" "$*" >> "$LOG"
+exit 0
+`;
+
+  for (const tool of ["npm", "pnpm", "yarn", "bun"]) {
+    writeFile(path.join(binDir, tool), shellLogger);
+    fs.chmodSync(path.join(binDir, tool), 0o755);
+  }
+
+  writeFile(
+    path.join(binDir, "python3"),
+    `#!/bin/sh
+set -eu
+LOG="\${TEST_BOOTSTRAP_LOG:?}"
+printf 'python3|%s|%s\\n' "$(pwd)" "$*" >> "$LOG"
+if [ "$#" -ge 3 ] && [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  target="$3"
+  mkdir -p "$target/bin"
+  cat > "$target/bin/python" <<'EOF'
+#!/bin/sh
+set -eu
+LOG="\${TEST_BOOTSTRAP_LOG:?}"
+printf 'venv-python|%s|%s\\n' "$(pwd)" "$*" >> "$LOG"
+exit 0
+EOF
+  cat > "$target/bin/pip" <<'EOF'
+#!/bin/sh
+set -eu
+LOG="\${TEST_BOOTSTRAP_LOG:?}"
+printf 'venv-pip|%s|%s\\n' "$(pwd)" "$*" >> "$LOG"
+exit 0
+EOF
+  chmod +x "$target/bin/python" "$target/bin/pip"
+fi
+exit 0
+`,
+  );
+  fs.chmodSync(path.join(binDir, "python3"), 0o755);
+
+  return {
+    logPath,
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      TEST_BOOTSTRAP_LOG: logPath,
+    },
+  };
+}
+
+function readLog(logPath) {
+  if (!fs.existsSync(logPath)) {
+    return [];
+  }
+  return fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean);
+}
+
+test("generate writes sorted dir-tab-url entries and skips missing origin/non-standalone repos", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-generate-");
+  const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
+
+  try {
+    const blogOrigin = createBareOrigin(tempRoot, "Blog", {
+      "package.json": JSON.stringify({ name: "blog" }, null, 2),
+    });
+    const banksyOrigin = createBareOrigin(tempRoot, "Banksy", {
+      "requirements.txt": "requests\n",
+    });
+    const stonksOrigin = createBareOrigin(tempRoot, "stonks-web", {
+      "package.json": JSON.stringify({ name: "stonks-web" }, null, 2),
+    });
+
+    git(["clone", blogOrigin, path.join(reposRoot, "Blog")], tempRoot);
+    git(["clone", banksyOrigin, path.join(reposRoot, "Banksy")], tempRoot);
+    git(["clone", stonksOrigin, path.join(reposRoot, "stonks-web-t3")], tempRoot);
+
+    fs.mkdirSync(path.join(reposRoot, ".memory"), { recursive: true });
+    fs.mkdirSync(path.join(reposRoot, "Repos"), { recursive: true });
+    git(["init"], devRoot);
+    git(["config", "user.name", "Test User"], devRoot);
+    git(["config", "user.email", "test@example.com"], devRoot);
+    writeFile(path.join(devRoot, "README.md"), "root");
+    git(["add", "."], devRoot);
+    git(["commit", "-m", "root"], devRoot);
+
+    fs.mkdirSync(path.join(reposRoot, "paycheck"), { recursive: true });
+    git(["init"], path.join(reposRoot, "paycheck"));
+    git(["config", "user.name", "Test User"], path.join(reposRoot, "paycheck"));
+    git(["config", "user.email", "test@example.com"], path.join(reposRoot, "paycheck"));
+    writeFile(path.join(reposRoot, "paycheck", "README.md"), "paycheck");
+    git(["add", "."], path.join(reposRoot, "paycheck"));
+    git(["commit", "-m", "init"], path.join(reposRoot, "paycheck"));
+
+    writeFile(configPath, "old-config\n");
+
+    const result = runScript(["generate", "--dev-root", devRoot]);
+    assertSuccess(result);
+
+    const config = fs.readFileSync(configPath, "utf8");
+    assert.match(config, /Banksy\t.*origins\/Banksy\.git/);
+    assert.match(config, /Blog\t.*origins\/Blog\.git/);
+    assert.match(config, /stonks-web-t3\t.*origins\/stonks-web\.git/);
+    assert.doesNotMatch(config, /paycheck/);
+    assert.match(result.stderr, /missing remote\.origin\.url/);
+
+    const lines = config
+      .split(/\r?\n/)
+      .filter((line) => line !== "" && !line.startsWith("#"));
+    assert.deepEqual(lines.map((line) => line.split("\t")[0]), ["Banksy", "Blog", "stonks-web-t3"]);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("generate leaves existing config untouched when zero valid repos are found", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-generate-empty-");
+  const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
+
+  try {
+    writeFile(configPath, "keep-me\n");
+    fs.mkdirSync(path.join(reposRoot, ".memory"), { recursive: true });
+
+    const result = runScript(["generate", "--dev-root", devRoot]);
+    assertFailure(result, /No valid managed repos found/);
+    assert.equal(fs.readFileSync(configPath, "utf8"), "keep-me\n");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap clones missing repos and runs npm and pnpm installs", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-node-");
+  const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
+  const tooling = createFakeTooling(tempRoot);
+
+  try {
+    const blogOrigin = createBareOrigin(tempRoot, "Blog", {
+      "package.json": JSON.stringify({ name: "blog", scripts: { build: "echo build", check: "echo check" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const scaffoldOrigin = createBareOrigin(tempRoot, "stonks-web-scaffold", {
+      "package.json": JSON.stringify(
+        { name: "scaffold", packageManager: "pnpm@10.14.0", scripts: { verify: "echo verify", build: "echo build" } },
+        null,
+        2,
+      ),
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    });
+
+    writeFile(
+      configPath,
+      [
+        ...[
+          "# Managed repositories - one per line",
+          "# Format: <directory>\\t<remote-origin-url>",
+          "",
+        ],
+        `Blog\t${blogOrigin}`,
+        `stonks-web-scaffold\t${scaffoldOrigin}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = runScript(["bootstrap", "--dev-root", devRoot], { env: tooling.env });
+    assertSuccess(result);
+
+    assert.equal(fs.existsSync(path.join(reposRoot, "Blog", "package.json")), true);
+    assert.equal(fs.existsSync(path.join(reposRoot, "stonks-web-scaffold", "package.json")), true);
+
+    const logLines = readLog(tooling.logPath);
+    assert(logLines.some((line) => line.includes("npm|") && line.endsWith("|install")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("pnpm|") && line.endsWith("|install")), logLines.join("\n"));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap creates venvs and installs requirements.txt and pyproject repos", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-python-");
+  const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
+  const tooling = createFakeTooling(tempRoot);
+
+  try {
+    const banksyOrigin = createBareOrigin(tempRoot, "Banksy", {
+      "requirements.txt": "requests\n",
+    });
+    const deckOrigin = createBareOrigin(tempRoot, "DeckFoundry", {
+      "pyproject.toml": [
+        "[project]",
+        "name = 'deckfoundry'",
+        "version = '0.1.0'",
+        "",
+        "[project.optional-dependencies]",
+        "dev = ['pytest']",
+        "",
+      ].join("\n"),
+    });
+
+    writeFile(
+      configPath,
+      [
+        "# Managed repositories - one per line",
+        "# Format: <directory>\\t<remote-origin-url>",
+        "",
+        `Banksy\t${banksyOrigin}`,
+        `DeckFoundry\t${deckOrigin}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = runScript(["bootstrap", "--dev-root", devRoot], { env: tooling.env });
+    assertSuccess(result);
+
+    const logLines = readLog(tooling.logPath);
+    assert(logLines.some((line) => line.includes("python3|") && line.includes("-m venv .venv")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("venv-pip|") && line.endsWith("|install -r requirements.txt")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("venv-pip|") && line.endsWith("|install -e .[dev]")), logLines.join("\n"));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap sets up existing matching repos and skips origin mismatch and non-repo collisions", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-existing-");
+  const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
+  const tooling = createFakeTooling(tempRoot);
+
+  try {
+    const goodOrigin = createBareOrigin(tempRoot, "Blog", {
+      "package.json": JSON.stringify({ name: "blog", scripts: { check: "echo check" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const wrongOrigin = createBareOrigin(tempRoot, "DeckFoundry", {
+      "package.json": JSON.stringify({ name: "deck" }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const expectedOrigin = createBareOrigin(tempRoot, "ExpectedDeck", {
+      "package.json": JSON.stringify({ name: "expected-deck" }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+
+    git(["clone", goodOrigin, path.join(reposRoot, "Blog")], tempRoot);
+    git(["clone", wrongOrigin, path.join(reposRoot, "DeckFoundry")], tempRoot);
+    fs.mkdirSync(path.join(reposRoot, "Collision"), { recursive: true });
+    writeFile(path.join(reposRoot, "Collision", "README.md"), "not a repo");
+
+    writeFile(
+      configPath,
+      [
+        "# Managed repositories - one per line",
+        "# Format: <directory>\\t<remote-origin-url>",
+        "",
+        `Blog\t${goodOrigin}`,
+        `DeckFoundry\t${expectedOrigin}`,
+        `Collision\t${goodOrigin}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = runScript(["bootstrap", "--dev-root", devRoot], { env: tooling.env });
+    assertSuccess(result);
+
+    const logLines = readLog(tooling.logPath);
+    assert(logLines.some((line) => line.includes(`${path.join(reposRoot, "Blog")}`) && line.endsWith("|install")), logLines.join("\n"));
+    assert.match(`${result.stdout}\n${result.stderr}`, /origin mismatch/);
+    assert.match(`${result.stdout}\n${result.stderr}`, /not a standalone git repo/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap --with-build and --with-check choose the expected scripts", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-build-check-");
+  const { devRoot, configPath } = createDevLayout(tempRoot);
+  const tooling = createFakeTooling(tempRoot);
+
+  try {
+    const verifyOrigin = createBareOrigin(tempRoot, "verify-repo", {
+      "package.json": JSON.stringify(
+        { name: "verify-repo", scripts: { verify: "echo verify", build: "echo build" } },
+        null,
+        2,
+      ),
+      "package-lock.json": "{}\n",
+    });
+    const checkOrigin = createBareOrigin(tempRoot, "check-repo", {
+      "package.json": JSON.stringify({ name: "check-repo", scripts: { check: "echo check" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const typecheckOrigin = createBareOrigin(tempRoot, "type-repo", {
+      "package.json": JSON.stringify({ name: "type-repo", scripts: { typecheck: "echo type" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const testOrigin = createBareOrigin(tempRoot, "test-repo", {
+      "package.json": JSON.stringify({ name: "test-repo", scripts: { test: "echo test" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+    const noBuildOrigin = createBareOrigin(tempRoot, "nobuild-repo", {
+      "package.json": JSON.stringify({ name: "nobuild-repo", scripts: { check: "echo check" } }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+
+    writeFile(
+      configPath,
+      [
+        "# Managed repositories - one per line",
+        "# Format: <directory>\\t<remote-origin-url>",
+        "",
+        `verify-repo\t${verifyOrigin}`,
+        `check-repo\t${checkOrigin}`,
+        `type-repo\t${typecheckOrigin}`,
+        `test-repo\t${testOrigin}`,
+        `nobuild-repo\t${noBuildOrigin}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = runScript(["bootstrap", "--dev-root", devRoot, "--with-build", "--with-check"], {
+      env: tooling.env,
+    });
+    assertSuccess(result);
+
+    const logLines = readLog(tooling.logPath);
+    assert(logLines.some((line) => line.endsWith("|run build")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("verify-repo") && line.endsWith("|run verify")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("check-repo") && line.endsWith("|run check")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("type-repo") && line.endsWith("|run typecheck")), logLines.join("\n"));
+    assert(logLines.some((line) => line.includes("test-repo") && line.endsWith("|run test")), logLines.join("\n"));
+    assert.match(result.stdout, /build skipped \(no build step\)/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap parser fails on malformed and duplicate config lines", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-parse-");
+  const { devRoot, configPath } = createDevLayout(tempRoot);
+
+  try {
+    writeFile(
+      configPath,
+      [
+        "# Managed repositories - one per line",
+        "bad line",
+        "Blog\tone",
+        "Blog\ttwo",
+        "",
+      ].join("\n"),
+    );
+
+    const malformed = runScript(["bootstrap", "--dev-root", devRoot]);
+    assertFailure(malformed, /expected "<directory>\\t<remote-origin-url>"/);
+
+    writeFile(
+      configPath,
+      [
+        "# Managed repositories - one per line",
+        "Blog\tone",
+        "Blog\ttwo",
+        "",
+      ].join("\n"),
+    );
+
+    const duplicate = runScript(["bootstrap", "--dev-root", devRoot]);
+    assertFailure(duplicate, /duplicate directory "Blog"/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});

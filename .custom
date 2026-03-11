@@ -1,0 +1,185 @@
+#!/bin/zsh
+
+# SETUP
+# -----
+# Both Mac Mini and MacBook now use ~/Dev
+# .zshrc sources: $HOME/Dev/.custom
+
+#=======================================
+# Shell Configuration
+#=======================================
+_this="${(%):-%x}"
+[[ -z "$_this" ]] && _this="$0"
+export DEV="$(cd "$(dirname "$_this")" && pwd)"
+unset _this
+
+alias cdd='cd $DEV'
+alias ze="code ~/.zshrc"
+alias zs='source ~/.zprofile && source ~/.zshrc'
+alias ce='code "$DEV/.custom"'
+alias cs='source "$DEV/.custom"'
+
+# Intrinsic Value calculator
+alias iv='(cd $DEV/Repos/stonks && .venv/bin/python3 iv.py)'
+
+# Paycheck split calculator
+alias pay='"$DEV/Repos/split/pay"'
+
+#=======================================
+# NVM
+#=======================================
+export NVM_DIR="$HOME/.nvm"
+[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && \. "/opt/homebrew/opt/nvm/nvm.sh"
+[ -s "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm" ] && \. "/opt/homebrew/opt/nvm/etc/bash_completion.d/nvm"
+
+#=======================================
+# Path & Environment
+#=======================================
+export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH"
+export NODE_OPTIONS=--max-http-header-size=32768
+export PATH="$HOME/.local/bin:$PATH"
+
+#=======================================
+# General Aliases
+#=======================================
+alias python='python3'
+alias c='clear'
+alias co='code'
+alias un='unalias'
+alias sshjk='ssh -t jian@Mac-mini "cd ~/Dev && clear && exec zsh -l"'
+
+#=======================================
+# Codex shortcuts
+#=======================================
+alias oc='codex'
+
+# Avoid alias/function name conflict when this file is re-sourced.
+unalias ol 2>/dev/null
+unalias olh 2>/dev/null
+unalias cl 2>/dev/null
+unalias clh 2>/dev/null
+unalias clls 2>/dev/null
+
+cl() {
+    # Standalone tmux-codex entrypoint.
+    python3 /Users/jian/Dev/tmux-codex/bin/cl "$@"
+}
+clls() {
+    cl ls "$@"
+}
+
+# Helix-work Codex shortcut
+alias clh='codex "$DEV/helix-work"'
+
+alias aero='pgrep -x AeroSpace >/dev/null || open -a AeroSpace; sleep 0.5; aerospace reload-config 2>/dev/null'
+alias boostrap='node "$DEV/scripts/repos-bootstrap.mjs" generate && node "$DEV/scripts/repos-bootstrap.mjs" bootstrap'
+
+#=======================================
+# Development Aliases
+#=======================================
+alias recert='cd $DEV/Repos/recert && source .venv/bin/activate && recert'
+#=======================================
+# Package Manager Aliases
+#=======================================
+alias p='pnpm'
+alias n='npm'
+
+#=======================================
+# Infrastructure Aliases
+#=======================================
+alias t='terraform'
+alias tfg='terraform graph > graph.dot'
+
+#=======================================
+# Git Aliases
+#=======================================
+alias g='git'
+alias ga='git add'
+alias gall='git add . && git status'
+alias gb='git branch'
+alias gbd='git branch -D'
+alias gbc='git checkout -b'
+alias gce='git checkout'
+alias gc='git commit -m'
+alias gca='git commit -am'
+alias gs='git status'
+alias gl='git log'
+alias gd='git diff'
+alias gdc='git diff --cached'
+alias gp='git push'
+alias gf='git fetch --prune'
+alias gbr='git branch -r'
+alias gcl='git clone'
+alias grd='git push origin --delete'
+alias gr='git reset'
+alias gst='git stash'
+alias gra='git rebase --abort'
+alias gsqm='git merge --squash --no-commit'
+alias gurl='echo "$(git config --get remote.origin.url | sed "s/\.git$//" | sed "s/:/\//" | sed "s/^git@/https:\/\//")/-/tree/$(git branch --show-current)?ref_type=heads"; echo "$(git config --get remote.origin.url | sed "s/\.git$//" | sed "s/:/\//" | sed "s/^git@/https:\/\//")/-/pipelines?ref=$(git branch --show-current | sed "s/\//%2F/g")"'
+
+#=======================================
+# Functions
+#=======================================
+
+ti() {
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: ti <env_number>"
+        echo "Example: ti 1"
+        return 1
+    fi
+    local env_num="$1"
+    [[ -z "$CURR" ]] && { echo "Error: CURR environment variable not set"; return 1; }
+    cd "$CURR/terraform" || { echo "Error: Could not find terraform directory at $CURR/terraform"; return 1; }
+    terraform init -backend-config="backend-dev${env_num}.hcl" -reconfigure
+}
+
+newapp() {
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: newapp <folder-name-or-path> [create-jian-app args...]"
+        echo "Example: newapp my-app"
+        echo "Example: newapp /Users/jian/Dev/Repos/my-app --skip-verify"
+        return 1
+    fi
+
+    local target="$1"
+    shift
+
+    if [[ "$target" != /* && "$target" != */* ]]; then
+        target="$DEV/Repos/$target"
+    fi
+
+    node "$DEV/scripts/create-jian-app.mjs" "$target" "$@"
+}
+
+repos() {
+    echo "Scanning repos..."
+    local output=""
+    # Check all git repos: Dev root, .opencode, and everything in Repos/
+    for dir in "$DEV" "$DEV/.opencode" "$DEV/Repos"/*/; do
+        if [ -d "$dir/.git" ]; then
+            local name=$(basename "$dir")
+            [[ "$name" == "Dev" ]] && name="Dev (root)"
+            local git_status=$(git -C "$dir" status -s)
+            if [ -n "$git_status" ]; then
+                local diff=$(git -C "$dir" diff --stat 2>/dev/null)
+                output+="=== $name ===
+$git_status
+$diff
+
+"
+            fi
+        fi
+    done
+
+    if [ -z "$output" ]; then
+        echo "All repos clean - no uncommitted changes"
+    else
+        echo "Summarizing changes..."
+        opencode --append-system-prompt "Output plain text only. Never use markdown: no #, ##, **, \`, ---, or - bullets. Use ALLCAPS for emphasis." \
+            -p "Git changes across repos:
+
+$output
+
+Summarize briefly. For each repo: what changed, intentional or drift? End with TLDR - one sentence per repo."
+    fi
+}

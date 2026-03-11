@@ -1,0 +1,14 @@
+captured_at=2026-02-28 13:48:10 EST
+focused_window=80|w1|com.openai.codex|h_tiles|Codex
+workspace_all=w1
+workspace_focused=w1
+state_w1=BROWSER=zen;UPNOTE_TILED=true;TILED_ORDER=11410,441,80,11670
+windows_w1=
+441|com.microsoft.VSCode|h_tiles|AGENTS.md — Dev
+80|com.openai.codex|h_tiles|Codex
+11607|com.google.Chrome|floating|New Tab - Pinned - Google Chrome
+11621|com.apple.Safari|floating|Start Page
+9734|com.apple.Terminal|floating|jian — -zsh — 80×24
+11410|com.getupnote.desktop|h_tiles|UpNote
+11670|app.zen-browser.zen|h_tiles|AeroSpace Refactor Plan Review
+11554|NULL-APP-BUNDLE-ID|floating|TimeTrack

@@ -1,0 +1,26 @@
+{
+  "name": "@opencode/aerospace-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run test/unit",
+    "test:integration-mock": "vitest run test/integration",
+    "test:parity": "vitest run test/parity",
+    "plan:callback": "tsx src/cli/plan-callback.ts",
+    "replay": "tsx src/cli/replay.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "trace_id": "2026-02-28T11-41_fullscreen_legacy_loop",
+  "source": {
+    "callback": "legacy-hammerspoon-window-watcher",
+    "entrypoint": "fullscreen_fix.sh",
+    "workspace": "w1"
+  },
+  "normalized_context": {
+    "policy": "no-auto-retile-on-fullscreen-transitions",
+    "legacy_signal": {
+      "browser_x": 0,
+      "trigger_count_in_short_window": 4
+    }
+  },
+  "expected_post_policy_behavior": {
+    "fullscreen_callbacks_trigger_rebuild": false,
+    "manual_recovery_keybinding": "ctrl-e"
+  }
+}

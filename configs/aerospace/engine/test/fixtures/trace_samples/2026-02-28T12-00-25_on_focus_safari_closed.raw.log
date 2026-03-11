@@ -1,0 +1,11 @@
+12:00:25: on_focus: Safari closed, promoting Zen
+12:00:25: rebuild_workspace w1 (browser=zen, upnote=true)
+12:00:25: showing zen
+12:00:25: showing UpNote
+12:00:25: rebuild: forced by user action
+12:00:25: rebuild: tiled order changed (11410,441,80,11446 -> 11410,441,80,9817)
+12:00:25: full rebuild - untile then retile by precedence
+12:00:26: tiling browser zen (wid=9817)
+12:00:26: apply_sizing: screen_w=3440, upnote=true, vscode=441, codex=80
+12:00:26: apply_sizing: 4-col deltas(upnote=0,vscode=0,codex=-34,browser=34)
+12:00:27: restore overlays: non-browser floating windows raised

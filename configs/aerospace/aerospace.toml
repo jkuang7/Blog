@@ -1,0 +1,75 @@
+# AeroSpace Configuration
+# Source of truth: /Users/jian/Dev/configs/aerospace/aerospace.toml
+# Symlinked to: ~/.aerospace.toml
+
+start-at-login = true
+
+# =============================================================================
+# CALLBACKS
+# =============================================================================
+
+# Focus/workspace change handler
+on-focus-changed = ['exec-and-forget ~/.config/aerospace/on_focus.sh']
+
+# =============================================================================
+# DEFAULT: All windows start floating and move to focused workspace
+# =============================================================================
+
+[[on-window-detected]]
+check-further-callbacks = true
+run = ['layout floating', 'exec-and-forget ~/.config/aerospace/move_to_focused.sh']
+
+# =============================================================================
+# HOME APPS: Trigger on window open
+# =============================================================================
+
+[[on-window-detected]]
+if.app-id = 'com.microsoft.VSCode'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.microsoft.VSCode']
+
+[[on-window-detected]]
+if.app-id = 'app.zen-browser.zen'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh app.zen-browser.zen']
+
+[[on-window-detected]]
+if.app-id = 'com.apple.Safari'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.apple.Safari']
+
+[[on-window-detected]]
+if.app-id = 'com.getupnote.desktop'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.getupnote.desktop']
+
+[[on-window-detected]]
+if.app-id = 'com.openai.codex'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.openai.codex']
+
+# =============================================================================
+# KEYBINDINGS
+# =============================================================================
+
+[mode.main.binding]
+# Workspace layouts
+ctrl-1 = 'exec-and-forget ~/.config/aerospace/switch_ws.sh w1'     # Switch to w1
+ctrl-w = 'exec-and-forget ~/.config/aerospace/reset_ws.sh'         # Reset to workspace defaults
+ctrl-e = 'exec-and-forget ~/.config/aerospace/balance.sh'          # Rebalance columns
+ctrl-q = 'layout floating tiling'                                  # Pin/unpin window
+
+# Navigation (vim-style)
+alt-h = 'focus left'
+alt-j = 'focus down'
+alt-k = 'focus up'
+alt-l = 'focus right'
+
+# Move windows
+alt-shift-h = 'move left'
+alt-shift-j = 'move down'
+alt-shift-k = 'move up'
+alt-shift-l = 'move right'
+
+# Resize
+alt-minus = 'resize smart -50'
+alt-equal = 'resize smart +50'
+
+# Layout
+ctrl-f = 'fullscreen'
+ctrl-shift-v = 'exec-and-forget ~/.config/aerospace/video_mode.sh' # Toggle video mode (Zen 100%)

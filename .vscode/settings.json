@@ -1,0 +1,10 @@
+{
+  "git.decorations.enabled": true,
+  "scm.defaultViewMode": "tree",
+  "workbench.colorCustomizations": {
+    "gitDecoration.ignoredResourceForeground": "#cccccc"
+  },
+  "eslint.useFlatConfig": true,
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+  "eslint.workingDirectories": [{ "mode": "auto" }]
+}

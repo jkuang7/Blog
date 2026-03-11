@@ -1,0 +1,49 @@
+{
+  "trace_id": "2026-02-28T11-58-33_on_window_safari_open",
+  "expected_semantic_actions": [
+    {
+      "order": 10,
+      "type": "STATE_MUTATION",
+      "target": "workspace_state",
+      "reason": "managed-window-open",
+      "guard_result": "passed",
+      "details": {
+        "browser": "safari",
+        "upnoteTiled": true
+      }
+    },
+    {
+      "order": 20,
+      "type": "WRITE_STATE",
+      "target": "w1.state",
+      "reason": "persist-state-before-balance",
+      "guard_result": "passed",
+      "details": {
+        "browser": "safari",
+        "upnoteTiled": true
+      }
+    },
+    {
+      "order": 30,
+      "type": "DELEGATE",
+      "target": "balance",
+      "reason": "standardized-retile-path",
+      "guard_result": "passed",
+      "details": {
+        "mode": "ctrl-e-path"
+      }
+    },
+    {
+      "order": 40,
+      "type": "REBUILD",
+      "target": "workspace:w1",
+      "reason": "delegate-balance-rebuild",
+      "guard_result": "passed",
+      "details": {
+        "activeBrowser": "safari",
+        "inactiveBrowserHidden": "app.zen-browser.zen",
+        "layoutProfile": "4-col"
+      }
+    }
+  ]
+}
