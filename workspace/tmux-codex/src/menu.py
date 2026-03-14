@@ -588,6 +588,41 @@ class SessionMenu:
                 regular.append((i, sess))
         return regular, runners
 
+    def _safe_curses_setup(self) -> None:
+        """Best-effort curses setup for terminals with partial capability support."""
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            pass
+
+    def _safe_addstr(self, stdscr, row: int, col: int, text: str, *attrs) -> bool:
+        """Write within screen bounds without throwing on narrow terminals."""
+        try:
+            max_y, max_x = stdscr.getmaxyx()
+        except curses.error:
+            return False
+
+        if row < 0 or row >= max_y or col >= max_x:
+            return False
+
+        available = max_x - col
+        if available <= 0:
+            return False
+
+        rendered = text if len(text) <= available else text[: max(0, available - 1)]
+        try:
+            if attrs:
+                stdscr.addstr(row, col, rendered, *attrs)
+            else:
+                stdscr.addstr(row, col, rendered)
+            return True
+        except curses.error:
+            return False
+
     def _draw_menu(self, stdscr, mode: str = "normal", kill_input: str = "",
                    tag_session: str = "", tag_input: str = ""):
         """Draw the menu on screen."""
@@ -608,28 +643,28 @@ class SessionMenu:
         spinner = spinner_chars[self._poll_count % len(spinner_chars)]
 
         row = 1
-        stdscr.addstr(row, 2, "Codex Sessions", curses.A_BOLD)
-        stdscr.addstr(row, 22, f"{spinner} [{poll_time}]", curses.A_DIM)
+        self._safe_addstr(stdscr, row, 2, "Codex Sessions", curses.A_BOLD)
+        self._safe_addstr(stdscr, row, 22, f"{spinner} [{poll_time}]", curses.A_DIM)
         row += 2
 
         todo_count = self._count_todo_tasks()
         elapsed_info = self._get_runner_elapsed()
 
         if todo_count > 0:
-            stdscr.addstr(row, 2, f"{todo_count} tasks queued", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, f"{todo_count} tasks queued", curses.A_DIM)
             row += 1
         if elapsed_info:
-            stdscr.addstr(row, 2, elapsed_info, curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, elapsed_info, curses.A_DIM)
             row += 1
         if todo_count > 0 or elapsed_info:
             row += 1
 
         if not self.sessions:
-            stdscr.addstr(row, 2, "(no sessions)", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, "(no sessions)", curses.A_DIM)
             row += 1
         else:
             if regular_sessions:
-                stdscr.addstr(row, 2, "Sessions (1-9)", curses.A_DIM)
+                self._safe_addstr(stdscr, row, 2, "Sessions (1-9)", curses.A_DIM)
                 row += 1
                 for num, (orig_idx, sess) in enumerate(regular_sessions, 1):
                     if num > 9:
@@ -638,14 +673,14 @@ class SessionMenu:
                     display = self._get_display_title(orig_idx, sess)
                     line = f"  {num}) {attention}{display}"
                     if attention:
-                        stdscr.addstr(row, 2, line, curses.A_BOLD)
+                        self._safe_addstr(stdscr, row, 2, line, curses.A_BOLD)
                     else:
-                        stdscr.addstr(row, 2, line)
+                        self._safe_addstr(stdscr, row, 2, line)
                     row += 1
 
             if runner_sessions:
                 row += 1
-                stdscr.addstr(row, 2, "Runners (a-z)", curses.A_DIM)
+                self._safe_addstr(stdscr, row, 2, "Runners (a-z)", curses.A_DIM)
                 row += 1
                 for idx, (_orig_idx, sess) in enumerate(runner_sessions):
                     if idx >= 26:
@@ -653,7 +688,7 @@ class SessionMenu:
                     letter = chr(ord("a") + idx)
                     status = self._get_runner_status(sess)
                     display = sess.replace("runner-", "") if sess != "runner" else "(all)"
-                    stdscr.addstr(row, 2, f"  {letter}) {status} {display}")
+                    self._safe_addstr(stdscr, row, 2, f"  {letter}) {status} {display}")
                     row += 1
 
         row += 1
@@ -664,19 +699,19 @@ class SessionMenu:
         # Help line
         if mode == "kill":
             if kill_input:
-                stdscr.addstr(row, 2, f"k{kill_input}_ (Enter=confirm, Esc=cancel)", curses.A_DIM)
+                self._safe_addstr(stdscr, row, 2, f"k{kill_input}_ (Enter=confirm, Esc=cancel)", curses.A_DIM)
             else:
-                stdscr.addstr(row, 2, "k_ (1-9 a-z mix | r=all runners | Esc=cancel)", curses.A_DIM)
+                self._safe_addstr(stdscr, row, 2, "k_ (1-9 a-z mix | r=all runners | Esc=cancel)", curses.A_DIM)
         elif mode == "tag_select":
-            stdscr.addstr(row, 2, "t_ (1-9 to select | Esc=cancel)", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, "t_ (1-9 to select | Esc=cancel)", curses.A_DIM)
         elif mode == "tag_input":
             # Show current tag for reference
             tags = self._load_tags()
             current = tags.get(tag_session, "")
             hint = f" [was: {current}]" if current else ""
-            stdscr.addstr(row, 2, f"Tag: {tag_input}_{hint} (Enter=save, Esc=cancel)", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, f"Tag: {tag_input}_{hint} (Enter=save, Esc=cancel)", curses.A_DIM)
         else:
-            stdscr.addstr(row, 2, "n=new | r=runner | t=tag | k=kill | q=quit", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, "n=new | r=runner | t=tag | k=kill | q=quit", curses.A_DIM)
 
         stdscr.refresh()
 
@@ -685,8 +720,7 @@ class SessionMenu:
 
         Returns (selected projects, complexity), or None if cancelled.
         """
-        curses.curs_set(0)
-        curses.use_default_colors()
+        self._safe_curses_setup()
         stdscr.timeout(100)  # Fast refresh for responsive UI
 
         projects = self._get_all_projects()  # [(name, todo_count), ...]
@@ -716,7 +750,7 @@ class SessionMenu:
             active_projects = self._active_runner_projects(project_names)
             enabled = {name for name in enabled if name not in active_projects}
 
-            stdscr.addstr(row, 2, "Start Runners - Select Projects", curses.A_BOLD)
+            self._safe_addstr(stdscr, row, 2, "Start Runners - Select Projects", curses.A_BOLD)
             row += 2
 
             # Draw project list with checkboxes
@@ -736,12 +770,13 @@ class SessionMenu:
                 num = str(idx + 1) if idx < 9 else " "
 
                 line = f"  {num}) {checkbox} {name:<20} {count_str}"
-                stdscr.addstr(row, 2, line, attr)
+                self._safe_addstr(stdscr, row, 2, line, attr)
                 row += 1
 
             row += 1
             # Help line
-            stdscr.addstr(
+            self._safe_addstr(
+                stdscr,
                 row,
                 2,
                 "Space=toggle | a=all | n=none | Enter=start | Esc=cancel (locked=running)",
@@ -883,15 +918,28 @@ class SessionMenu:
 
     def _read_fallback_project_selector_input(self) -> str:
         """Read one fallback picker action, supporting arrows when attached to a TTY."""
-        if not sys.stdin.isatty():
-            return input("\nToggle or action: ").strip().lower()
-
         print("\nToggle or action: ", end="", flush=True)
-        fd = sys.stdin.fileno()
+        fd: int | None = None
+        using_tty_fd = False
+        if sys.stdin.isatty():
+            fd = sys.stdin.fileno()
+        else:
+            try:
+                fd = os.open("/dev/tty", os.O_RDWR)
+                using_tty_fd = True
+            except OSError:
+                return input().strip().lower()
+
         old_settings = termios.tcgetattr(fd)
+
+        def _read_char() -> str:
+            if using_tty_fd:
+                return os.read(fd, 1).decode("utf-8", errors="ignore")
+            return sys.stdin.read(1)
+
         try:
             tty.setraw(fd)
-            first = sys.stdin.read(1)
+            first = _read_char()
             if first in ("\r", "\n"):
                 print()
                 return ""
@@ -899,8 +947,8 @@ class SessionMenu:
                 print()
                 return "__toggle__"
             if first == "\x1b":
-                second = sys.stdin.read(1)
-                third = sys.stdin.read(1)
+                second = _read_char()
+                third = _read_char()
                 print()
                 if second == "[" and third == "A":
                     return "__up__"
@@ -911,6 +959,8 @@ class SessionMenu:
             return first.strip().lower()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if using_tty_fd:
+                os.close(fd)
 
     def _start_runner_session(self) -> str | None:
         """Start loop runners for selected projects using project picker.
@@ -1012,8 +1062,7 @@ class SessionMenu:
 
     def _run_curses(self, stdscr):
         """Main curses loop."""
-        curses.curs_set(0)
-        curses.use_default_colors()
+        self._safe_curses_setup()
         stdscr.timeout(1000)  # 1 second poll - each spinner change = one poll
 
         mode = "normal"

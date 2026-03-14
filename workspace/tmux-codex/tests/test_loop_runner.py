@@ -19,6 +19,7 @@ from src.main import parse_loop_args
 from src.runner_loop import (
     _build_prompt,
     _log_line,
+    _runner_idle_grace_seconds,
     _submit_runner_prompt,
     build_runner_paths,
     detect_project_stack,
@@ -64,6 +65,12 @@ class LoopArgsTests(unittest.TestCase):
     def test_parse_loop_invalid_complexity(self):
         with self.assertRaises(ValueError):
             parse_loop_args(["blog", "--complexity", "extreme"])
+
+    def test_runner_idle_grace_disabled_for_zero_poll(self):
+        self.assertEqual(_runner_idle_grace_seconds(1.0, 0), 0.0)
+
+    def test_runner_idle_grace_enabled_for_real_poll(self):
+        self.assertEqual(_runner_idle_grace_seconds(1.0, 0.75), 1.0)
 
 
 class LoopScriptTests(unittest.TestCase):
@@ -145,7 +152,7 @@ class LoopScriptTests(unittest.TestCase):
             tmux_instance.clear_prompt_line.return_value = True
             tmux_instance.send_keys.return_value = True
             tmux_instance.press_enter.return_value = True
-            tmux_instance.send_eof.return_value = True
+            tmux_instance.has_session.side_effect = [True] * 20 + [False]
 
             marker_path = paths.cycle_prepared_file
             marker_path.write_text("{}", encoding="utf-8")
@@ -156,39 +163,45 @@ class LoopScriptTests(unittest.TestCase):
                 patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
                 patch("src.runner_loop.time.sleep", return_value=None),
             ):
-                tmux_instance.has_session.side_effect = repeat(True)
-
                 def capture_side_effect(*_args, **_kwargs):
                     count = tmux_instance.capture_pane.call_count
                     if count == 1:
                         return "OpenAI Codex\n› Run /review on my current changes\n"
                     if count == 2:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 3:
                         return (
                             "OpenAI Codex\n"
                             f"› /prompts:run_execute DEV={dev} PROJECT=blog RUNNER_ID=main "
                             f"PWD={project_root} PROJECT_ROOT={project_root} PHASE=implement\n"
                         )
-                    if count == 3:
-                        return "OpenAI Codex\n/prompts:run_execute send saved prompt\n"
                     if count == 4:
-                        return "Running execute...\n"
+                        return "OpenAI Codex\n/prompts:run_execute send saved prompt\n"
                     if count == 5:
-                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                        return "Running execute...\n"
                     if count == 6:
                         return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
                     if count == 7:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 8:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 9:
                         return (
                             "OpenAI Codex\n"
                             f"› /prompts:run_update DEV={dev} PROJECT=blog RUNNER_ID=main "
                             f"PWD={project_root} PROJECT_ROOT={project_root}\n"
                         )
-                    if count == 8:
+                    if count == 10:
                         return "OpenAI Codex\n/prompts:run_update send saved prompt\n"
-                    if count == 9:
+                    if count == 11:
                         marker_path.write_text('{"prepared_at":"later"}', encoding="utf-8")
                         os.utime(marker_path, (initial_marker_mtime + 5, initial_marker_mtime + 5))
                         return "Running update...\n"
-                    return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    if count == 12:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    if count == 13:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    return "OpenAI Codex\n› Run /review on my current changes\n"
 
                 tmux_instance.capture_pane.side_effect = capture_side_effect
                 tmux_instance.get_pane_process.side_effect = repeat("node")
@@ -209,7 +222,7 @@ class LoopScriptTests(unittest.TestCase):
                 )
 
             self.assertEqual(rc, 0)
-            self.assertEqual(tmux_instance.clear_prompt_line.call_count, 3)
+            self.assertEqual(tmux_instance.clear_prompt_line.call_count, 2)
             first_command = tmux_instance.send_keys.call_args_list[0].args[1]
             second_command = tmux_instance.send_keys.call_args_list[1].args[1]
             self.assertIn("/prompts:run_execute", first_command)
@@ -220,7 +233,226 @@ class LoopScriptTests(unittest.TestCase):
             self.assertIn("PHASE=implement", first_command)
             self.assertIn("/prompts:run_update", second_command)
             self.assertEqual(tmux_instance.press_enter.call_count, 4)
-            self.assertEqual(tmux_instance.send_eof.call_count, 2)
+            self.assertTrue(tmux_instance.send_eof.called)
+            ledger_events = [
+                json.loads(line)["event"]
+                for line in paths.ledger_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn("runner.update_dispatch_start", ledger_events)
+            self.assertIn("runner.update_dispatch_sent", ledger_events)
+            self.assertIn("runner.update_complete", ledger_events)
+            self.assertIn("runner.chat_exit_requested", ledger_events)
+            log_text = paths.runner_log.read_text(encoding="utf-8")
+            self.assertIn("Dispatching /prompts:run_update", log_text)
+            self.assertIn("Dispatched /prompts:run_update", log_text)
+            self.assertIn("next loop will relaunch fresh", log_text)
+
+    def test_interactive_runner_controller_runs_update_after_execute_returns_idle_without_working_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(paths.exec_context_json, {"phase": "implement"})
+
+            tmux_instance = unittest.mock.Mock()
+            tmux_instance.capture_pane.return_value = "OpenAI Codex\n› Run /review on my current changes\n"
+            tmux_instance.get_pane_process.return_value = "node"
+            tmux_instance.clear_prompt_line.return_value = True
+            tmux_instance.send_keys.return_value = True
+            tmux_instance.press_enter.return_value = True
+
+            marker_path = paths.cycle_prepared_file
+            marker_path.write_text("{}", encoding="utf-8")
+            initial_marker_mtime = marker_path.stat().st_mtime
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                tmux_instance.has_session.side_effect = repeat(True)
+
+                def capture_side_effect(*_args, **_kwargs):
+                    count = tmux_instance.capture_pane.call_count
+                    if count == 1:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 2:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 3:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_execute DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root} PHASE=implement\n"
+                        )
+                    if count == 4:
+                        return "OpenAI Codex\n/prompts:run_execute send saved prompt\n"
+                    if count == 5:
+                        return "OpenAI Codex\n› \nphase_done=no\nvalidation=pass\nexiting=yes\n"
+                    if count == 6:
+                        return "OpenAI Codex\n› \nphase_done=no\nvalidation=pass\nexiting=yes\n"
+                    if count == 7:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 8:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_update DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root}\n"
+                        )
+                    if count == 9:
+                        return "OpenAI Codex\n/prompts:run_update send saved prompt\n"
+                    if count == 10:
+                        marker_path.write_text('{"prepared_at":"later"}', encoding="utf-8")
+                        os.utime(marker_path, (initial_marker_mtime + 5, initial_marker_mtime + 5))
+                        return "Running update...\n"
+                    if count == 11:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    if count == 12:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    return "OpenAI Codex\n› Run /review on my current changes\n"
+
+                tmux_instance.capture_pane.side_effect = capture_side_effect
+                tmux_instance.get_pane_process.side_effect = repeat("node")
+
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            commands = [call.args[1] for call in tmux_instance.send_keys.call_args_list]
+            self.assertIn("/prompts:run_execute", commands[0])
+            self.assertIn("/prompts:run_update", commands[1])
+            self.assertEqual(len(commands), 2)
+            self.assertTrue(tmux_instance.send_eof.called)
+            ledger_events = [
+                json.loads(line)["event"]
+                for line in paths.ledger_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn("runner.execute_complete", ledger_events)
+            self.assertIn("runner.update_complete", ledger_events)
+            self.assertIn("runner.chat_exit_requested", ledger_events)
+
+    def test_interactive_runner_controller_waits_for_update_idle_after_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(paths.exec_context_json, {"phase": "implement"})
+
+            tmux_instance = unittest.mock.Mock()
+            tmux_instance.capture_pane.return_value = "OpenAI Codex\n› Run /review on my current changes\n"
+            tmux_instance.get_pane_process.return_value = "node"
+            tmux_instance.clear_prompt_line.return_value = True
+            tmux_instance.send_keys.return_value = True
+            tmux_instance.press_enter.return_value = True
+
+            marker_path = paths.cycle_prepared_file
+            marker_path.write_text("{}", encoding="utf-8")
+            initial_marker_mtime = marker_path.stat().st_mtime
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                tmux_instance.has_session.side_effect = repeat(True)
+
+                def capture_side_effect(*_args, **_kwargs):
+                    count = tmux_instance.capture_pane.call_count
+                    if count == 1:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 2:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 3:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_execute DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root} PHASE=implement\n"
+                        )
+                    if count == 4:
+                        return "OpenAI Codex\n/prompts:run_execute send saved prompt\n"
+                    if count == 5:
+                        return "Running execute...\n"
+                    if count == 6:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 7:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 8:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_update DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root}\n"
+                        )
+                    if count == 9:
+                        return "OpenAI Codex\n/prompts:run_update send saved prompt\n"
+                    if count == 10:
+                        marker_path.write_text('{"prepared_at":"later"}', encoding="utf-8")
+                        os.utime(marker_path, (initial_marker_mtime + 5, initial_marker_mtime + 5))
+                        return "Running update...\n"
+                    if count == 11:
+                        return "Still flushing update output...\n"
+                    if count == 12:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    if count == 13:
+                        return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+                    return "OpenAI Codex\n› Run /review on my current changes\n"
+
+                tmux_instance.capture_pane.side_effect = capture_side_effect
+                tmux_instance.get_pane_process.side_effect = repeat("node")
+
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertGreaterEqual(tmux_instance.capture_pane.call_count, 12)
+            self.assertTrue(tmux_instance.send_eof.called)
+            ledger_events = [
+                json.loads(line)["event"]
+                for line in paths.ledger_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn("runner.update_complete", ledger_events)
+            self.assertIn("runner.chat_exit_requested", ledger_events)
 
     def test_submit_runner_prompt_retries_after_empty_placeholder_expansion(self):
         tmux_instance = unittest.mock.Mock()
@@ -243,7 +475,7 @@ class LoopScriptTests(unittest.TestCase):
             "OpenAI Codex\n/prompts:run_update send saved prompt\n",
         ]
 
-        ok = _submit_runner_prompt(
+        ok, reason = _submit_runner_prompt(
             tmux=tmux_instance,
             session_name="runner-blog",
             command=command,
@@ -252,13 +484,186 @@ class LoopScriptTests(unittest.TestCase):
         )
 
         self.assertTrue(ok)
+        self.assertIsNone(reason)
         self.assertEqual(tmux_instance.send_keys.call_count, 2)
         first_kwargs = tmux_instance.send_keys.call_args_list[0].kwargs
         second_kwargs = tmux_instance.send_keys.call_args_list[1].kwargs
         self.assertTrue(first_kwargs["force_buffer"])
         self.assertTrue(second_kwargs["force_buffer"])
-        self.assertEqual(tmux_instance.press_enter.call_count, 3)
+        self.assertEqual(tmux_instance.press_enter.call_count, 2)
         self.assertEqual(tmux_instance.send_escape.call_count, 2)
+
+    def test_submit_runner_prompt_activates_prompt_before_typing(self):
+        tmux_instance = unittest.mock.Mock()
+        command = "/prompts:run_execute DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog PHASE=implement"
+        tmux_instance.clear_prompt_line.return_value = True
+        tmux_instance.send_keys.return_value = True
+        tmux_instance.press_enter.side_effect = [True, True]
+        tmux_instance.send_escape.return_value = True
+        tmux_instance.capture_pane.side_effect = [
+            "OpenAI Codex\nNotes panel still focused\n",
+            "OpenAI Codex\n› Run /review on my current changes\n",
+            f"OpenAI Codex\n› {command}\n",
+            "OpenAI Codex\n/prompts:run_execute send saved prompt\n",
+        ]
+
+        ok, reason = _submit_runner_prompt(
+            tmux=tmux_instance,
+            session_name="runner-blog",
+            command=command,
+            settle_attempts=1,
+            settle_delay_seconds=0,
+        )
+
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(tmux_instance.send_escape.call_count, 1)
+        self.assertEqual(tmux_instance.send_keys.call_count, 1)
+
+    def test_submit_runner_prompt_fails_closed_when_prompt_never_activates(self):
+        tmux_instance = unittest.mock.Mock()
+        command = "/prompts:run_update DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog"
+        tmux_instance.send_escape.return_value = True
+        tmux_instance.capture_pane.side_effect = [
+            "OpenAI Codex\nSide panel active\n",
+            "OpenAI Codex\nSide panel active\n",
+            "OpenAI Codex\nSide panel active\n",
+            "OpenAI Codex\nSide panel active\n",
+            "OpenAI Codex\nSide panel active\n",
+            "OpenAI Codex\nSide panel active\n",
+        ]
+
+        ok, reason = _submit_runner_prompt(
+            tmux=tmux_instance,
+            session_name="runner-blog",
+            command=command,
+            settle_attempts=1,
+            settle_delay_seconds=0,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "prompt_not_active")
+        self.assertEqual(tmux_instance.send_escape.call_count, 3)
+        self.assertFalse(tmux_instance.send_keys.called)
+        self.assertFalse(tmux_instance.press_enter.called)
+
+    def test_submit_runner_prompt_reports_saved_prompt_expansion_failure_reason(self):
+        tmux_instance = unittest.mock.Mock()
+        command = "/prompts:run_update DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog"
+        tmux_instance.clear_prompt_line.return_value = True
+        tmux_instance.send_keys.return_value = True
+        tmux_instance.press_enter.return_value = True
+        tmux_instance.send_escape.return_value = True
+        tmux_instance.capture_pane.side_effect = [
+            "OpenAI Codex\n› Run /review on my current changes\n",
+            f"OpenAI Codex\n› {command}\n",
+            "OpenAI Codex\nstill waiting for expansion\n",
+            "OpenAI Codex\nstill waiting for expansion\n",
+        ]
+
+        ok, reason = _submit_runner_prompt(
+            tmux=tmux_instance,
+            session_name="runner-blog",
+            command=command,
+            settle_attempts=1,
+            settle_delay_seconds=0,
+            submit_attempts=1,
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "saved_prompt_expansion_not_ready")
+
+    def test_submit_runner_prompt_accepts_direct_runner_prompt_submission_without_saved_prompt_banner(self):
+        tmux_instance = unittest.mock.Mock()
+        command = "/prompts:run_execute DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog PHASE=implement"
+        tmux_instance.clear_prompt_line.return_value = True
+        tmux_instance.send_keys.return_value = True
+        tmux_instance.press_enter.return_value = True
+        tmux_instance.send_escape.return_value = True
+        tmux_instance.capture_pane.side_effect = [
+            "OpenAI Codex\n› Run /review on my current changes\n",
+            f"OpenAI Codex\n› {command}\n",
+            "Use this command to execute exactly one medium bounded infinite-runner work slice.\n\n## Scope First\n",
+        ]
+
+        ok, reason = _submit_runner_prompt(
+            tmux=tmux_instance,
+            session_name="runner-blog",
+            command=command,
+            settle_attempts=1,
+            settle_delay_seconds=0,
+            submit_attempts=1,
+        )
+
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(tmux_instance.press_enter.call_count, 1)
+
+    def test_interactive_runner_controller_records_dispatch_failure_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(paths.exec_context_json, {"phase": "implement"})
+
+            tmux_instance = unittest.mock.Mock()
+            tmux_instance.clear_prompt_line.return_value = True
+            tmux_instance.send_keys.return_value = True
+            tmux_instance.press_enter.return_value = True
+            tmux_instance.send_escape.return_value = True
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                tmux_instance.has_session.side_effect = repeat(True)
+                tmux_instance.get_pane_process.return_value = "python3"
+                def capture_side_effect(*_args, **_kwargs):
+                    count = tmux_instance.capture_pane.call_count
+                    if count == 1:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count in {2, 3, 4, 5, 6}:
+                        return "OpenAI Codex\nSide panel active\n"
+                    tmux_instance.has_session.side_effect = [False]
+                    return "OpenAI Codex\nSide panel active\n"
+
+                tmux_instance.capture_pane.side_effect = capture_side_effect
+
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            ledger = [
+                json.loads(line)
+                for line in paths.ledger_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            dispatch_failed = [entry for entry in ledger if entry.get("event") == "runner.dispatch_failed"]
+            self.assertTrue(dispatch_failed)
+            self.assertEqual(dispatch_failed[-1].get("reason"), "prompt_not_active")
+            log_text = paths.runner_log.read_text(encoding="utf-8")
+            self.assertIn("reason=prompt_not_active", log_text)
 
 
 class LoopPromptTests(unittest.TestCase):
@@ -282,7 +687,7 @@ class LoopLoggingTests(unittest.TestCase):
                     _log_line(paths, message)
 
             mocked_print.assert_called_once_with(message, flush=True)
-            log_line = paths.runner_log.read_text().strip()
+            log_line = paths.runner_log.read_text().strip().splitlines()[-1]
             self.assertRegex(log_line, r"^\[\d{2}:\d{2}:\d{2}\] Iteration 1 running gpt-5.3-codex$")
 
 
@@ -425,9 +830,11 @@ class CompletionEnforcementTests(unittest.TestCase):
                         {
                             "summary": "iter update",
                             "completed": ["done one"],
+                            "completed_task_ids": [],
                             "next_task": "continue",
                             "next_task_reason": "follow-up",
                             "blockers": [],
+                            "remaining_gaps": [],
                             "done_candidate": False,
                         }
                     ),
@@ -480,9 +887,11 @@ class CompletionEnforcementTests(unittest.TestCase):
                         {
                             "summary": "all done",
                             "completed": ["finished task"],
+                            "completed_task_ids": [],
                             "next_task": "none",
                             "next_task_reason": "all goals complete",
                             "blockers": [],
+                            "remaining_gaps": [],
                             "done_candidate": True,
                         }
                     ),
@@ -557,9 +966,11 @@ class CompletionEnforcementTests(unittest.TestCase):
                         {
                             "summary": "all done",
                             "completed": ["finished task"],
+                            "completed_task_ids": [],
                             "next_task": "none",
                             "next_task_reason": "all goals complete",
                             "blockers": [],
+                            "remaining_gaps": [],
                             "done_candidate": True,
                         }
                     ),
@@ -596,6 +1007,133 @@ class CompletionEnforcementTests(unittest.TestCase):
         finally:
             tmp.cleanup()
 
+    def test_done_marker_rejected_when_self_review_reports_remaining_gaps(self):
+        tmp, dev, _project_root = self._setup_project()
+        try:
+            paths = build_runner_state_paths(str(dev), "blog", "alpha")
+            state = default_runner_state("blog", "alpha")
+            state["enabled"] = True
+            write_json(paths.state_file, state)
+
+            codex_result = CodexRunResult(
+                exit_code=0,
+                session_id="thread-1",
+                final_message="Looks close.",
+                events=[],
+                raw_lines=[
+                    "RUNNER_UPDATE_START",
+                    json.dumps(
+                        {
+                            "summary": "Implemented the slice but one UX edge remains.",
+                            "completed": ["Adjusted the panel layout"],
+                            "completed_task_ids": [],
+                            "next_task": "Polish the remaining input focus behavior",
+                            "next_task_reason": "Self-review found one remaining UX gap.",
+                            "blockers": [],
+                            "remaining_gaps": ["Input focus ring is still clipped in the compact panel."],
+                            "done_candidate": True,
+                        }
+                    ),
+                    "RUNNER_UPDATE_END",
+                ],
+            )
+
+            with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
+                "src.runner_loop.time.sleep", return_value=None
+            ):
+                def _once_then_stop(*_args, **_kwargs):
+                    paths.stop_lock.parent.mkdir(parents=True, exist_ok=True)
+                    paths.stop_lock.write_text("stop\n", encoding="utf-8")
+                    return codex_result
+
+                src_runner = __import__("src.runner_loop", fromlist=["run_codex_iteration"])
+                with patch.object(src_runner, "run_codex_iteration", side_effect=_once_then_stop):
+                    rc = run_loop_runner(
+                        dev=str(dev),
+                        project="blog",
+                        runner_id="alpha",
+                        model="gpt-5.3-codex",
+                        session_name="runner-blog-alpha",
+                        backoff_seconds=0,
+                    )
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(paths.done_lock.exists())
+            current_state = json.loads(paths.state_file.read_text())
+            self.assertFalse(current_state["done_candidate"])
+            self.assertEqual(current_state["done_gate_status"], "pending")
+            self.assertTrue(
+                any(
+                    "Self-review gap: Input focus ring is still clipped in the compact panel."
+                    in blocker
+                    for blocker in current_state["blockers"]
+                )
+            )
+        finally:
+            tmp.cleanup()
+
+    def test_parse_fallback_stays_fail_closed_when_completion_was_only_inferred(self):
+        tmp, dev, _project_root = self._setup_project()
+        try:
+            paths = build_runner_state_paths(str(dev), "blog", "alpha")
+            state = default_runner_state("blog", "alpha")
+            state["enabled"] = True
+            write_json(paths.state_file, state)
+
+            main_result = CodexRunResult(
+                exit_code=0,
+                session_id="thread-main",
+                final_message="Implementation complete. All requested changes are completed.",
+                events=[],
+                raw_lines=["Implemented and verified."],
+            )
+            probe_result = CodexRunResult(
+                exit_code=0,
+                session_id="thread-probe",
+                final_message="",
+                events=[],
+                raw_lines=["still not parseable"],
+            )
+
+            with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
+                "src.runner_loop.time.sleep", return_value=None
+            ):
+                first_call = {"done": False}
+
+                def _runs(*_args, **_kwargs):
+                    if not first_call["done"]:
+                        first_call["done"] = True
+                        return main_result
+                    paths.stop_lock.parent.mkdir(parents=True, exist_ok=True)
+                    paths.stop_lock.write_text("stop\n", encoding="utf-8")
+                    return probe_result
+
+                src_runner = __import__("src.runner_loop", fromlist=["run_codex_iteration"])
+                with patch.object(src_runner, "run_codex_iteration", side_effect=_runs):
+                    rc = run_loop_runner(
+                        dev=str(dev),
+                        project="blog",
+                        runner_id="alpha",
+                        model="gpt-5.3-codex",
+                        session_name="runner-blog-alpha",
+                        backoff_seconds=0,
+                    )
+
+            self.assertEqual(rc, 0)
+            self.assertFalse(paths.done_lock.exists())
+            current_state = json.loads(paths.state_file.read_text())
+            self.assertFalse(current_state["done_candidate"])
+            self.assertEqual(current_state["done_gate_status"], "pending")
+            self.assertTrue(
+                any(
+                    "Structured self-review was unavailable because the runner update payload could not be parsed."
+                    in blocker
+                    for blocker in current_state["blockers"]
+                )
+            )
+        finally:
+            tmp.cleanup()
+
     def test_parse_failure_triggers_finalize_hook_probe_and_done_lock(self):
         tmp, dev, _project_root = self._setup_project()
         try:
@@ -622,9 +1160,11 @@ class CompletionEnforcementTests(unittest.TestCase):
                         {
                             "summary": "Completed implementation and verification.",
                             "completed": ["Implemented requested changes", "Verified with gates"],
+                            "completed_task_ids": [],
                             "next_task": "No further implementation work; ready to exit.",
                             "next_task_reason": "Completion confirmed by finalize hook.",
                             "blockers": [],
+                            "remaining_gaps": [],
                             "done_candidate": True,
                         }
                     ),
@@ -679,9 +1219,11 @@ class CompletionEnforcementTests(unittest.TestCase):
                         {
                             "summary": "updated",
                             "completed": ["a"],
+                            "completed_task_ids": [],
                             "next_task": "b",
                             "next_task_reason": "c",
                             "blockers": [],
+                            "remaining_gaps": [],
                             "done_candidate": False,
                         }
                     ),

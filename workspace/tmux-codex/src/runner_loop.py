@@ -18,7 +18,7 @@ from typing import Literal
 from .codex_engine import CodexRunResult, run_codex_iteration
 from .hooks import HookAdapter, LocalHooks, load_agents_bridge
 from .runctl import create_runner_state, resolve_target_project_root
-from .runner_status import detect_runner_state
+from .runner_status import detect_runner_state, has_explicit_codex_prompt
 from .runner_state import (
     RunnerStatePaths,
     append_ndjson,
@@ -48,9 +48,11 @@ RUNNER_UPDATE_END_MARKER = "RUNNER_UPDATE_END"
 REQUIRED_UPDATE_KEYS = (
     "summary",
     "completed",
+    "completed_task_ids",
     "next_task",
     "next_task_reason",
     "blockers",
+    "remaining_gaps",
     "done_candidate",
 )
 DONE_SIGNAL_TRUE_PATTERNS = (
@@ -65,6 +67,9 @@ DONE_SIGNAL_FALSE_PATTERNS = (
     re.compile(r"\b(incomplete|partial)\b", re.IGNORECASE),
     re.compile(r"\b(next task|next step|todo|to do|follow[- ]up)\b", re.IGNORECASE),
 )
+RUNNER_UPDATE_VISIBLE_HOLD_SECONDS = 1.2
+RUNNER_DISPATCH_IDLE_GRACE_SECONDS = 1.0
+RUNNER_COMPLETION_IDLE_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,13 @@ def resolve_runner_profile(complexity: str, model_override: str | None) -> tuple
     if model_override:
         return model_override, effort
     return mapped_model, effort
+
+
+def _runner_idle_grace_seconds(default_seconds: float, poll_seconds: float) -> float:
+    """Use real idle grace in live runs but keep zero-poll tests deterministic."""
+    if poll_seconds <= 0:
+        return 0.0
+    return default_seconds
 
 
 def build_runner_paths(
@@ -367,6 +379,29 @@ def _pane_contains_empty_prompt_args(pane: str, command_anchor: str) -> bool:
     return 'DEV=""' in normalized and 'PROJECT=""' in normalized and 'PROJECT_ROOT=""' in normalized
 
 
+def _pane_contains_direct_runner_prompt_body(pane: str, command: str) -> bool:
+    normalized = _normalize_prompt_capture(pane).lower()
+    if not normalized or _pane_contains_exact_prompt(pane, command):
+        return False
+    direct_markers = (
+        "runner context from `/prompts:",
+        "use this command to execute exactly one medium bounded infinite-runner work slice.",
+        "use this command to refresh infinite-runner state after one execute slice finishes.",
+        "## scope first",
+        "## execution contract",
+        "## command",
+        "## handoff",
+        "write prepared marker:",
+    )
+    working_markers = (
+        "working (",
+        "to interrupt",
+        "thinking",
+        "model interrupted to submit steer instructions",
+    )
+    return any(marker in normalized for marker in direct_markers + working_markers)
+
+
 def _dismiss_runner_prompt(tmux: TmuxClient, session_name: str) -> None:
     """Best-effort prompt dismissal so the controller can retry cleanly."""
     tmux.send_escape(session_name)
@@ -374,6 +409,28 @@ def _dismiss_runner_prompt(tmux: TmuxClient, session_name: str) -> None:
     tmux.send_escape(session_name)
     time.sleep(0.03)
     tmux.clear_prompt_line(session_name)
+
+
+def _ensure_runner_prompt_active(
+    *,
+    tmux: TmuxClient,
+    session_name: str,
+    activate_attempts: int = 3,
+    settle_delay_seconds: float = 0.08,
+) -> bool:
+    """Return True only when the Codex chat input prompt is visibly active."""
+    for attempt in range(activate_attempts):
+        pane = tmux.capture_pane(session_name, lines=LINES_STATUS) or ""
+        if has_explicit_codex_prompt(pane):
+            return True
+        tmux.send_escape(session_name)
+        time.sleep(settle_delay_seconds)
+        pane = tmux.capture_pane(session_name, lines=LINES_STATUS) or ""
+        if has_explicit_codex_prompt(pane):
+            return True
+        if attempt + 1 < activate_attempts:
+            time.sleep(settle_delay_seconds)
+    return False
 
 
 def _submit_runner_prompt(
@@ -384,7 +441,8 @@ def _submit_runner_prompt(
     settle_attempts: int = 12,
     settle_delay_seconds: float = 0.08,
     submit_attempts: int = 2,
-) -> bool:
+    visible_hold_seconds: float = 0.0,
+) -> tuple[bool, str | None]:
     """Stage and submit a slash prompt only after the full command is visible.
 
     The interactive Codex TUI can consume the first Enter while the slash prompt
@@ -393,6 +451,13 @@ def _submit_runner_prompt(
     `KEY=value` argument set.
     """
     command_anchor = command.split(" ", 1)[0]
+
+    if not _ensure_runner_prompt_active(
+        tmux=tmux,
+        session_name=session_name,
+        settle_delay_seconds=settle_delay_seconds,
+    ):
+        return False, "prompt_not_active"
 
     for attempt in range(submit_attempts):
         tmux.clear_prompt_line(session_name)
@@ -404,7 +469,7 @@ def _submit_runner_prompt(
             force_buffer=True,
         )
         if not sent:
-            return False
+            return False, "tmux_send_keys_failed"
 
         command_visible = False
         for _ in range(settle_attempts):
@@ -420,11 +485,15 @@ def _submit_runner_prompt(
                 continue
             time.sleep(settle_delay_seconds)
 
+        if visible_hold_seconds > 0:
+            time.sleep(visible_hold_seconds)
+
         if not tmux.press_enter(session_name):
-            return False
+            return False, "prompt_expand_enter_failed"
 
         expansion_ready = False
         bad_expansion = False
+        direct_submission_ready = False
         for _ in range(settle_attempts):
             pane = tmux.capture_pane(session_name, lines=LINES_STATUS) or ""
             lower = pane.lower()
@@ -434,23 +503,31 @@ def _submit_runner_prompt(
             if "send saved prompt" in lower:
                 expansion_ready = True
                 break
+            if _pane_contains_direct_runner_prompt_body(pane, command):
+                direct_submission_ready = True
+                break
             time.sleep(settle_delay_seconds)
 
         if bad_expansion:
             _dismiss_runner_prompt(tmux, session_name)
             if attempt + 1 < submit_attempts:
                 continue
-            return False
+            return False, "empty_prompt_args_expansion"
+
+        if direct_submission_ready:
+            return True, None
 
         if not expansion_ready:
             if attempt + 1 < submit_attempts:
                 _dismiss_runner_prompt(tmux, session_name)
                 continue
-            return False
+            return False, "saved_prompt_expansion_not_ready"
 
-        return tmux.press_enter(session_name)
+        if not tmux.press_enter(session_name):
+            return False, "prompt_submit_enter_failed"
+        return True, None
 
-    return False
+    return False, "exact_prompt_not_visible"
 
 
 def make_codex_interactive_runner_script(
@@ -668,9 +745,11 @@ Rules:
 6. Use .memory/runner/RUNNER_EXEC_CONTEXT.json plus .memory/runner/RUNNER_HANDOFF.md and runner state to respect the current phase goal and next task.
 7. End your response with this exact machine-parsable block:
 RUNNER_UPDATE_START
-{{"summary":"...","completed":["..."],"next_task":"...","next_task_reason":"...","blockers":["..."],"done_candidate":false}}
+{{"summary":"...","completed":["..."],"completed_task_ids":["TT-..."],"next_task":"...","next_task_reason":"...","blockers":["..."],"remaining_gaps":["..."],"done_candidate":false}}
 RUNNER_UPDATE_END
 8. The JSON must be valid and include all required keys exactly once.
+9. Before finalizing, review your work against the active acceptance and ask: "Any problems with the current implementation?" Put every real remaining issue in `remaining_gaps`.
+10. If you fully completed a task this slice, list its canonical task id in `completed_task_ids`. Do not rely on prose alone.
 
 Runner state snapshot:
 {state_context}
@@ -713,7 +792,9 @@ def _extract_update_payload(raw_lines: list[str]) -> tuple[dict[str, object] | N
     next_task = payload.get("next_task")
     next_task_reason = payload.get("next_task_reason")
     completed = payload.get("completed")
+    completed_task_ids = payload.get("completed_task_ids")
     blockers = payload.get("blockers")
+    remaining_gaps = payload.get("remaining_gaps")
     done_candidate = payload.get("done_candidate")
 
     if not isinstance(summary, str) or not summary.strip():
@@ -726,15 +807,25 @@ def _extract_update_payload(raw_lines: list[str]) -> tuple[dict[str, object] | N
         return None, "runner update done_candidate must be a boolean"
     if not isinstance(completed, list) or not all(isinstance(item, str) for item in completed):
         return None, "runner update completed must be a string array"
+    if not isinstance(completed_task_ids, list) or not all(isinstance(item, str) for item in completed_task_ids):
+        return None, "runner update completed_task_ids must be a string array"
     if not isinstance(blockers, list) or not all(isinstance(item, str) for item in blockers):
         return None, "runner update blockers must be a string array"
+    if not isinstance(remaining_gaps, list) or not all(isinstance(item, str) for item in remaining_gaps):
+        return None, "runner update remaining_gaps must be a string array"
+
+    normalized_remaining_gaps = [item.strip() for item in remaining_gaps if item.strip()]
+    if normalized_remaining_gaps:
+        done_candidate = False
 
     normalized: dict[str, object] = {
         "summary": summary.strip(),
         "completed": [item.strip() for item in completed if item.strip()],
+        "completed_task_ids": [item.strip() for item in completed_task_ids if item.strip()],
         "next_task": next_task.strip(),
         "next_task_reason": next_task_reason.strip(),
         "blockers": [item.strip() for item in blockers if item.strip()],
+        "remaining_gaps": normalized_remaining_gaps,
         "done_candidate": done_candidate,
     }
     return normalized, None
@@ -765,13 +856,15 @@ Last assistant message:
 
 Return ONLY this block format:
 RUNNER_UPDATE_START
-{{"summary":"...","completed":["..."],"next_task":"...","next_task_reason":"...","blockers":["..."],"done_candidate":false}}
+{{"summary":"...","completed":["..."],"completed_task_ids":["TT-..."],"next_task":"...","next_task_reason":"...","blockers":["..."],"remaining_gaps":["..."],"done_candidate":false}}
 RUNNER_UPDATE_END
 
 Rules:
 - Keep JSON valid with all required keys.
 - If the work is clearly complete, set "done_candidate": true.
 - If uncertain, set "done_candidate": false.
+- If any real issue, rough edge, regression, or acceptance gap remains, list it in "remaining_gaps" and do not mark done.
+- If you fully completed the active task, include its canonical task id in "completed_task_ids".
 - Preserve continuity with current next task when no better signal exists:
   next_task="{current_next}"
   next_task_reason="{current_reason}"
@@ -786,7 +879,7 @@ def _fallback_update_payload(
     raw_lines: list[str],
 ) -> dict[str, object]:
     summary = final_message.strip() or "Iteration completed without structured runner update."
-    done_candidate = _infer_done_candidate_from_text(final_message=final_message, raw_lines=raw_lines)
+    inferred_done_candidate = _infer_done_candidate_from_text(final_message=final_message, raw_lines=raw_lines)
     prior_completed = state.get("completed_recent", [])
     completed: list[str] = []
     if isinstance(prior_completed, list):
@@ -800,9 +893,18 @@ def _fallback_update_payload(
     if probe_error:
         blockers.append(f"finalize hook parse failure: {probe_error}")
 
-    if done_candidate:
-        next_task = "No further implementation work; completion candidate pending gate validation."
-        next_task_reason = "Completion inferred from final assistant output; gates will confirm."
+    remaining_gaps: list[str] = [
+        "Structured self-review was unavailable because the runner update payload could not be parsed.",
+    ]
+    remaining_gaps.extend(blockers[:2])
+    done_candidate = False
+
+    if inferred_done_candidate:
+        next_task = str(state.get("next_task", "")).strip() or "Review the prior slice for any remaining gaps."
+        next_task_reason = (
+            "Completion was inferred from free-form output, but structured self-review failed; "
+            "keep the current task open until remaining gaps are explicitly cleared."
+        )
     else:
         next_task = str(state.get("next_task", "")).strip() or "Execute the next concrete validated slice."
         next_task_reason = str(state.get("next_task_reason", "")).strip() or (
@@ -812,9 +914,11 @@ def _fallback_update_payload(
     return {
         "summary": summary,
         "completed": completed,
+        "completed_task_ids": [],
         "next_task": next_task,
         "next_task_reason": next_task_reason,
         "blockers": blockers,
+        "remaining_gaps": remaining_gaps,
         "done_candidate": done_candidate,
     }
 
@@ -889,11 +993,20 @@ def _apply_iteration_update(
     session_id: str | None,
 ) -> dict[str, object]:
     completed_recent = list(update_payload.get("completed", []))
+    completed_task_ids = list(update_payload.get("completed_task_ids", []))
     blockers = list(update_payload.get("blockers", []))
+    remaining_gaps = list(update_payload.get("remaining_gaps", []))
     next_task = str(update_payload.get("next_task", "")).strip()
     next_task_reason = str(update_payload.get("next_task_reason", "")).strip()
     summary = str(update_payload.get("summary", "")).strip()
     done_candidate = bool(update_payload.get("done_candidate", False))
+    for gap in remaining_gaps:
+        gap_text = str(gap).strip()
+        if not gap_text:
+            continue
+        blocker_text = f"Self-review gap: {gap_text}"[:220]
+        if blocker_text not in blockers:
+            blockers.append(blocker_text)
     state = update_state(
         paths.state_file,
         state,
@@ -901,6 +1014,7 @@ def _apply_iteration_update(
         current_goal=next_task,
         last_iteration_summary=summary,
         completed_recent=completed_recent,
+        completed_task_ids=completed_task_ids,
         next_task=next_task,
         next_task_reason=next_task_reason,
         blockers=blockers,
@@ -1176,13 +1290,14 @@ def run_loop_runner(
                 {
                     "final_message": str(update_payload.get("summary", result.final_message)),
                     "exit_code": result.exit_code,
-                    "runner_update": update_payload,
-                    "done_candidate": bool(update_payload.get("done_candidate", False)),
-                    "finalize_mode": finalize_mode,
-                    "parse_error": parse_error,
-                    "finalize_probe_error": finalize_probe_error,
-                },
-            )
+            "runner_update": update_payload,
+            "done_candidate": bool(update_payload.get("done_candidate", False)),
+            "finalize_mode": finalize_mode,
+            "parse_error": parse_error,
+            "finalize_probe_error": finalize_probe_error,
+            "remaining_gaps": list(update_payload.get("remaining_gaps", [])),
+        },
+    )
 
             state = _apply_iteration_update(
                 paths=paths,
@@ -1248,6 +1363,7 @@ def run_loop_runner(
                     "parse_error": parse_error,
                     "finalize_probe_error": finalize_probe_error,
                     "runner_update": update_payload,
+                    "remaining_gaps": list(update_payload.get("remaining_gaps", [])),
                 },
             )
 
@@ -1385,8 +1501,11 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
     active_step: Literal["execute", "update"] = "execute"
     injected_phase = "discover"
     dispatch_output_snapshot = ""
+    dispatched_command = ""
     dispatched_at = 0.0
     saw_busy = False
+    idle_since: float | None = None
+    update_marker_observed = False
     update_marker_mtime = (
         state_paths.cycle_prepared_file.stat().st_mtime
         if state_paths.cycle_prepared_file.exists()
@@ -1426,6 +1545,28 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                 exec_context.get("phase") or state.get("current_phase"),
                 default="discover",
             )
+            now = time.time()
+            if pane_state == "idle":
+                idle_since = idle_since or now
+            else:
+                idle_since = None
+
+            dispatch_idle_grace_seconds = _runner_idle_grace_seconds(
+                RUNNER_DISPATCH_IDLE_GRACE_SECONDS,
+                args.poll_seconds,
+            )
+            completion_idle_grace_seconds = _runner_idle_grace_seconds(
+                RUNNER_COMPLETION_IDLE_GRACE_SECONDS,
+                args.poll_seconds,
+            )
+            dispatch_idle_grace_satisfied = idle_since is not None and (
+                dispatch_idle_grace_seconds <= 0
+                or (now - idle_since) >= dispatch_idle_grace_seconds
+            )
+            completion_idle_grace_satisfied = idle_since is not None and (
+                completion_idle_grace_seconds <= 0
+                or (now - idle_since) >= completion_idle_grace_seconds
+            )
             if in_flight:
                 if pane_state != "idle":
                     saw_busy = True
@@ -1434,11 +1575,22 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                     if state_paths.cycle_prepared_file.exists()
                     else 0.0
                 )
+                if active_step == "update" and current_marker_mtime != update_marker_mtime:
+                    update_marker_observed = True
                 prompt_completed = False
-                if pane_state == "idle":
+                if pane_state == "idle" and completion_idle_grace_satisfied:
+                    lower_output = output.lower()
+                    execute_prompt_cleared = (
+                        active_step == "execute"
+                        and bool(dispatched_command)
+                        and not _pane_contains_exact_prompt(output, dispatched_command)
+                        and "send saved prompt" not in lower_output
+                    )
                     if saw_busy:
                         prompt_completed = True
-                    elif output != dispatch_output_snapshot and (time.time() - dispatched_at) >= max(1.25, args.poll_seconds * 2):
+                    elif execute_prompt_cleared:
+                        prompt_completed = True
+                    elif output != dispatch_output_snapshot and (now - dispatched_at) >= max(2.0, args.poll_seconds * 3):
                         prompt_completed = True
 
                 if prompt_completed and active_step == "execute":
@@ -1454,23 +1606,48 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                     time.sleep(args.poll_seconds)
                     continue
 
-                if prompt_completed and active_step == "update" and current_marker_mtime != update_marker_mtime:
+                if prompt_completed and active_step == "update" and update_marker_observed:
                     update_marker_mtime = current_marker_mtime
+                    update_marker_observed = False
                     _append_ledger(
                         state_paths,
                         "runner.update_complete",
                         phase=injected_phase,
                         prepared_at=current_marker_mtime,
                     )
-                    _log_line(state_paths, f"Update completed for phase={injected_phase}; restarting Codex")
-                    tmux.clear_prompt_line(session_name)
-                    tmux.send_eof(session_name)
-                    time.sleep(0.15)
-                    tmux.send_eof(session_name)
-                    state = update_state(state_paths.state_file, state, status="ready", current_step="")
+                    _log_line(
+                        state_paths,
+                        f"Update completed for phase={injected_phase}; prepared marker observed and exiting Codex so the next loop restarts fresh",
+                    )
+                    eof_sent = tmux.send_eof(session_name)
+                    if not eof_sent:
+                        _append_ledger(
+                            state_paths,
+                            "runner.chat_exit_failed",
+                            phase=injected_phase,
+                            session_name=session_name,
+                        )
+                        _log_line(
+                            state_paths,
+                            f"Prepared marker observed for phase={injected_phase}, but failed to exit Codex chat cleanly",
+                        )
+                        state = update_state(state_paths.state_file, state, status="error", current_step="")
+                        return 1
+
+                    _append_ledger(
+                        state_paths,
+                        "runner.chat_exit_requested",
+                        phase=injected_phase,
+                        session_name=session_name,
+                    )
+                    _log_line(
+                        state_paths,
+                        f"Requested Codex chat exit after update for phase={injected_phase}; next loop will relaunch fresh",
+                    )
+                    state = update_state(state_paths.state_file, state, status="running", current_step="")
                     return 0
 
-            if not in_flight and pane_state == "idle":
+            if not in_flight and pane_state == "idle" and dispatch_idle_grace_satisfied:
                 if active_step == "execute":
                     command = _build_execute_only_command(
                         dev=dev,
@@ -1487,18 +1664,33 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         project_root=project_root,
                     )
                 injected_at = utc_now()
-                sent = _submit_runner_prompt(
+                if active_step == "update":
+                    _append_ledger(
+                        state_paths,
+                        "runner.update_dispatch_start",
+                        phase=phase,
+                        session_name=session_name,
+                    )
+                    _log_line(
+                        state_paths,
+                        f"Dispatching /prompts:run_update for phase={phase} in {session_name}",
+                    )
+                sent, dispatch_failure_reason = _submit_runner_prompt(
                     tmux=tmux,
                     session_name=session_name,
                     command=command,
+                    visible_hold_seconds=RUNNER_UPDATE_VISIBLE_HOLD_SECONDS if active_step == "update" else 0.0,
                 )
 
                 if sent:
                     injected_phase = phase
                     in_flight = True
                     dispatch_output_snapshot = output
+                    dispatched_command = command
                     dispatched_at = time.time()
                     saw_busy = False
+                    if active_step == "update":
+                        update_marker_observed = False
                     _append_ledger(
                         state_paths,
                         "runner.iteration_dispatch",
@@ -1507,10 +1699,46 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         command=command,
                         injected_at=injected_at,
                     )
-                    _log_line(state_paths, f"Dispatched {active_step} for phase={phase}")
+                    if active_step == "update":
+                        _append_ledger(
+                            state_paths,
+                            "runner.update_dispatch_sent",
+                            phase=phase,
+                            session_name=session_name,
+                            injected_at=injected_at,
+                        )
+                        _log_line(
+                            state_paths,
+                            f"Dispatched /prompts:run_update for phase={phase}; waiting for prepared marker before fresh restart",
+                        )
+                    else:
+                        _log_line(state_paths, f"Dispatched {active_step} for phase={phase}")
                 else:
-                    _append_ledger(state_paths, "runner.dispatch_failed", phase=phase, step=active_step, session_name=session_name)
-                    _log_line(state_paths, f"Failed to dispatch {active_step} for phase={phase} in {session_name}")
+                    _append_ledger(
+                        state_paths,
+                        "runner.dispatch_failed",
+                        phase=phase,
+                        step=active_step,
+                        session_name=session_name,
+                        reason=dispatch_failure_reason or "unknown",
+                    )
+                    if active_step == "update":
+                        _append_ledger(
+                            state_paths,
+                            "runner.update_dispatch_failed",
+                            phase=phase,
+                            session_name=session_name,
+                            reason=dispatch_failure_reason or "unknown",
+                        )
+                        _log_line(
+                            state_paths,
+                            f"Failed to dispatch /prompts:run_update for phase={phase} in {session_name} reason={dispatch_failure_reason or 'unknown'}",
+                        )
+                    else:
+                        _log_line(
+                            state_paths,
+                            f"Failed to dispatch {active_step} for phase={phase} in {session_name} reason={dispatch_failure_reason or 'unknown'}",
+                        )
 
             time.sleep(args.poll_seconds)
     except Exception as exc:  # pylint: disable=broad-exception-caught

@@ -222,6 +222,10 @@ class SessionMenuRunTests(unittest.TestCase):
                 menu = SessionMenu(tmux)
                 with patch.object(menu, "_get_all_projects", return_value=[("Blog", 0), ("Shop", 0)]), patch.object(
                     menu, "_active_runner_projects", return_value={"Blog"}
+                ), patch.object(menu, "_load_runner_prefs", return_value=set()), patch.object(
+                    menu, "_load_runner_complexity", return_value="high"
+                ), patch("src.menu.sys.stdin.isatty", return_value=False), patch(
+                    "src.menu.os.open", side_effect=OSError
                 ), patch("builtins.input", side_effect=[""]):
                     result = menu._fallback_project_selector()
 
@@ -242,6 +246,14 @@ class SessionMenuRunTests(unittest.TestCase):
                     return_value=[("Blog", 0), ("Shop", 0)],
                 ), patch.object(
                     menu,
+                    "_load_runner_prefs",
+                    return_value={"Blog", "Shop"},
+                ), patch.object(
+                    menu,
+                    "_load_runner_complexity",
+                    return_value="high",
+                ), patch.object(
+                    menu,
                     "_active_runner_projects",
                     return_value=set(),
                 ), patch.object(
@@ -252,6 +264,28 @@ class SessionMenuRunTests(unittest.TestCase):
                     result = menu._fallback_project_selector()
 
             self.assertEqual(result, (["Blog"], "high"))
+
+    def test_fallback_selector_reads_arrows_from_dev_tty_when_stdin_is_not_tty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            tmux = Mock()
+            tmux.list_sessions.return_value = []
+            tmux.get_pane_title.return_value = None
+
+            with patch.dict(os.environ, {"DEV": str(dev), "HOME": str(dev)}):
+                menu = SessionMenu(tmux)
+                with (
+                    patch("src.menu.sys.stdin.isatty", return_value=False),
+                    patch("src.menu.os.open", return_value=42),
+                    patch("src.menu.os.read", side_effect=[b"\x1b", b"[", b"B"]),
+                    patch("src.menu.os.close"),
+                    patch("src.menu.termios.tcgetattr", return_value=("settings",)),
+                    patch("src.menu.termios.tcsetattr"),
+                    patch("src.menu.tty.setraw"),
+                ):
+                    choice = menu._read_fallback_project_selector_input()
+
+            self.assertEqual(choice, "__down__")
 
     def test_persists_prefs_and_tags_into_global_codex_namespace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,6 +327,10 @@ class SessionMenuRunTests(unittest.TestCase):
                 menu = SessionMenu(tmux)
                 with patch.object(menu, "_get_all_projects", return_value=[("Banksy", 1), ("Blog", 1)]), patch.object(
                     menu, "_active_runner_projects", return_value=set()
+                ), patch.object(menu, "_load_runner_prefs", return_value=set()), patch.object(
+                    menu, "_load_runner_complexity", return_value="high"
+                ), patch("src.menu.sys.stdin.isatty", return_value=False), patch(
+                    "src.menu.os.open", side_effect=OSError
                 ), patch("builtins.input", side_effect=["1", "q"]):
                     result = menu._fallback_project_selector()
 
@@ -325,8 +363,11 @@ class TmuxConfigTests(unittest.TestCase):
 
 
 class _FakeScreen:
-    def __init__(self):
+    def __init__(self, *, height: int = 40, width: int = 120, keys: list[int] | None = None):
         self.lines = []
+        self.height = height
+        self.width = width
+        self.keys = list(keys or [])
 
     def clear(self):
         return None
@@ -336,6 +377,17 @@ class _FakeScreen:
 
     def refresh(self):
         return None
+
+    def getmaxyx(self):
+        return (self.height, self.width)
+
+    def timeout(self, _value):
+        return None
+
+    def getch(self):
+        if self.keys:
+            return self.keys.pop(0)
+        return -1
 
 
 class SessionMenuUiTests(unittest.TestCase):
@@ -373,6 +425,20 @@ class SessionMenuUiTests(unittest.TestCase):
         with patch.object(menu, "_load_tags", return_value={"codex-1": "Session"}):
             title = menu._get_display_title(0, "codex-1")
         self.assertEqual(title, "Session: Demo")
+
+    def test_project_selector_does_not_throw_on_narrow_terminal(self):
+        menu = self._menu()
+        fake = _FakeScreen(height=8, width=24, keys=[27])
+        with patch.object(menu, "_get_all_projects", return_value=[("time-track", 3), ("repo", 0)]), patch.object(
+            menu, "_load_runner_prefs", return_value={"time-track"}
+        ), patch.object(menu, "_load_runner_complexity", return_value="high"), patch.object(
+            menu, "_active_runner_projects", return_value=set()
+        ), patch("src.menu.curses.curs_set", side_effect=curses.error("unsupported")), patch(
+            "src.menu.curses.use_default_colors", side_effect=curses.error("unsupported")
+        ):
+            result = menu._run_project_selector(fake)
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
