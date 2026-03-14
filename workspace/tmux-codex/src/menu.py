@@ -14,21 +14,13 @@ LESSONS LEARNED (for debugging tmux-codex):
    - ✓ Done: No more tasks, runner exited cleanly
    - 💤 Sleeping: Backing off or waiting
 
-3. WATCHDOG BEHAVIOR:
-   - Monitors pane content for prompt (❯) and activity
-   - Idle detection can fail if UI elements (cursor, status bar) keep changing
-   - Filter out "bypass permissions", "IDE disconnected" before comparing content
-   - Max timeout is safety net when idle detection fails
-
-4. TIMER STATES:
+3. TIMER STATES:
    - "Running: Xh Ym" → runners active (🟢), shows live elapsed from earliest start
    - "Idle (N runners paused)" → runners exist but all at prompt
    - "Last run: Xh Ym (ended HH:MM)" → no runners, shows last completed batch
 
-5. DEBUGGING COMMANDS:
+4. DEBUGGING COMMANDS:
    - tmux capture-pane -t runner-<project> -p | tail -20  # See runner state
-   - ps aux | grep "watchdog.*runner"                      # Check watchdog running
-   - cat /tmp/watchdog-runner-<project>.log               # Watchdog logs
    - cat ~/.codex/logs/runners/runners.log               # Timer data
 """
 
@@ -36,7 +28,10 @@ import curses
 import json
 import os
 import subprocess
+import sys
+import termios
 import time
+import tty
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,13 +41,12 @@ if TYPE_CHECKING:
 from .runner_loop import (
     build_runner_paths,
     ensure_gates_file,
-    make_codex_chat_loop_script,
+    make_codex_exec_loop_script,
     resolve_runner_profile,
 )
 from .runner_status import detect_runner_state
-from .runner_watchdog import spawn_runner_watchdog
-from .runctl import create_runner_state, resolve_target_project_root
-from .runner_state import build_phase_prompt_commands, coerce_runner_phase, read_json
+from .runctl import inspect_runner_start_state, resolve_target_project_root
+from .runner_state import read_json
 from .runner_state import codex_home
 from .tmux import LINES_STATUS
 
@@ -188,7 +182,7 @@ class SessionMenu:
         return f"runner-{project}"
 
     def _runner_active_lock_for_project(self, project: str) -> Path:
-        return self._dev_path / "Repos" / project / ".memory" / "RUNNER_ACTIVE.lock"
+        return self._dev_path / "Repos" / project / ".memory" / "runner" / "locks" / "RUNNER_ACTIVE.lock"
 
     def _project_has_running_runner(self, project: str, existing_sessions: set[str] | None = None) -> bool:
         session_name = self._runner_session_name_for_project(project)
@@ -223,7 +217,8 @@ class SessionMenu:
            Without this, /run, /status, /spec get "Unknown slash command"
         2. Don't use -p flag - it runs non-interactively and exits after one prompt
         3. Never use `timeout` wrapper - it breaks TTY/PTY forwarding
-        4. Permissions controlled via codex.json ("permission": "allow")
+        4. Let Codex use its normal full-screen TUI for interactive sessions
+        5. Permissions controlled via codex.json ("permission": "allow")
         """
         dev = os.environ.get("DEV", "/Users/jian/Dev")
         workdir = os.getcwd()
@@ -391,7 +386,7 @@ class SessionMenu:
             return "✓"
         if sess_name.startswith("runner-"):
             project = sess_name.replace("runner-", "", 1)
-            done_lock = self._dev_path / "Repos" / project / ".memory" / "RUNNER_DONE.lock"
+            done_lock = self._dev_path / "Repos" / project / ".memory" / "runner" / "locks" / "RUNNER_DONE.lock"
             if done_lock.exists():
                 return "✓"
 
@@ -711,7 +706,6 @@ class SessionMenu:
 
         cursor = 0  # Currently highlighted row
         complexity = self._load_runner_complexity()
-        complexity_order = ["low", "med", "high", "xhigh"]
         project_names = [name for name, _ in projects]
         active_projects = self._active_runner_projects(project_names)
         enabled = {name for name in enabled if name not in active_projects}
@@ -723,8 +717,6 @@ class SessionMenu:
             enabled = {name for name in enabled if name not in active_projects}
 
             stdscr.addstr(row, 2, "Start Runners - Select Projects", curses.A_BOLD)
-            model, effort = resolve_runner_profile(complexity, None)
-            stdscr.addstr(row, 40, f"{complexity} ({model}, effort={effort})", curses.A_DIM)
             row += 2
 
             # Draw project list with checkboxes
@@ -752,7 +744,7 @@ class SessionMenu:
             stdscr.addstr(
                 row,
                 2,
-                "Space=toggle | a=all | n=none | i=cycle complexity | l/m/h/x=set | Enter=start | Esc=cancel (locked=running)",
+                "Space=toggle | a=all | n=none | Enter=start | Esc=cancel (locked=running)",
                 curses.A_DIM,
             )
 
@@ -795,27 +787,6 @@ class SessionMenu:
                 cursor = min(len(projects) - 1, cursor + 1)
             elif 0 <= key < 256:
                 ch = chr(key)
-                if ch in ("i", "I"):
-                    idx = complexity_order.index(complexity)
-                    complexity = complexity_order[(idx + 1) % len(complexity_order)]
-                    self._persist_runner_picker_state(enabled, complexity)
-                    continue
-                if ch in ("l", "L"):
-                    complexity = "low"
-                    self._persist_runner_picker_state(enabled, complexity)
-                    continue
-                if ch in ("m", "M"):
-                    complexity = "med"
-                    self._persist_runner_picker_state(enabled, complexity)
-                    continue
-                if ch in ("h", "H"):
-                    complexity = "high"
-                    self._persist_runner_picker_state(enabled, complexity)
-                    continue
-                if ch in ("x", "X"):
-                    complexity = "xhigh"
-                    self._persist_runner_picker_state(enabled, complexity)
-                    continue
                 if ch.isdigit() and ch != '0':
                     idx = int(ch) - 1
                     if 0 <= idx < len(projects):
@@ -845,27 +816,27 @@ class SessionMenu:
                 enabled.add(name)
 
         print("\n🔄 Start Runners - Select Projects")
-        print("  (Toggle with numbers, Enter to start, q to cancel)\n")
+        print("  (Use arrows/space or numbers, Enter to start, q to cancel)\n")
         complexity = self._load_runner_complexity()
         project_names = [name for name, _ in projects]
+        cursor = 0
 
         while True:
             active_projects = self._active_runner_projects(project_names)
             enabled = {name for name in enabled if name not in active_projects}
-            model, effort = resolve_runner_profile(complexity, None)
-            print(f"  complexity={complexity} model={model} effort={effort}")
             for idx, (name, todo_count) in enumerate(projects):
                 is_active = name in active_projects
                 checkbox = "[~]" if is_active else ("[x]" if name in enabled else "[ ]")
                 count_str = f"({todo_count} tasks)" if todo_count > 0 else "(0 tasks)"
                 if is_active:
                     count_str += " [running]"
-                print(f"  {idx + 1}) {checkbox} {name:<20} {count_str}")
+                marker = ">" if idx == cursor else " "
+                print(f"{marker} {idx + 1}) {checkbox} {name:<20} {count_str}")
 
-            print("\n  a=all | n=none | i=cycle complexity | l/m/h/x=set | Enter=start | q=cancel (locked=running)")
+            print("\n  ↑/↓ move | Space=toggle | a=all | n=none | Enter=start | q=cancel (locked=running)")
 
             try:
-                choice = input("\nToggle or action: ").strip().lower()
+                choice = self._read_fallback_project_selector_input()
             except (KeyboardInterrupt, EOFError):
                 return None
 
@@ -876,24 +847,24 @@ class SessionMenu:
                     self._save_runner_prefs(enabled, complexity)
                     return sorted(enabled), complexity
                 return None
+            elif choice == "__up__":
+                cursor = max(0, cursor - 1)
+            elif choice == "__down__":
+                cursor = min(len(projects) - 1, cursor + 1)
+            elif choice == "__toggle__":
+                name = projects[cursor][0]
+                if name in active_projects:
+                    continue
+                if name in enabled:
+                    enabled.discard(name)
+                else:
+                    enabled.add(name)
+                self._persist_runner_picker_state(enabled, complexity)
             elif choice == 'a':
                 enabled = {name for name, _ in projects if name not in active_projects}
                 self._persist_runner_picker_state(enabled, complexity)
             elif choice == 'n':
                 enabled.clear()
-                self._persist_runner_picker_state(enabled, complexity)
-            elif choice == "i":
-                order = ["low", "med", "high", "xhigh"]
-                idx = order.index(complexity)
-                complexity = order[(idx + 1) % len(order)]
-                self._persist_runner_picker_state(enabled, complexity)
-            elif choice in ("l", "m", "h", "x"):
-                complexity = {
-                    "l": "low",
-                    "m": "med",
-                    "h": "high",
-                    "x": "xhigh",
-                }[choice]
                 self._persist_runner_picker_state(enabled, complexity)
             elif choice.isdigit():
                 idx = int(choice) - 1
@@ -909,6 +880,37 @@ class SessionMenu:
 
             # Clear and redraw
             print("\033[2J\033[H")  # Clear screen
+
+    def _read_fallback_project_selector_input(self) -> str:
+        """Read one fallback picker action, supporting arrows when attached to a TTY."""
+        if not sys.stdin.isatty():
+            return input("\nToggle or action: ").strip().lower()
+
+        print("\nToggle or action: ", end="", flush=True)
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            first = sys.stdin.read(1)
+            if first in ("\r", "\n"):
+                print()
+                return ""
+            if first in (" ",):
+                print()
+                return "__toggle__"
+            if first == "\x1b":
+                second = sys.stdin.read(1)
+                third = sys.stdin.read(1)
+                print()
+                if second == "[" and third == "A":
+                    return "__up__"
+                if second == "[" and third == "B":
+                    return "__down__"
+                return "q"
+            print(first)
+            return first.strip().lower()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     def _start_runner_session(self) -> str | None:
         """Start loop runners for selected projects using project picker.
@@ -928,9 +930,6 @@ class SessionMenu:
 
         dev = os.environ.get("DEV", "/Users/jian/Dev")
         model, reasoning_effort = resolve_runner_profile(complexity, None)
-        runctl_path = Path(
-            os.environ.get("TMUX_CLI_HOME", "/Users/jian/Dev/workspace/tmux-codex")
-        ) / "bin" / "runctl"
         started_sessions: list[str] = []
         existing_sessions = set(self.tmux.list_sessions())
 
@@ -954,51 +953,35 @@ class SessionMenu:
             _ = gates_path
             _ = created_now
 
-            create_result = create_runner_state(
+            ready_result = inspect_runner_start_state(
                 dev=dev,
                 project=project,
                 runner_id=runner_id,
-                approve_enable=None,
                 project_root=project_root,
             )
-            if not create_result.get("ok"):
-                print(f"  Failed to initialize runner state for {project}: {create_result.get('error', 'unknown error')}")
-                continue
-
-            # Treat explicit runner creation from the interactive menu as HIL approval
-            # for loop enablement to keep the UX single-step.
-            enable_token = create_result.get("enable_token")
-            if enable_token:
-                approve_result = create_runner_state(
-                    dev=dev,
-                    project=project,
-                    runner_id=runner_id,
-                    approve_enable=str(enable_token),
-                    project_root=project_root,
+            if not ready_result.get("ok"):
+                print(
+                    f"  Skipping {project}: {ready_result.get('error', 'runner not prepared')}"
                 )
-                if not approve_result.get("ok"):
-                    print(f"  Failed to approve runner {project}/{runner_id}: {approve_result.get('error', 'unknown error')}")
-                    print(
-                        "  Retry manually with: "
-                        f"python3 {runctl_path} --setup --project-root {project_root} "
-                        f"--runner-id {runner_id} --approve-enable {enable_token}"
-                    )
-                    continue
+                continue
 
             sess_name = self._runner_session_name_for_project(project)
             if sess_name in existing_sessions:
                 # Stale idle runner session; replace it with a fresh loop.
                 self.tmux.kill_session(sess_name)
                 existing_sessions.discard(sess_name)
-            paths = build_runner_paths(dev=dev, project=project, runner_id=runner_id)
-            cmd = make_codex_chat_loop_script(
+            paths = build_runner_paths(
                 dev=dev,
                 project=project,
                 runner_id=runner_id,
-                session_name=sess_name,
+                project_root=project_root,
+            )
+            cmd = make_codex_exec_loop_script(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
                 model=model,
                 reasoning_effort=reasoning_effort,
-                hil_mode="setup-only",
                 paths=paths,
             )
 
@@ -1008,40 +991,13 @@ class SessionMenu:
                 print(f"  Failed to create runner {sess_name}: {e}")
                 continue
 
-            spawn_runner_watchdog(
-                session=sess_name,
-                project=project,
-                runner_id=runner_id,
-                dev=dev,
-                project_root=str(project_root),
-                model=model,
-                reasoning_effort=reasoning_effort,
-                socket=getattr(self.tmux, "socket", "/tmp/tmux-codex.sock"),
-            )
-
             print(f"  Started {sess_name} ({complexity}, {model}, effort={reasoning_effort})")
-            initial_phase = "discover"
             state_paths = getattr(paths, "state", None)
-            exec_context_path = getattr(state_paths, "exec_context_json", None)
             state_file_path = getattr(state_paths, "state_file", None)
-            if exec_context_path is not None or state_file_path is not None:
-                exec_context = read_json(exec_context_path) if exec_context_path is not None else {}
-                state_data = read_json(state_file_path) if state_file_path is not None else {}
-                initial_phase = coerce_runner_phase(
-                    exec_context.get("phase") if isinstance(exec_context, dict) else state_data.get("current_phase"),
-                    default="discover",
-                )
-            execute_only_scope = build_phase_prompt_commands(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-                project_root=project_root,
-                phase=initial_phase,
-            )[0]
-            print(
-                "    scope: "
-                f"{execute_only_scope}"
-            )
+            state_data = read_json(state_file_path) if state_file_path is not None else {}
+            print("    mode: interactive-cli")
+            if isinstance(state_data, dict):
+                print(f"    phase: {state_data.get('current_phase', 'discover')}")
             self.sessions.append(sess_name)
             self.pane_titles.append(None)
             started_sessions.append(sess_name)

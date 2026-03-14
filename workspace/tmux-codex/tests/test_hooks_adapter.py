@@ -31,7 +31,7 @@ class HookAdapterTests(unittest.TestCase):
                 iteration=1,
                 payload={
                     "final_message": "Implemented feature",
-                    "hil_mode": "strict",
+                    "runner_mode": "exec",
                     "runner_update": {
                         "summary": "Implemented feature",
                         "completed": ["a"],

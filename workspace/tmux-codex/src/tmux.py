@@ -131,10 +131,17 @@ class TmuxClient:
             return session_or_target
         return f"{session_or_target}:0.0"
 
-    def send_keys(self, session_or_target: str, text: str, enter: bool = True, delay_ms: int = 120) -> bool:
+    def send_keys(
+        self,
+        session_or_target: str,
+        text: str,
+        enter: bool = True,
+        delay_ms: int = 120,
+        force_buffer: bool = False,
+    ) -> bool:
         """Send text to a pane with buffer-based paste for multiline/large payloads."""
         target = self._resolve_target(session_or_target)
-        use_buffer = "\n" in text or len(text) > 512
+        use_buffer = force_buffer or "\n" in text or len(text) > 512
 
         if use_buffer:
             buffer_name = f"cl-runner-{int(time.time() * 1000)}-{os.getpid()}"
@@ -172,6 +179,24 @@ class TmuxClient:
         """Clear current line in interactive prompt (Ctrl+U)."""
         target = self._resolve_target(session_or_target)
         result = self._run("send-keys", "-t", target, "C-u")
+        return result.returncode == 0
+
+    def press_enter(self, session_or_target: str) -> bool:
+        """Press Enter in a pane without sending additional text."""
+        target = self._resolve_target(session_or_target)
+        result = self._run("send-keys", "-t", target, "Enter")
+        return result.returncode == 0
+
+    def send_escape(self, session_or_target: str) -> bool:
+        """Send Escape to dismiss menus or prompt overlays."""
+        target = self._resolve_target(session_or_target)
+        result = self._run("send-keys", "-t", target, "Escape")
+        return result.returncode == 0
+
+    def send_eof(self, session_or_target: str) -> bool:
+        """Send Ctrl+D to request graceful CLI exit."""
+        target = self._resolve_target(session_or_target)
+        result = self._run("send-keys", "-t", target, "C-d")
         return result.returncode == 0
 
     def list_panes(self, session: str) -> list[str]:

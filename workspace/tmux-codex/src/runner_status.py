@@ -19,7 +19,6 @@ _WORKING_MARKERS = (
 )
 _SLEEPING_MARKERS = (
     "backing off",
-    "restarting interactive runner chat",
     "restarting runner",
 )
 _PROMPT_PREFIXES = ("❯", "›", ">")
@@ -122,14 +121,20 @@ def detect_runner_state(
     if is_sleeping:
         return "sleeping"
 
+    # In real Codex panes, pane_current_command or child-process inspection can
+    # surface an MCP helper (npm/node/python) instead of the Codex runtime.
+    # If the visible pane clearly looks like Codex UI and has a prompt, trust
+    # the rendered UI over the current child process name.
+    if _looks_like_codex_ui(lines) and has_prompt:
+        return "idle"
+
     if not codex_running:
         if proc in {"", "zsh", "bash", "sh", "/bin/zsh", "/bin/bash", "/bin/sh"}:
             return "exited"
-        # Keep explicit prompts as unknown so watchdog safety injection can fire.
+        # Keep explicit prompts as unknown so callers can decide whether to resume work.
         if has_prompt:
             return "unknown"
         # Non-codex processes that go quiet should not pin the runner forever.
-        # Treat them as exited so watchdog can respawn a fresh Codex session.
         if low_activity:
             return "exited"
         # If unknown process is running, prefer unknown over exited.

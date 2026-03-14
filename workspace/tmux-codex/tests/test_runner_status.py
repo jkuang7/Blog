@@ -33,8 +33,32 @@ class RunnerStatusTests(unittest.TestCase):
         state = detect_runner_state(out, process_name="node", last_activity_ts=90.0)
         self.assertEqual(state, "idle")
 
+    @patch("src.runner_status.time.time", return_value=100.0)
+    def test_mcp_child_process_with_codex_prompt_is_still_idle(self, _mock_time):
+        out = "OpenAI Codex\n› Improve documentation in @filename\ngpt-5.3-codex high · 100% left · ~/Dev\n"
+        state = detect_runner_state(
+            out,
+            process_name="npm exec @upstash/context7-mcp@latest",
+            last_activity_ts=95.0,
+        )
+        self.assertEqual(state, "idle")
+
     def test_node_wrapper_with_working_marker_is_working(self):
         out = "OpenAI Codex\n• Working (5s • esc to interrupt)\n"
+        state = detect_runner_state(out, process_name="node", last_activity_ts=None)
+        self.assertEqual(state, "working")
+
+    def test_prompt_does_not_override_working_marker(self):
+        out = "\n".join(
+            [
+                "OpenAI Codex",
+                "› Write tests for @filename",
+                "## Output",
+                "Keep output compact and operational.",
+                "• Working (1s • esc to interrupt)",
+                "gpt-5.3-codex high · 100% left · ~/Dev/Repos/time-track",
+            ]
+        )
         state = detect_runner_state(out, process_name="node", last_activity_ts=None)
         self.assertEqual(state, "working")
 
@@ -45,7 +69,7 @@ class RunnerStatusTests(unittest.TestCase):
         self.assertEqual(state, "idle")
 
     def test_detects_sleeping_from_backoff_markers(self):
-        out = "[16:51:58] restarting interactive runner chat in 3s\n"
+        out = "[16:51:58] restarting runner in 3s\n"
         state = detect_runner_state(out, process_name="zsh", last_activity_ts=None)
         self.assertEqual(state, "sleeping")
 

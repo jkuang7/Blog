@@ -18,10 +18,10 @@ from typing import Literal
 from .codex_engine import CodexRunResult, run_codex_iteration
 from .hooks import HookAdapter, LocalHooks, load_agents_bridge
 from .runctl import create_runner_state, resolve_target_project_root
+from .runner_status import detect_runner_state
 from .runner_state import (
     RunnerStatePaths,
     append_ndjson,
-    build_phase_prompt_commands,
     coerce_runner_phase,
     build_runner_state_paths_for_root,
     count_open_tasks,
@@ -33,6 +33,7 @@ from .runner_state import (
     utc_now,
     write_json,
 )
+from .tmux import LINES_FULL, LINES_STATUS, TmuxClient
 
 COMPLEXITY_PROFILE_MAP = {
     "low": ("gpt-5.3-codex", "low"),
@@ -121,13 +122,19 @@ def resolve_runner_profile(complexity: str, model_override: str | None) -> tuple
     return mapped_model, effort
 
 
-def build_runner_paths(dev: str, project: str, runner_id: str) -> RunnerPaths:
+def build_runner_paths(
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path | None = None,
+) -> RunnerPaths:
     """Create runner-specific path layout."""
-    project_root = resolve_target_project_root(
-        dev=dev,
-        project=project,
-        runner_id=runner_id,
-    )
+    if project_root is None:
+        project_root = resolve_target_project_root(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+        )
     return RunnerPaths(
         state=build_runner_state_paths_for_root(
             project_root=project_root,
@@ -305,87 +312,210 @@ def _repo_home() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def make_codex_chat_loop_script(
+def _build_execute_only_command(
+    *,
     dev: str,
     project: str,
     runner_id: str,
+    project_root: Path,
+    phase: str,
+) -> str:
+    phase_name = coerce_runner_phase(phase, default="discover")
+    return (
+        f"/prompts:run_execute "
+        f"DEV={dev} "
+        f"PROJECT={project} "
+        f"RUNNER_ID={runner_id} "
+        f"PWD={project_root} "
+        f"PROJECT_ROOT={project_root} "
+        f"PHASE={phase_name}"
+    )
+
+
+def _build_update_command(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+) -> str:
+    return (
+        f"/prompts:run_update "
+        f"DEV={dev} "
+        f"PROJECT={project} "
+        f"RUNNER_ID={runner_id} "
+        f"PWD={project_root} "
+        f"PROJECT_ROOT={project_root}"
+    )
+
+
+def _normalize_prompt_capture(text: str) -> str:
+    """Collapse pane output to make prompt matching resilient to wrapping."""
+    return " ".join(text.split())
+
+
+def _pane_contains_exact_prompt(pane: str, command: str) -> bool:
+    return _normalize_prompt_capture(command) in _normalize_prompt_capture(pane)
+
+
+def _pane_contains_empty_prompt_args(pane: str, command_anchor: str) -> bool:
+    normalized = _normalize_prompt_capture(pane)
+    if command_anchor not in normalized:
+        return False
+    if "missing required args" in normalized.lower():
+        return True
+    return 'DEV=""' in normalized and 'PROJECT=""' in normalized and 'PROJECT_ROOT=""' in normalized
+
+
+def _dismiss_runner_prompt(tmux: TmuxClient, session_name: str) -> None:
+    """Best-effort prompt dismissal so the controller can retry cleanly."""
+    tmux.send_escape(session_name)
+    time.sleep(0.03)
+    tmux.send_escape(session_name)
+    time.sleep(0.03)
+    tmux.clear_prompt_line(session_name)
+
+
+def _submit_runner_prompt(
+    *,
+    tmux: TmuxClient,
     session_name: str,
+    command: str,
+    settle_attempts: int = 12,
+    settle_delay_seconds: float = 0.08,
+    submit_attempts: int = 2,
+) -> bool:
+    """Stage and submit a slash prompt only after the full command is visible.
+
+    The interactive Codex TUI can consume the first Enter while the slash prompt
+    is still expanding. If Enter lands before the full command text is present,
+    Codex may submit an empty/default prompt invocation instead of the intended
+    `KEY=value` argument set.
+    """
+    command_anchor = command.split(" ", 1)[0]
+
+    for attempt in range(submit_attempts):
+        tmux.clear_prompt_line(session_name)
+        sent = tmux.send_keys(
+            session_name,
+            command,
+            enter=False,
+            delay_ms=0,
+            force_buffer=True,
+        )
+        if not sent:
+            return False
+
+        command_visible = False
+        for _ in range(settle_attempts):
+            pane = tmux.capture_pane(session_name, lines=LINES_STATUS) or ""
+            if _pane_contains_exact_prompt(pane, command):
+                command_visible = True
+                break
+            time.sleep(settle_delay_seconds)
+
+        if not command_visible:
+            if attempt + 1 < submit_attempts:
+                _dismiss_runner_prompt(tmux, session_name)
+                continue
+            time.sleep(settle_delay_seconds)
+
+        if not tmux.press_enter(session_name):
+            return False
+
+        expansion_ready = False
+        bad_expansion = False
+        for _ in range(settle_attempts):
+            pane = tmux.capture_pane(session_name, lines=LINES_STATUS) or ""
+            lower = pane.lower()
+            if _pane_contains_empty_prompt_args(pane, command_anchor):
+                bad_expansion = True
+                break
+            if "send saved prompt" in lower:
+                expansion_ready = True
+                break
+            time.sleep(settle_delay_seconds)
+
+        if bad_expansion:
+            _dismiss_runner_prompt(tmux, session_name)
+            if attempt + 1 < submit_attempts:
+                continue
+            return False
+
+        if not expansion_ready:
+            if attempt + 1 < submit_attempts:
+                _dismiss_runner_prompt(tmux, session_name)
+                continue
+            return False
+
+        return tmux.press_enter(session_name)
+
+    return False
+
+
+def make_codex_interactive_runner_script(
+    dev: str,
+    project: str,
+    runner_id: str,
     model: str,
     reasoning_effort: str,
-    hil_mode: str,
     paths: RunnerPaths,
 ) -> str:
-    """Generate wrapper script for interactive Codex chat UI.
-
-    The pane stays chat-first (same UX class as `n=new`).
-    In interactive-watchdog mode this script is intentionally single-run:
-    watchdog owns respawn/restart and iteration handoff.
-    """
-    project_root = paths.memory_dir.parent
+    """Generate interactive Codex launcher plus internal background controller."""
     repo_home = _repo_home()
+    q_project = shlex.quote(project)
     q_dev = shlex.quote(dev)
     q_model = shlex.quote(model)
-    q_reasoning = shlex.quote(f'reasoning.effort="{reasoning_effort}"')
-    q_project = shlex.quote(project)
-    q_runner_id = shlex.quote(runner_id)
     q_runner_log = shlex.quote(str(paths.runner_log))
     q_stop_lock = shlex.quote(str(paths.stop_file))
     q_done_lock = shlex.quote(str(paths.complete_lock))
+    project_root = paths.memory_dir.parent
     q_project_root = shlex.quote(str(project_root))
-    state = read_json(paths.state_file) or {}
-    phase = coerce_runner_phase(state.get("current_phase"), default="discover")
-    execute_only_cmd = build_phase_prompt_commands(
-        dev=dev,
-        project=project,
-        runner_id=runner_id,
-        project_root=project_root,
-        phase=phase,
-    )[0]
-    q_execute_only_cmd = execute_only_cmd.replace('"', '\\"')
+    q_runner_id = shlex.quote(runner_id)
+    q_session_name = shlex.quote(f"runner-{project}")
+    q_repo_home = shlex.quote(str(repo_home))
     return f'''\
 cd {q_project_root} || exit 1
 export TMUX_CLI_HOME="${{TMUX_CLI_HOME:-{repo_home}}}"
 RUNNER_LOG={q_runner_log}
-PROJECT_ROOT={q_project_root}
 STOP_LOCK={q_stop_lock}
 DONE_LOCK={q_done_lock}
+PROJECT_ROOT={q_project_root}
 mkdir -p "$(dirname "$RUNNER_LOG")"
-TARGET_BRANCH=""
-if [[ -f "$PROJECT_ROOT/.memory/runner/RUNNER_STATE.json" ]]; then
-  TARGET_BRANCH="$(sed -n 's/.*"git_branch":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$PROJECT_ROOT/.memory/runner/RUNNER_STATE.json" | head -n 1)"
-fi
-if [[ -n "$TARGET_BRANCH" ]]; then
-  CURRENT_BRANCH="$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || true)"
-  if [[ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]]; then
-    git -C "$PROJECT_ROOT" checkout "$TARGET_BRANCH" >/dev/null 2>&1 || true
-  fi
-fi
 log_supervisor() {{
   echo "[$(date +%H:%M:%S)] $1" | tee -a "$RUNNER_LOG"
 }}
+log_supervisor "starting infinite runner for {q_project}"
+while true; do
+  if [[ -f "$STOP_LOCK" || -f "$DONE_LOCK" ]]; then
+    log_supervisor "lock detected before launch; stopping infinite runner"
+    break
+  fi
 
-if [[ -f "$STOP_LOCK" ]]; then
-  log_supervisor "manual stop lock detected; exiting interactive runner pane bootstrap"
-  rm -f "$STOP_LOCK"
-  echo ""
-  echo "[Session idle - detach with Ctrl+B D]"
-  exec zsh -l
-fi
-if [[ -f "$DONE_LOCK" ]]; then
-  log_supervisor "done lock detected; exiting interactive runner pane bootstrap"
-  echo ""
-  echo "[Session idle - detach with Ctrl+B D]"
-  exec zsh -l
-fi
+  (cd {q_repo_home} && PYTHONPATH={q_repo_home}${{PYTHONPATH:+:$PYTHONPATH}} python3 -m src.main __runner-controller \
+    --project {q_project} \
+    --runner-id {q_runner_id} \
+    --session-name {q_session_name} \
+    --dev {q_dev}) >>"$RUNNER_LOG" 2>&1 &
+  CONTROLLER_PID=$!
+  log_supervisor "cycle controller pid=$CONTROLLER_PID"
 
-log_supervisor "starting interactive runner chat for {q_project} ({hil_mode})"
-log_supervisor "watchdog seeds {q_execute_only_cmd} when idle"
-codex --search --dangerously-bypass-approvals-and-sandbox -m {q_model} -c {q_reasoning}
-codex_rc=$?
-log_supervisor "interactive codex session exited rc=$codex_rc"
+  codex --search --dangerously-bypass-approvals-and-sandbox \
+    -m {q_model} \
+    -c reasoning.effort="{reasoning_effort}"
+  CODEX_RC=$?
+  wait "$CONTROLLER_PID"
+  CONTROLLER_RC=$?
+  log_supervisor "cycle ended codex_rc=$CODEX_RC controller_rc=$CONTROLLER_RC"
 
-echo ""
-echo "[Session idle - detach with Ctrl+B D]"
+  if [[ -f "$STOP_LOCK" || -f "$DONE_LOCK" ]]; then
+    log_supervisor "lock detected after cycle; stopping infinite runner"
+    break
+  fi
+
+  sleep 0.3
+done
+
 exec zsh -l
 '''
 
@@ -396,89 +526,17 @@ def make_codex_exec_loop_script(
     runner_id: str,
     model: str,
     reasoning_effort: str,
-    hil_mode: str,
     paths: RunnerPaths,
 ) -> str:
-    """Generate legacy exec-loop launcher (deprecated compatibility mode)."""
-    repo_home = _repo_home()
-    q_dev = shlex.quote(dev)
-    q_project = shlex.quote(project)
-    q_model = shlex.quote(model)
-    q_reasoning = shlex.quote(f'reasoning.effort="{reasoning_effort}"')
-    q_hil_mode = shlex.quote(hil_mode)
-    q_runner_log = shlex.quote(str(paths.runner_log))
-    q_stop_lock = shlex.quote(str(paths.stop_file))
-    q_done_lock = shlex.quote(str(paths.complete_lock))
-    project_root = paths.memory_dir.parent
-    q_project_root = shlex.quote(str(project_root))
-    runctl_cmd = (
-        f"python3 {repo_home / 'bin' / 'runctl'} "
-        f"--setup --project-root {project_root} --runner-id {runner_id}"
+    """Compatibility wrapper for tests/callers; public runner uses interactive mode."""
+    return make_codex_interactive_runner_script(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        paths=paths,
     )
-    q_runner_prompt = shlex.quote(
-        "Continue one autonomous runner cycle. "
-        f"Project: {project}. "
-        f"Worktree root: {project_root}. "
-        "Slash commands like /run are unavailable in this non-interactive cycle. "
-        "Use the equivalent setup command only if runner state is missing or unreadable: "
-        f"{runctl_cmd}. "
-        "Then read .memory/runner/RUNNER_STATE.json, .memory/runner/TASKS.json, and .memory/lessons.md, "
-        "execute exactly one meaningful validated step from next_task, and provide concise verification evidence."
-    )
-    return f'''\
-cd {q_dev} || exit 1
-export TMUX_CLI_HOME="${{TMUX_CLI_HOME:-{repo_home}}}"
-RUNNER_LOG={q_runner_log}
-STOP_LOCK={q_stop_lock}
-DONE_LOCK={q_done_lock}
-RUNNER_PROMPT={q_runner_prompt}
-PROJECT_ROOT={q_project_root}
-mkdir -p "$(dirname "$RUNNER_LOG")"
-log_supervisor() {{
-  echo "[$(date +%H:%M:%S)] $1" | tee -a "$RUNNER_LOG"
-}}
-
-while true; do
-  if [[ -f "$STOP_LOCK" ]]; then
-    log_supervisor "manual stop lock detected; exiting interactive runner loop"
-    rm -f "$STOP_LOCK"
-    break
-  fi
-  if [[ -f "$DONE_LOCK" ]]; then
-    log_supervisor "done lock detected; exiting interactive runner loop"
-    break
-  fi
-
-  TARGET_BRANCH=""
-  if [[ -f "$PROJECT_ROOT/.memory/runner/RUNNER_STATE.json" ]]; then
-    TARGET_BRANCH="$(sed -n 's/.*"git_branch":[[:space:]]*"\\([^"]*\\)".*/\\1/p' "$PROJECT_ROOT/.memory/runner/RUNNER_STATE.json" | head -n 1)"
-  fi
-  if [[ -n "$TARGET_BRANCH" ]]; then
-    CURRENT_BRANCH="$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || true)"
-    if [[ "$CURRENT_BRANCH" != "$TARGET_BRANCH" ]]; then
-      git -C "$PROJECT_ROOT" checkout "$TARGET_BRANCH" >/dev/null 2>&1 || true
-    fi
-  fi
-
-  log_supervisor "starting interactive runner chat for {q_project} ({q_hil_mode})"
-  codex --search --dangerously-bypass-approvals-and-sandbox exec -C "$PROJECT_ROOT" -m {q_model} -c {q_reasoning} "$RUNNER_PROMPT"
-  codex_rc=$?
-  log_supervisor "interactive codex session exited rc=$codex_rc"
-
-  if [[ -f "$STOP_LOCK" || -f "$DONE_LOCK" ]]; then
-    log_supervisor "runner lock detected after codex exit; stopping restart loop"
-    [[ -f "$STOP_LOCK" ]] && rm -f "$STOP_LOCK"
-    break
-  fi
-
-  log_supervisor "restarting interactive runner chat in 3s"
-  sleep 3
-done
-
-echo ""
-echo "[Session idle - detach with Ctrl+B D]"
-exec zsh -l
-'''
 
 
 def _validate_gates_contract(gates_file: Path) -> tuple[bool, str]:
@@ -607,7 +665,7 @@ Rules:
 3. Do not create the done lock early.
 4. Before creating done lock, source .memory/gates.sh and run run_gates.
 5. Only create done lock if run_gates succeeds and .memory/runner/TASKS.json has zero tasks in open|in_progress|blocked.
-6. Use .memory/runner/RUNNER_EXEC_CONTEXT.json plus runner state to respect the current phase goal and next task.
+6. Use .memory/runner/RUNNER_EXEC_CONTEXT.json plus .memory/runner/RUNNER_HANDOFF.md and runner state to respect the current phase goal and next task.
 7. End your response with this exact machine-parsable block:
 RUNNER_UPDATE_START
 {{"summary":"...","completed":["..."],"next_task":"...","next_task_reason":"...","blockers":["..."],"done_candidate":false}}
@@ -695,7 +753,7 @@ def _build_finalize_hook_prompt(
     state: dict[str, object],
 ) -> str:
     safe_message = final_message.strip() or "(no final message)"
-    current_next = str(state.get("next_task", "")).strip() or "Define the next smallest validated change."
+    current_next = str(state.get("next_task", "")).strip() or "Execute the next concrete validated slice."
     current_reason = str(state.get("next_task_reason", "")).strip() or "Carry forward prior plan context."
     return f"""The previous runner response failed strict parsing.
 
@@ -746,7 +804,7 @@ def _fallback_update_payload(
         next_task = "No further implementation work; completion candidate pending gate validation."
         next_task_reason = "Completion inferred from final assistant output; gates will confirm."
     else:
-        next_task = str(state.get("next_task", "")).strip() or "Define the next smallest validated change."
+        next_task = str(state.get("next_task", "")).strip() or "Execute the next concrete validated slice."
         next_task_reason = str(state.get("next_task_reason", "")).strip() or (
             "Structured runner update missing; carrying forward previous next step."
         )
@@ -828,7 +886,6 @@ def _apply_iteration_update(
     paths: RunnerStatePaths,
     state: dict[str, object],
     update_payload: dict[str, object],
-    hil_mode: str,
     session_id: str | None,
 ) -> dict[str, object]:
     completed_recent = list(update_payload.get("completed", []))
@@ -850,8 +907,8 @@ def _apply_iteration_update(
         done_candidate=done_candidate,
         done_gate_status="pending",
         runtime_policy={
-            "hil_mode": hil_mode.replace("-", "_"),
-            "session_mode": "phase_persistent",
+            "runner_mode": "exec",
+            "session_strategy": "fresh_session",
         },
     )
     return state
@@ -864,14 +921,9 @@ def run_loop_runner(
     model: str,
     session_name: str,
     reasoning_effort: str = "high",
-    hil_mode: str = "setup-only",
     backoff_seconds: int = 2,
 ) -> int:
     """Run codex loop until stop/done criteria are met."""
-    if hil_mode != "setup-only":
-        print(f"ERROR: invalid hil mode: {hil_mode}")
-        return 2
-
     project_root = resolve_target_project_root(
         dev=dev,
         project=project,
@@ -913,8 +965,8 @@ def run_loop_runner(
         state,
         **detect_git_context(project_root),
         runtime_policy={
-            "hil_mode": hil_mode.replace("-", "_"),
-            "session_mode": "phase_persistent",
+            "runner_mode": "exec",
+            "session_strategy": "fresh_session",
         },
     )
 
@@ -953,7 +1005,6 @@ def run_loop_runner(
         "runner.start",
         model=model,
         reasoning_effort=reasoning_effort,
-        hil_mode=hil_mode,
         session_name=session_name,
     )
     hooks.emit(
@@ -1050,8 +1101,8 @@ def run_loop_runner(
                 session_id=session_id,
                 **detect_git_context(project_root),
                 runtime_policy={
-                    "hil_mode": hil_mode.replace("-", "_"),
-                    "session_mode": "phase_persistent",
+                    "runner_mode": "exec",
+                    "session_strategy": "fresh_session",
                 },
             )
 
@@ -1064,7 +1115,7 @@ def run_loop_runner(
                 project,
                 runner_id,
                 iteration,
-                {"model": model, "reasoning_effort": reasoning_effort, "hil_mode": hil_mode},
+                {"model": model, "reasoning_effort": reasoning_effort},
             )
 
             resume_session_id = None
@@ -1092,7 +1143,6 @@ def run_loop_runner(
                 exit_code=result.exit_code,
                 final_message=result.final_message,
                 session_id=session_id,
-                hil_mode=hil_mode,
             )
 
             if result.exit_code != 0:
@@ -1105,7 +1155,6 @@ def run_loop_runner(
                     {
                         "exit_code": result.exit_code,
                         "final_message": result.final_message,
-                        "hil_mode": hil_mode,
                     },
                 )
 
@@ -1127,7 +1176,6 @@ def run_loop_runner(
                 {
                     "final_message": str(update_payload.get("summary", result.final_message)),
                     "exit_code": result.exit_code,
-                    "hil_mode": hil_mode,
                     "runner_update": update_payload,
                     "done_candidate": bool(update_payload.get("done_candidate", False)),
                     "finalize_mode": finalize_mode,
@@ -1140,7 +1188,6 @@ def run_loop_runner(
                 paths=paths,
                 state=state,
                 update_payload=update_payload,
-                hil_mode=hil_mode,
                 session_id=session_id,
             )
             _append_ledger(
@@ -1219,7 +1266,6 @@ def run_loop_runner(
             iteration,
             {
                 "error": runner_error,
-                "hil_mode": hil_mode,
             },
         )
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -1242,7 +1288,6 @@ def run_loop_runner(
             iteration,
             {
                 "error": runner_error,
-                "hil_mode": hil_mode,
             },
         )
     finally:
@@ -1276,11 +1321,6 @@ def parse_loop_worker_args(argv: list[str]) -> argparse.Namespace:
         default="high",
         choices=("low", "medium", "high", "xhigh"),
     )
-    parser.add_argument(
-        "--hil-mode",
-        default="setup-only",
-        choices=("setup-only",),
-    )
     parser.add_argument("--session-name", required=True)
     parser.add_argument("--backoff-seconds", type=int, default=2)
     parser.add_argument("--dev", default=os.environ.get("DEV", "/Users/jian/Dev"))
@@ -1295,7 +1335,193 @@ def run_loop_worker(argv: list[str]) -> int:
         runner_id=args.runner_id,
         model=args.model,
         reasoning_effort=args.reasoning_effort,
-        hil_mode=args.hil_mode,
         session_name=args.session_name,
         backoff_seconds=args.backoff_seconds,
     )
+
+
+def parse_runner_controller_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Internal infinite runner controller")
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--runner-id", required=True)
+    parser.add_argument("--session-name", required=True)
+    parser.add_argument("--dev", default=os.environ.get("DEV", "/Users/jian/Dev"))
+    parser.add_argument("--poll-seconds", type=float, default=0.75)
+    return parser.parse_args(argv)
+
+
+def run_interactive_runner_controller(argv: list[str]) -> int:
+    args = parse_runner_controller_args(argv)
+    dev = args.dev
+    project = args.project
+    runner_id = args.runner_id
+    session_name = args.session_name
+    project_root = resolve_target_project_root(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+    )
+    paths = build_runner_paths(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+    )
+    state_paths = paths.state
+    tmux = TmuxClient()
+
+    ensure_memory_dir(state_paths)
+    state = read_json(state_paths.state_file) or {}
+    state = update_state(state_paths.state_file, state, status="running", current_step="interactive_runner")
+    state_paths.active_lock.write_text(
+        f"started_at={utc_now()}\nproject={project}\nrunner_id={runner_id}\nsession={session_name}\nmode=interactive\n"
+    )
+    _append_ledger(state_paths, "runner.start", mode="interactive", session_name=session_name)
+    _log_line(state_paths, f"Infinite runner started for {session_name}")
+
+    last_output = ""
+    last_output_change_at = time.time()
+    in_flight = False
+    active_step: Literal["execute", "update"] = "execute"
+    injected_phase = "discover"
+    dispatch_output_snapshot = ""
+    dispatched_at = 0.0
+    saw_busy = False
+    update_marker_mtime = (
+        state_paths.cycle_prepared_file.stat().st_mtime
+        if state_paths.cycle_prepared_file.exists()
+        else 0.0
+    )
+
+    try:
+        while True:
+            if not tmux.has_session(session_name):
+                _append_ledger(state_paths, "runner.session_missing", session_name=session_name)
+                _log_line(state_paths, f"Runner session disappeared: {session_name}")
+                state = update_state(state_paths.state_file, state, status="stopped", current_step="")
+                return 0
+
+            if state_paths.stop_lock.exists():
+                _append_ledger(state_paths, "runner.manual_stop", stop_lock=str(state_paths.stop_lock))
+                _log_line(state_paths, "Infinite runner stop requested")
+                state = update_state(state_paths.state_file, state, status="stopped", current_step="")
+                return 0
+
+            if state_paths.done_lock.exists():
+                _append_ledger(state_paths, "runner.done_lock_observed", done_lock=str(state_paths.done_lock))
+                _log_line(state_paths, "Done lock detected; infinite runner exiting")
+                state = update_state(state_paths.state_file, state, status="done", current_step="")
+                return 0
+
+            output = tmux.capture_pane(session_name, lines=LINES_FULL) or ""
+            if output != last_output:
+                last_output = output
+                last_output_change_at = time.time()
+
+            process_name = tmux.get_pane_process(session_name)
+            pane_state = detect_runner_state(output, process_name, last_output_change_at)
+            state = read_json(state_paths.state_file) or state
+            exec_context = read_json(state_paths.exec_context_json) or {}
+            phase = coerce_runner_phase(
+                exec_context.get("phase") or state.get("current_phase"),
+                default="discover",
+            )
+            if in_flight:
+                if pane_state != "idle":
+                    saw_busy = True
+                current_marker_mtime = (
+                    state_paths.cycle_prepared_file.stat().st_mtime
+                    if state_paths.cycle_prepared_file.exists()
+                    else 0.0
+                )
+                prompt_completed = False
+                if pane_state == "idle":
+                    if saw_busy:
+                        prompt_completed = True
+                    elif output != dispatch_output_snapshot and (time.time() - dispatched_at) >= max(1.25, args.poll_seconds * 2):
+                        prompt_completed = True
+
+                if prompt_completed and active_step == "execute":
+                    in_flight = False
+                    active_step = "update"
+                    _append_ledger(
+                        state_paths,
+                        "runner.execute_complete",
+                        phase=injected_phase,
+                        completed_at=utc_now(),
+                    )
+                    _log_line(state_paths, f"Execute completed for phase={injected_phase}")
+                    time.sleep(args.poll_seconds)
+                    continue
+
+                if prompt_completed and active_step == "update" and current_marker_mtime != update_marker_mtime:
+                    update_marker_mtime = current_marker_mtime
+                    _append_ledger(
+                        state_paths,
+                        "runner.update_complete",
+                        phase=injected_phase,
+                        prepared_at=current_marker_mtime,
+                    )
+                    _log_line(state_paths, f"Update completed for phase={injected_phase}; restarting Codex")
+                    tmux.clear_prompt_line(session_name)
+                    tmux.send_eof(session_name)
+                    time.sleep(0.15)
+                    tmux.send_eof(session_name)
+                    state = update_state(state_paths.state_file, state, status="ready", current_step="")
+                    return 0
+
+            if not in_flight and pane_state == "idle":
+                if active_step == "execute":
+                    command = _build_execute_only_command(
+                        dev=dev,
+                        project=project,
+                        runner_id=runner_id,
+                        project_root=project_root,
+                        phase=phase,
+                    )
+                else:
+                    command = _build_update_command(
+                        dev=dev,
+                        project=project,
+                        runner_id=runner_id,
+                        project_root=project_root,
+                    )
+                injected_at = utc_now()
+                sent = _submit_runner_prompt(
+                    tmux=tmux,
+                    session_name=session_name,
+                    command=command,
+                )
+
+                if sent:
+                    injected_phase = phase
+                    in_flight = True
+                    dispatch_output_snapshot = output
+                    dispatched_at = time.time()
+                    saw_busy = False
+                    _append_ledger(
+                        state_paths,
+                        "runner.iteration_dispatch",
+                        phase=phase,
+                        step=active_step,
+                        command=command,
+                        injected_at=injected_at,
+                    )
+                    _log_line(state_paths, f"Dispatched {active_step} for phase={phase}")
+                else:
+                    _append_ledger(state_paths, "runner.dispatch_failed", phase=phase, step=active_step, session_name=session_name)
+                    _log_line(state_paths, f"Failed to dispatch {active_step} for phase={phase} in {session_name}")
+
+            time.sleep(args.poll_seconds)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        _append_ledger(
+            state_paths,
+            "runner.controller_exception",
+            error=f"{type(exc).__name__}: {exc}",
+            traceback=traceback.format_exc(),
+        )
+        _log_line(state_paths, f"Infinite runner exception: {type(exc).__name__}: {exc}")
+        state = update_state(state_paths.state_file, state, status="error", current_step="")
+        return 1
+    finally:
+        state_paths.active_lock.unlink(missing_ok=True)

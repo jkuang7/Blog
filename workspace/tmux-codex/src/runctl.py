@@ -17,7 +17,6 @@ from typing import Any
 
 from .runner_state import (
     DEFAULT_PHASE_BUDGET_MINUTES,
-    PHASE_PROMPT_NAMES,
     append_ndjson,
     build_runner_state_paths_for_root,
     coerce_runner_phase,
@@ -95,8 +94,10 @@ def _discover_saved_runner_roots(dev: str, project: str, runner_id: str) -> list
         return normalized or "main"
 
     def _collect_candidate(source: str, state_root: Path, sink: list[tuple[str, Path, float]]) -> None:
-        state_file = state_root / ".memory" / "runner" / "RUNNER_STATE.json"
-        state = read_json(state_file)
+        memory_dir = state_root / ".memory"
+        state = read_json(memory_dir / "runner" / "runtime" / "RUNNER_STATE.json")
+        if not state:
+            state = read_json(memory_dir / "runner" / "RUNNER_STATE.json")
         if not state:
             return
         if _normalize_runner_id(state.get("runner_id")) != runner_id:
@@ -128,12 +129,17 @@ def _discover_saved_runner_roots(dev: str, project: str, runner_id: str) -> list
         seen_worktree_roots.add(worktrees_root)
         if not worktrees_root.exists():
             continue
-        for state_file in worktrees_root.glob(f"*/{project}/.memory/runner/RUNNER_STATE.json"):
-            try:
-                state_root = state_file.parents[2]
-            except IndexError:
-                continue
-            _collect_candidate("worktree", state_root, candidates)
+        state_globs = (
+            f"*/{project}/.memory/runner/runtime/RUNNER_STATE.json",
+            f"*/{project}/.memory/runner/RUNNER_STATE.json",
+        )
+        for pattern in state_globs:
+            for state_file in worktrees_root.glob(pattern):
+                try:
+                    state_root = state_file.parents[3] if "runtime" in state_file.parts else state_file.parents[2]
+                except IndexError:
+                    continue
+                _collect_candidate("worktree", state_root, candidates)
 
     # Keep newest candidate per resolved root.
     deduped: dict[Path, tuple[str, Path, float]] = {}
@@ -487,7 +493,100 @@ def _collect_context_sources(project_root: Path) -> list[dict[str, Any]]:
         _add(project_root / ".codex" / "context-pack.md", kind="context_pack")
         _add(project_root / ".codex" / "context-pack.json", kind="context_pack_json")
 
+    memory_dir = project_root / ".memory"
+    _add(memory_dir / "PRD.md", kind="repo_prd")
+    _add(memory_dir / "lessons.md", kind="repo_lessons")
+    _add(memory_dir / "runner" / "RUNNER_HANDOFF.md", kind="runner_handoff")
+    if not (memory_dir / "PRD.md").exists():
+        _add(memory_dir / "REFRACTOR_STATUS.md", kind="legacy_repo_prd")
+
     return sources
+
+
+def _extract_open_tasks_from_payload(tasks_payload: dict[str, Any], max_items: int = 40) -> list[str]:
+    tasks = tasks_payload.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+
+    items: list[str] = []
+    for raw in tasks:
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status", "")).strip().lower()
+        if status not in {"open", "in_progress", "blocked"}:
+            continue
+        task_id = str(raw.get("task_id", "")).strip() or "(id)"
+        title = str(raw.get("title", "")).strip() or "(untitled)"
+        items.append(f"{task_id}: {title}"[:220])
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def _sync_runner_handoff_file(
+    *,
+    paths,
+    state: dict[str, Any],
+    prd_payload: dict[str, Any],
+    tasks_payload: dict[str, Any],
+    selected_task: dict[str, Any] | None,
+    phase_goal: str,
+    project_root: Path,
+) -> None:
+    objective_title = _normalize_objective_title(_as_text(prd_payload.get("title"))) or _as_text(state.get("current_goal"))
+    next_task_id = _as_text(state.get("next_task_id"))
+    next_task = _as_text(state.get("next_task"))
+    next_task_reason = _as_text(state.get("next_task_reason"))
+    current_phase = coerce_runner_phase(state.get("current_phase"), default="discover")
+    phase_status = _as_text(state.get("phase_status")) or "active"
+    status = _as_text(state.get("status")) or "ready"
+    done_gate_status = _as_text(state.get("done_gate_status")) or "pending"
+    phase_budget = int(state.get("phase_budget_minutes", DEFAULT_PHASE_BUDGET_MINUTES))
+    task_acceptance = selected_task.get("acceptance") if isinstance(selected_task, dict) else []
+    task_validation = selected_task.get("validation") if isinstance(selected_task, dict) else []
+    if not isinstance(task_acceptance, list):
+        task_acceptance = []
+    if not isinstance(task_validation, list):
+        task_validation = []
+    completed_recent = [str(item).strip() for item in state.get("completed_recent", []) if str(item).strip()]
+    blockers = [str(item).strip() for item in state.get("blockers", []) if str(item).strip()]
+    open_items = _extract_open_tasks_from_payload(tasks_payload, max_items=8)
+    selected_title = _as_text(selected_task.get("title")) if isinstance(selected_task, dict) else next_task
+    lines = [
+        f"# Runner Handoff ({project_root.name})",
+        "",
+        f"- Updated: {utc_now()}",
+        f"- Objective: {objective_title or '(none)'}",
+        f"- Phase: {current_phase}",
+        f"- Phase status: {phase_status}",
+        f"- Runner status: {status}",
+        f"- Done gate: {done_gate_status}",
+        f"- Phase budget minutes: {phase_budget}",
+        "",
+        "## Resume",
+        "",
+        f"- Phase goal: {phase_goal}",
+        f"- Next task: {' '.join(part for part in (next_task_id, next_task or selected_title) if part).strip() or '(none)'}",
+        f"- Why next: {next_task_reason or '(none)'}",
+    ]
+    if _as_text(state.get("last_iteration_summary")):
+        lines.extend(["", "## Last Session Summary", "", _as_text(state.get("last_iteration_summary"))])
+    if completed_recent:
+        lines.extend(["", "## Recently Completed", ""])
+        lines.extend([f"- {item}" for item in completed_recent[:5]])
+    if task_acceptance:
+        lines.extend(["", "## Acceptance For Current Slice", ""])
+        lines.extend([f"- {str(item).strip()}" for item in task_acceptance[:5] if str(item).strip()])
+    if task_validation:
+        lines.extend(["", "## Validation For Current Slice", ""])
+        lines.extend([f"- {str(item).strip()}" for item in task_validation[:5] if str(item).strip()])
+    if blockers:
+        lines.extend(["", "## Active Blockers", ""])
+        lines.extend([f"- {item}" for item in blockers[:5]])
+    if open_items:
+        lines.extend(["", "## Remaining Open Tasks", ""])
+        lines.extend([f"- {item}" for item in open_items])
+    paths.runner_handoff_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _normalize_line(line: str) -> str:
@@ -563,6 +662,11 @@ def _normalize_task_entry(
         acceptance = [f"Complete task {task_id}: {title}"]
     if not validation:
         validation = ["Run project verification for this slice."]
+    acceptance, validation = _harden_task_completion_contract(
+        title=title,
+        acceptance=acceptance,
+        validation=validation,
+    )
     updated_at = _as_text(raw.get("updated_at")) or utc_now()
     normalized = {
         "task_id": task_id,
@@ -581,6 +685,66 @@ def _normalize_task_entry(
     if blocked_reason:
         normalized["blocked_reason"] = blocked_reason[:220]
     return normalized
+
+
+def _looks_like_strict_parity_task(*, title: str, acceptance: list[str], validation: list[str]) -> bool:
+    combined = " ".join([title, *acceptance, *validation]).lower()
+    parity_markers = (
+        "parity",
+        "baseline",
+        "latest committed",
+        "old styling",
+        "visual",
+        "visualization",
+        "styling",
+        "spacing",
+        "density",
+        "ui/ux",
+        "archive current tab",
+        "regression",
+    )
+    return any(marker in combined for marker in parity_markers)
+
+
+def _append_unique_line(lines: list[str], candidate: str) -> list[str]:
+    normalized_candidate = _normalize_line(candidate)[:220]
+    if not normalized_candidate:
+        return lines
+    existing = {_normalize_line(item).lower() for item in lines if _normalize_line(item)}
+    if normalized_candidate.lower() not in existing:
+        lines.append(normalized_candidate)
+    return lines
+
+
+def _harden_task_completion_contract(
+    *,
+    title: str,
+    acceptance: list[str],
+    validation: list[str],
+) -> tuple[list[str], list[str]]:
+    normalized_acceptance = [_normalize_line(item)[:220] for item in acceptance if _normalize_line(item)]
+    normalized_validation = [_normalize_line(item)[:220] for item in validation if _normalize_line(item)]
+
+    if not _looks_like_strict_parity_task(
+        title=title,
+        acceptance=normalized_acceptance,
+        validation=normalized_validation,
+    ):
+        return normalized_acceptance, normalized_validation
+
+    _append_unique_line(
+        normalized_acceptance,
+        "Completion is fail-closed: do not mark this task done until explicit baseline comparison shows no remaining known delta on the audited surfaces.",
+    )
+    _append_unique_line(
+        normalized_validation,
+        "Perform explicit side-by-side comparison against the recorded baseline for the touched surfaces.",
+    )
+    _append_unique_line(
+        normalized_validation,
+        "If any known visual or behavior delta remains, keep the task open and narrow the blocker instead of advancing.",
+    )
+    return normalized_acceptance, normalized_validation
 
 
 def _default_prd(state: dict[str, Any], *, project: str, project_root: Path) -> dict[str, Any]:
@@ -671,14 +835,14 @@ def _ensure_tasks_payload(
         tasks = [
             {
                 "task_id": "TT-001",
-                "title": "Define and execute the next smallest validated implementation step.",
+                "title": "Execute the next concrete validated slice toward the active objective.",
                 "status": "open",
                 "priority": "p1",
                 "depends_on": [],
                 "project_root": str(project_root.resolve()),
                 "target_branch": target_branch,
-                "acceptance": ["Complete task TT-001."],
-                "validation": ["Run project verification for this slice."],
+                "acceptance": ["Reach a concrete validated phase boundary for the active objective."],
+                "validation": ["Run the validations required for the active slice and record the resulting blocker or completion state."],
                 "updated_at": utc_now(),
                 "objective_id": objective_id,
             }
@@ -877,21 +1041,33 @@ def _build_phase_context_delta(
     phase: str,
     objective_title: str,
     next_task_text: str,
+    next_task_id: str | None,
     selection_reason: str,
     blockers: list[str],
     implementation_plan: list[str],
     open_tasks_count: int,
     done_gate_status_value: str,
+    phase_status: str,
+    completed_recent: list[str],
+    last_iteration_summary: str,
+    task_acceptance: list[str],
+    task_validation: list[str],
 ) -> dict[str, Any]:
     return {
         "phase": phase,
         "objective_title": objective_title,
+        "next_task_id": next_task_id,
         "next_task": next_task_text,
         "next_task_reason": selection_reason,
         "blockers_top3": blockers[:3],
         "implementation_plan_top2": implementation_plan[:2],
+        "completed_recent_top5": completed_recent[:5],
+        "last_iteration_summary": last_iteration_summary,
+        "task_acceptance_top3": task_acceptance[:3],
+        "task_validation_top3": task_validation[:3],
         "open_tasks_count": open_tasks_count,
         "done_gate_status": done_gate_status_value,
+        "phase_status": phase_status,
     }
 
 
@@ -954,11 +1130,23 @@ def _write_exec_context(
         acceptance = []
     if not isinstance(validation, list):
         validation = []
-    prompt_name = PHASE_PROMPT_NAMES[phase]
+    parity_fail_closed = _looks_like_strict_parity_task(
+        title=task_title,
+        acceptance=[str(item) for item in acceptance if str(item).strip()],
+        validation=[str(item) for item in validation if str(item).strip()],
+    )
+    hard_rules = [
+        "stay_within_phase_goal",
+        "validate_as_you_go",
+        "refresh_runner_state_once",
+        "write_prepared_marker_at_phase_boundary",
+        "exit_session_on_phase_handoff",
+    ]
+    if parity_fail_closed:
+        hard_rules.append("parity_tasks_fail_closed_until_no_known_delta_remains")
     payload = {
         "objective_id": _as_text(prd_payload.get("objective_id")),
         "phase": phase,
-        "prompt_name": prompt_name,
         "phase_goal": phase_goal,
         "task_id": task_id or None,
         "task_title": task_title or None,
@@ -976,13 +1164,7 @@ def _write_exec_context(
         "context_delta": context_delta,
         "progress_baseline": current_snapshot,
         "cycle_progress_baseline": preserved_cycle_baseline,
-        "hard_rules": [
-            "stay_within_phase_goal",
-            "validate_as_you_go",
-            "refresh_runner_state_once",
-            "write_prepared_marker_at_phase_boundary",
-            "exit_session_on_phase_handoff",
-        ],
+        "hard_rules": hard_rules,
         "generated_at": utc_now(),
     }
     write_json(paths.exec_context_json, payload)
@@ -1108,11 +1290,19 @@ def _summarize_gate_failure(output: str) -> str:
 
 def _cleanup_runner_dir(paths) -> None:
     managed: set[Path] = {path.resolve() for path in managed_runner_files(paths)}
+    managed_dirs: set[Path] = set()
+    for path in managed:
+        parent = path.parent
+        while parent != paths.runner_dir.parent:
+            managed_dirs.add(parent)
+            if parent == paths.runner_dir:
+                break
+            parent = parent.parent
     if not paths.runner_dir.exists():
         return
     for entry in paths.runner_dir.iterdir():
         resolved = entry.resolve()
-        if resolved in managed:
+        if resolved in managed or resolved in managed_dirs:
             continue
         if entry.is_dir():
             shutil.rmtree(entry, ignore_errors=True)
@@ -1132,6 +1322,86 @@ def _remove_legacy_memory_views(paths) -> None:
     )
     for legacy_path in legacy_files:
         legacy_path.unlink(missing_ok=True)
+
+
+def _render_project_prd_markdown(
+    *,
+    prd_payload: dict[str, Any],
+    state: dict[str, Any],
+    tasks_payload: dict[str, Any],
+) -> str:
+    title = _as_text(prd_payload.get("title")) or "Project objective"
+    objective_id = _as_text(prd_payload.get("objective_id"))
+    project_root = _as_text(prd_payload.get("project_root"))
+    constraints = [str(item).strip() for item in prd_payload.get("constraints", []) if str(item).strip()]
+    scope_in = [str(item).strip() for item in prd_payload.get("scope_in", []) if str(item).strip()]
+    scope_out = [str(item).strip() for item in prd_payload.get("scope_out", []) if str(item).strip()]
+    success_criteria = [str(item).strip() for item in prd_payload.get("success_criteria", []) if str(item).strip()]
+    next_task_id = _as_text(state.get("next_task_id"))
+    next_task = _as_text(state.get("next_task"))
+    current_phase = _as_text(state.get("current_phase"))
+    target_branch = _as_text(state.get("target_branch"))
+    open_tasks = [
+        task for task in tasks_payload.get("tasks", [])
+        if isinstance(task, dict) and str(task.get("status", "")).strip() in {"open", "in_progress", "blocked"}
+    ]
+
+    lines = [f"# {title}", ""]
+    if objective_id:
+        lines.append(f"- Objective ID: `{objective_id}`")
+    if project_root:
+        lines.append(f"- Project root: `{project_root}`")
+    if target_branch:
+        lines.append(f"- Target branch: `{target_branch}`")
+    if current_phase:
+        lines.append(f"- Current phase: `{current_phase}`")
+    if next_task_id or next_task:
+        task_label = " ".join(part for part in (next_task_id, next_task) if part).strip()
+        lines.append(f"- Next task: {task_label}")
+    lines.append("")
+
+    def _append_section(label: str, items: list[str]) -> None:
+        if not items:
+            return
+        lines.append(f"## {label}")
+        lines.append("")
+        for item in items:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    _append_section("Scope In", scope_in)
+    _append_section("Scope Out", scope_out)
+    _append_section("Constraints", constraints)
+    _append_section("Success Criteria", success_criteria)
+
+    if open_tasks:
+        lines.append("## Open Tasks")
+        lines.append("")
+        for task in open_tasks:
+            task_id = _as_text(task.get("task_id")) or "TT-???"
+            task_title = _as_text(task.get("title")) or "Untitled task"
+            task_status = _as_text(task.get("status")) or "open"
+            lines.append(f"- `{task_id}` [{task_status}] {task_title}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _sync_project_prd_file(
+    *,
+    paths,
+    prd_payload: dict[str, Any],
+    state: dict[str, Any],
+    tasks_payload: dict[str, Any],
+) -> None:
+    markdown = _render_project_prd_markdown(
+        prd_payload=prd_payload,
+        state=state,
+        tasks_payload=tasks_payload,
+    )
+    paths.project_prd_file.write_text(markdown, encoding="utf-8")
+    if paths.legacy_refactor_status_file.exists():
+        paths.legacy_refactor_status_file.unlink(missing_ok=True)
 
 
 def create_runner_state(
@@ -1309,6 +1579,7 @@ def create_runner_state(
                 status_value = "done"
                 done_candidate_value = True
                 done_gate_status_value = "passed"
+                paths.done_lock.parent.mkdir(parents=True, exist_ok=True)
                 paths.done_lock.write_text(
                     f"created_at={utc_now()}\nproject={project}\nrunner_id={runner_id}\nsetup_refresh=1\n",
                     encoding="utf-8",
@@ -1333,6 +1604,12 @@ def create_runner_state(
         status_value = "ready"
         paths.done_lock.unlink(missing_ok=True)
 
+    _sync_project_prd_file(
+        paths=paths,
+        prd_payload=prd_payload,
+        state=state,
+        tasks_payload=tasks_payload,
+    )
     context_sources = _collect_context_sources(project_root)
     phase_context_digest = _digest_text(
         "|".join(str(source.get("digest", "")) for source in context_sources if str(source.get("digest", "")).strip())
@@ -1372,11 +1649,25 @@ def create_runner_state(
         phase=current_phase,
         objective_title=objective_title,
         next_task_text=next_task_text,
+        next_task_id=next_task_id,
         selection_reason=selection_reason,
         blockers=blockers,
         implementation_plan=implementation_plan,
         open_tasks_count=open_tasks_count,
         done_gate_status_value=done_gate_status_value,
+        phase_status=phase_status,
+        completed_recent=[str(item).strip() for item in state.get("completed_recent", []) if str(item).strip()],
+        last_iteration_summary=_as_text(state.get("last_iteration_summary")),
+        task_acceptance=[
+            str(item).strip()
+            for item in ((selected_task or {}).get("acceptance") if isinstance(selected_task, dict) else [])
+            if str(item).strip()
+        ],
+        task_validation=[
+            str(item).strip()
+            for item in ((selected_task or {}).get("validation") if isinstance(selected_task, dict) else [])
+            if str(item).strip()
+        ],
     )
 
     state = update_state(
@@ -1405,6 +1696,27 @@ def create_runner_state(
         blockers=blockers,
         **git_context,
     )
+
+    _sync_project_prd_file(
+        paths=paths,
+        prd_payload=prd_payload,
+        state=state,
+        tasks_payload=tasks_payload,
+    )
+    _sync_runner_handoff_file(
+        paths=paths,
+        state=state,
+        prd_payload=prd_payload,
+        tasks_payload=tasks_payload,
+        selected_task=selected_task if isinstance(selected_task, dict) else None,
+        phase_goal=phase_goal,
+        project_root=project_root,
+    )
+    context_sources = _collect_context_sources(project_root)
+    phase_context_digest = _digest_text(
+        "|".join(str(source.get("digest", "")) for source in context_sources if str(source.get("digest", "")).strip())
+    ) if context_sources else None
+    state = update_state(paths.state_file, state, phase_context_digest=phase_context_digest)
 
     write_json(paths.prd_json, prd_payload)
     write_json(paths.tasks_json, tasks_payload)
@@ -1479,8 +1791,8 @@ def create_runner_state(
             enabled=True,
             last_hil_decision="enable_approved",
             runtime_policy={
-                "hil_mode": "setup_only",
-                "session_mode": "phase_persistent",
+                "runner_mode": "exec",
+                "session_strategy": "fresh_session",
             },
         )
         append_ndjson(
@@ -1558,6 +1870,173 @@ def create_runner_state(
         "ledger_file": str(paths.ledger_file),
         "enable_token": token,
         "enable_pending_file": str(paths.enable_pending) if paths.enable_pending.exists() else None,
+    }
+
+
+def inspect_runner_start_state(
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path | None = None,
+) -> dict[str, Any]:
+    """Validate that a runner is already prepared for loop startup."""
+    return _inspect_runner_start_state(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+        allow_refresh_repair=True,
+    )
+
+
+def _inspect_runner_start_state(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path | None,
+    allow_refresh_repair: bool,
+) -> dict[str, Any]:
+    resolved_root = (project_root or (Path(dev) / "Repos" / project)).resolve()
+    paths = build_runner_state_paths_for_root(
+        project_root=resolved_root,
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+    )
+
+    state = read_json(paths.state_file)
+    if not isinstance(state, dict):
+        return {
+            "ok": False,
+            "error": "Runner is not set up. Run /prompts:run_setup first.",
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    status = str(state.get("status", "")).strip().lower()
+    if paths.done_lock.exists() or status == "done":
+        return {
+            "ok": False,
+            "error": "Runner is already complete. Clear or set up a new run first.",
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    if not bool(state.get("enabled")):
+        pending = read_json(paths.enable_pending)
+        token_hint = ""
+        if isinstance(pending, dict):
+            token = str(pending.get("token", "")).strip()
+            if token:
+                token_hint = f" Pending enable token: {token}"
+        return {
+            "ok": False,
+            "error": (
+                "Runner is not enabled. Run /prompts:run_setup and approve enablement before starting."
+                f"{token_hint}"
+            ),
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    next_task_id = _as_text(state.get("next_task_id"))
+    next_task = _as_text(state.get("next_task"))
+    if not next_task_id or not next_task:
+        if allow_refresh_repair:
+            create_runner_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                approve_enable=None,
+                project_root=resolved_root,
+            )
+            return _inspect_runner_start_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                project_root=resolved_root,
+                allow_refresh_repair=False,
+            )
+        return {
+            "ok": False,
+            "error": "Runner state is missing next-task info. Run /prompts:run_setup again.",
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    tasks_payload = read_json(paths.tasks_json)
+    tasks = tasks_payload.get("tasks", []) if isinstance(tasks_payload, dict) else []
+    matching_task = None
+    if isinstance(tasks, list):
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if _as_text(task.get("task_id")) == next_task_id:
+                matching_task = task
+                break
+    if matching_task is None:
+        if allow_refresh_repair:
+            create_runner_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                approve_enable=None,
+                project_root=resolved_root,
+            )
+            return _inspect_runner_start_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                project_root=resolved_root,
+                allow_refresh_repair=False,
+            )
+        return {
+            "ok": False,
+            "error": f"Runner task {next_task_id} is missing from TASKS.json. Run /prompts:run_setup again.",
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    task_status = _as_text(matching_task.get("status")).lower()
+    if task_status not in {"open", "in_progress", "blocked"}:
+        if allow_refresh_repair:
+            create_runner_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                approve_enable=None,
+                project_root=resolved_root,
+            )
+            return _inspect_runner_start_state(
+                dev=dev,
+                project=project,
+                runner_id=runner_id,
+                project_root=resolved_root,
+                allow_refresh_repair=False,
+            )
+        return {
+            "ok": False,
+            "error": f"Runner task {next_task_id} is not startable (status={task_status or 'unknown'}).",
+            "project": project,
+            "runner_id": runner_id,
+            "project_root": str(resolved_root),
+        }
+
+    return {
+        "ok": True,
+        "project": project,
+        "runner_id": runner_id,
+        "project_root": str(resolved_root),
+        "state_file": str(paths.state_file),
+        "tasks_file": str(paths.tasks_json),
+        "next_task_id": next_task_id,
+        "next_task": next_task,
     }
 
 
@@ -2013,7 +2492,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     action.add_argument(
         "--prepare-cycle",
         action="store_true",
-        help="Write canonical RUNNER_CYCLE_PREPARED.json for watchdog handoff",
+        help="Write canonical RUNNER_CYCLE_PREPARED.json for deterministic phase handoff",
     )
     parser.add_argument("--task", choices=["list", "show", "set", "next", "find", "add", "queue"], help="Task command")
     parser.add_argument("--task-id", help="Task id for show/set operations")

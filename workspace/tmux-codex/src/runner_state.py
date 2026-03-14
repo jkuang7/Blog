@@ -18,15 +18,7 @@ DEFAULT_IMPLEMENTATION_PLAN = [
     "Run run_gates and only mark done when all checks pass.",
 ]
 RUNNER_PHASES = ("discover", "implement", "verify", "closeout")
-PHASE_PROMPT_NAMES = {
-    "discover": "runner-discover",
-    "implement": "runner-implement",
-    "verify": "runner-verify",
-    "closeout": "runner-closeout",
-}
-DEFAULT_PHASE_BUDGET_MINUTES = 20
-EXECUTE_ONLY_PROMPT_PRIMARY = PHASE_PROMPT_NAMES["implement"]
-EXECUTE_ONLY_PROMPT_FALLBACK = "run"
+DEFAULT_PHASE_BUDGET_MINUTES = 45
 
 
 def workspace_home(dev: str) -> Path:
@@ -53,6 +45,11 @@ class RunnerStatePaths:
 
     memory_dir: Path
     runner_dir: Path
+    runner_runtime_dir: Path
+    runner_locks_dir: Path
+    project_prd_file: Path
+    legacy_refactor_status_file: Path
+    runner_handoff_file: Path
     gates_file: Path
     state_file: Path
     ledger_file: Path
@@ -65,7 +62,6 @@ class RunnerStatePaths:
     prd_json: Path
     tasks_json: Path
     exec_context_json: Path
-    watchdog_file: Path
     cycle_prepared_file: Path
     task_intake_file: Path
     runner_log: Path
@@ -99,25 +95,31 @@ def build_runner_state_paths_for_root(
     if project_root:
         memory_dir = project_root / ".memory"
     runner_dir = memory_dir / "runner"
+    runner_runtime_dir = runner_dir / "runtime"
+    runner_locks_dir = runner_dir / "locks"
     logs_dir = codex_home(dev) / "logs" / "runners"
 
     return RunnerStatePaths(
         memory_dir=memory_dir,
         runner_dir=runner_dir,
+        runner_runtime_dir=runner_runtime_dir,
+        runner_locks_dir=runner_locks_dir,
+        project_prd_file=memory_dir / "PRD.md",
+        legacy_refactor_status_file=memory_dir / "REFRACTOR_STATUS.md",
+        runner_handoff_file=runner_dir / "RUNNER_HANDOFF.md",
         gates_file=memory_dir / "gates.sh",
-        state_file=runner_dir / "RUNNER_STATE.json",
-        ledger_file=runner_dir / "RUNNER_LEDGER.ndjson",
-        done_lock=memory_dir / "RUNNER_DONE.lock",
-        stop_lock=memory_dir / "RUNNER_STOP.lock",
-        active_lock=memory_dir / "RUNNER_ACTIVE.lock",
-        enable_pending=runner_dir / "RUNNER_ENABLE.pending.json",
-        clear_pending=runner_dir / "RUNNER_CLEAR.pending.json",
-        hooks_log=runner_dir / "RUNNER_HOOKS.ndjson",
+        state_file=runner_runtime_dir / "RUNNER_STATE.json",
+        ledger_file=runner_runtime_dir / "RUNNER_LEDGER.ndjson",
+        done_lock=runner_locks_dir / "RUNNER_DONE.lock",
+        stop_lock=runner_locks_dir / "RUNNER_STOP.lock",
+        active_lock=runner_locks_dir / "RUNNER_ACTIVE.lock",
+        enable_pending=runner_locks_dir / "RUNNER_ENABLE.pending.json",
+        clear_pending=runner_locks_dir / "RUNNER_CLEAR.pending.json",
+        hooks_log=runner_runtime_dir / "RUNNER_HOOKS.ndjson",
         prd_json=runner_dir / "PRD.json",
         tasks_json=runner_dir / "TASKS.json",
         exec_context_json=runner_dir / "RUNNER_EXEC_CONTEXT.json",
-        watchdog_file=runner_dir / "RUNNER_WATCHDOG.json",
-        cycle_prepared_file=runner_dir / "RUNNER_CYCLE_PREPARED.json",
+        cycle_prepared_file=runner_runtime_dir / "RUNNER_CYCLE_PREPARED.json",
         task_intake_file=runner_dir / "RUNNER_TASK_INTAKE.json",
         runner_log=logs_dir / f"runner-{project}.log",
         runners_log=logs_dir / "runners.log",
@@ -137,10 +139,10 @@ def default_runner_state(project: str, runner_id: str) -> dict[str, Any]:
         "current_step": "",
         "last_hil_decision": None,
         "dod_status": "in_progress",
-        "current_goal": "Initialize runner and pick first validated task.",
+        "current_goal": "Establish the active objective and execute the next concrete validated slice.",
         "last_iteration_summary": "",
         "completed_recent": [],
-        "next_task": "Define the first smallest valuable implementation step.",
+        "next_task": "Execute the first concrete validated slice toward the active objective.",
         "next_task_reason": "No prior iteration update exists yet.",
         "objective_id": None,
         "next_task_id": None,
@@ -162,8 +164,8 @@ def default_runner_state(project: str, runner_id: str) -> dict[str, Any]:
         "git_worktree": None,
         "implementation_plan": list(DEFAULT_IMPLEMENTATION_PLAN),
         "runtime_policy": {
-            "hil_mode": "setup_only",
-            "session_mode": "phase_persistent",
+            "runner_mode": "exec",
+            "session_strategy": "fresh_session",
         },
         "updated_at": now,
     }
@@ -176,88 +178,37 @@ def coerce_runner_phase(value: Any, *, default: str = "implement") -> str:
     return default
 
 
-def build_prompt_command(
-    *,
-    prompt_name: str,
-    dev: str,
-    project: str,
-    runner_id: str,
-    project_root: Path | str,
-    mode: str | None = None,
-    extra_args: dict[str, str | int | None] | None = None,
-) -> str:
-    """Build one slash prompt command with deterministic runner arguments."""
-    resolved_root = str(Path(project_root).resolve())
-    parts = [
-        f"/prompts:{prompt_name}",
-        f"DEV={dev}",
-        f"PROJECT={project}",
-        f"RUNNER_ID={runner_id}",
-        f"PWD={resolved_root}",
-        f"PROJECT_ROOT={resolved_root}",
-    ]
-    if mode:
-        parts.append(f"MODE={mode}")
-    if extra_args:
-        for key, value in extra_args.items():
-            if value is None:
-                continue
-            parts.append(f"{key}={value}")
-    return " ".join(parts)
-
-
-def build_phase_prompt_commands(
-    *,
-    dev: str,
-    project: str,
-    runner_id: str,
-    project_root: Path | str,
-    phase: str,
-) -> list[str]:
-    resolved_phase = coerce_runner_phase(phase)
-    return [
-        build_prompt_command(
-            prompt_name=PHASE_PROMPT_NAMES[resolved_phase],
-            dev=dev,
-            project=project,
-            runner_id=runner_id,
-            project_root=project_root,
-            mode="execute_only",
-        ),
-        build_prompt_command(
-            prompt_name=EXECUTE_ONLY_PROMPT_FALLBACK,
-            dev=dev,
-            project=project,
-            runner_id=runner_id,
-            project_root=project_root,
-            mode="execute_only",
-            extra_args={"PHASE": resolved_phase},
-        ),
-    ]
-
-
-def build_execute_only_prompt_commands(
-    *,
-    dev: str,
-    project: str,
-    runner_id: str,
-    project_root: Path | str,
-) -> list[str]:
-    """Prefer the lightweight execute-only prompt, with legacy fallback."""
-    return build_phase_prompt_commands(
-        dev=dev,
-        project=project,
-        runner_id=runner_id,
-        project_root=project_root,
-        phase="implement",
-    )
-
-
 def ensure_memory_dir(paths: RunnerStatePaths) -> None:
     """Create memory and log directories."""
     paths.memory_dir.mkdir(parents=True, exist_ok=True)
     paths.runner_dir.mkdir(parents=True, exist_ok=True)
+    paths.runner_runtime_dir.mkdir(parents=True, exist_ok=True)
+    paths.runner_locks_dir.mkdir(parents=True, exist_ok=True)
     paths.runner_log.parent.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_runner_layout(paths)
+
+
+def _migrate_legacy_runner_layout(paths: RunnerStatePaths) -> None:
+    """Move legacy runner files into canonical runtime/locks subdirs."""
+    legacy_moves = {
+        paths.memory_dir / "RUNNER_DONE.lock": paths.done_lock,
+        paths.memory_dir / "RUNNER_STOP.lock": paths.stop_lock,
+        paths.memory_dir / "RUNNER_ACTIVE.lock": paths.active_lock,
+        paths.runner_dir / "RUNNER_STATE.json": paths.state_file,
+        paths.runner_dir / "RUNNER_LEDGER.ndjson": paths.ledger_file,
+        paths.runner_dir / "RUNNER_HOOKS.ndjson": paths.hooks_log,
+        paths.runner_dir / "RUNNER_CYCLE_PREPARED.json": paths.cycle_prepared_file,
+        paths.runner_dir / "RUNNER_ENABLE.pending.json": paths.enable_pending,
+        paths.runner_dir / "RUNNER_CLEAR.pending.json": paths.clear_pending,
+    }
+    for legacy_path, canonical_path in legacy_moves.items():
+        if not legacy_path.exists() or legacy_path == canonical_path:
+            continue
+        canonical_path.parent.mkdir(parents=True, exist_ok=True)
+        if canonical_path.exists():
+            legacy_path.unlink(missing_ok=True)
+            continue
+        os.replace(legacy_path, canonical_path)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -311,8 +262,8 @@ def normalize_runner_state(
     state: dict[str, Any],
     project: str,
     runner_id: str,
-    hil_mode: str = "setup_only",
-    session_mode: str = "phase_persistent",
+    runner_mode: str = "exec",
+    session_strategy: str = "fresh_session",
 ) -> tuple[dict[str, Any], bool]:
     """Backfill/normalize runner state shape for forward-compatible loops."""
     original = json.dumps(state, sort_keys=True)
@@ -392,8 +343,8 @@ def normalize_runner_state(
     if not isinstance(runtime_policy, dict):
         runtime_policy = {}
     runtime_policy = {
-        "hil_mode": str(runtime_policy.get("hil_mode", hil_mode)).replace("-", "_"),
-        "session_mode": str(runtime_policy.get("session_mode", session_mode)),
+        "runner_mode": str(runtime_policy.get("runner_mode", runner_mode)).replace("-", "_"),
+        "session_strategy": str(runtime_policy.get("session_strategy", session_strategy)).replace("-", "_"),
     }
     normalized["runtime_policy"] = runtime_policy
 
@@ -432,6 +383,9 @@ def load_or_init_state(paths: RunnerStatePaths, project: str, runner_id: str) ->
 def managed_runner_files(paths: RunnerStatePaths) -> list[Path]:
     """Enumerate managed files for clear operations."""
     files = [
+        paths.project_prd_file,
+        paths.legacy_refactor_status_file,
+        paths.runner_handoff_file,
         paths.state_file,
         paths.ledger_file,
         paths.done_lock,
@@ -443,7 +397,6 @@ def managed_runner_files(paths: RunnerStatePaths) -> list[Path]:
         paths.prd_json,
         paths.tasks_json,
         paths.exec_context_json,
-        paths.watchdog_file,
         paths.cycle_prepared_file,
         paths.task_intake_file,
     ]

@@ -1,6 +1,10 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from itertools import repeat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,14 +19,15 @@ from src.main import parse_loop_args
 from src.runner_loop import (
     _build_prompt,
     _log_line,
+    _submit_runner_prompt,
     build_runner_paths,
     detect_project_stack,
     ensure_gates_file,
-    make_codex_chat_loop_script,
     make_codex_exec_loop_script,
+    run_interactive_runner_controller,
     run_loop_runner,
 )
-from src.runner_state import build_runner_state_paths, default_runner_state, write_json
+from src.runner_state import build_runner_state_paths, build_runner_state_paths_for_root, default_runner_state, write_json
 
 
 class LoopArgsTests(unittest.TestCase):
@@ -32,8 +37,6 @@ class LoopArgsTests(unittest.TestCase):
         self.assertEqual(parsed["complexity"], "med")
         self.assertEqual(parsed["model"], "gpt-5.3-codex")
         self.assertEqual(parsed["reasoning_effort"], "medium")
-        self.assertEqual(parsed["hil_mode"], "setup-only")
-        self.assertEqual(parsed["runner_mode"], "interactive-watchdog")
         self.assertEqual(parsed["runner_id"], "main")
 
     def test_parse_loop_complexity_high(self):
@@ -62,22 +65,6 @@ class LoopArgsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_loop_args(["blog", "--complexity", "extreme"])
 
-    def test_parse_loop_hil_mode_rejects_strict(self):
-        with self.assertRaises(ValueError):
-            parse_loop_args(["blog", "--hil-mode", "strict"])
-
-    def test_parse_loop_invalid_hil_mode(self):
-        with self.assertRaises(ValueError):
-            parse_loop_args(["blog", "--hil-mode", "auto"])
-
-    def test_parse_loop_runner_mode_exec(self):
-        parsed = parse_loop_args(["blog", "--runner-mode", "exec"])
-        self.assertEqual(parsed["runner_mode"], "exec")
-
-    def test_parse_loop_runner_mode_invalid(self):
-        with self.assertRaises(ValueError):
-            parse_loop_args(["blog", "--runner-mode", "bogus"])
-
 
 class LoopScriptTests(unittest.TestCase):
     def test_runner_paths_are_runner_scoped(self):
@@ -87,45 +74,14 @@ class LoopScriptTests(unittest.TestCase):
                 project="blog",
                 runner_id="main",
             )
-        self.assertTrue(str(paths.complete_lock).endswith("/Repos/blog/.memory/RUNNER_DONE.lock"))
-        self.assertTrue(str(paths.stop_file).endswith("/Repos/blog/.memory/RUNNER_STOP.lock"))
-        self.assertTrue(str(paths.active_lock).endswith("/Repos/blog/.memory/RUNNER_ACTIVE.lock"))
-        self.assertTrue(str(paths.state_file).endswith("/Repos/blog/.memory/runner/RUNNER_STATE.json"))
-        self.assertTrue(str(paths.audit_file).endswith("/Repos/blog/.memory/runner/RUNNER_LEDGER.ndjson"))
+        self.assertTrue(str(paths.complete_lock).endswith("/Repos/blog/.memory/runner/locks/RUNNER_DONE.lock"))
+        self.assertTrue(str(paths.stop_file).endswith("/Repos/blog/.memory/runner/locks/RUNNER_STOP.lock"))
+        self.assertTrue(str(paths.active_lock).endswith("/Repos/blog/.memory/runner/locks/RUNNER_ACTIVE.lock"))
+        self.assertTrue(str(paths.state_file).endswith("/Repos/blog/.memory/runner/runtime/RUNNER_STATE.json"))
+        self.assertTrue(str(paths.audit_file).endswith("/Repos/blog/.memory/runner/runtime/RUNNER_LEDGER.ndjson"))
         self.assertTrue(str(paths.runner_log).endswith("/.codex/logs/runners/runner-blog.log"))
 
-    def test_script_runs_interactive_runner_chat(self):
-        with patch("src.runner_loop.resolve_target_project_root", return_value=Path("/Users/jian/Dev/Repos/blog")):
-            paths = build_runner_paths(
-                dev="/Users/jian/Dev",
-                project="blog",
-                runner_id="main",
-            )
-        script = make_codex_chat_loop_script(
-            dev="/Users/jian/Dev",
-            project="blog",
-            runner_id="main",
-            session_name="runner-blog",
-            model="gpt-5.1-codex",
-            reasoning_effort="high",
-            hil_mode="setup-only",
-            paths=paths,
-        )
-
-        self.assertIn('cd /Users/jian/Dev/Repos/blog || exit 1', script)
-        self.assertIn(
-            "watchdog seeds /prompts:runner-discover DEV=/Users/jian/Dev PROJECT=blog RUNNER_ID=main PWD=/Users/jian/Dev/Repos/blog PROJECT_ROOT=/Users/jian/Dev/Repos/blog MODE=execute_only when idle",
-            script,
-        )
-        self.assertIn('git -C "$PROJECT_ROOT" checkout "$TARGET_BRANCH"', script)
-        self.assertIn("codex --search --dangerously-bypass-approvals-and-sandbox -m gpt-5.1-codex", script)
-        self.assertIn('reasoning.effort="high"', script)
-        self.assertNotIn("codex --search exec", script)
-        self.assertNotIn("while true; do", script)
-        self.assertNotIn('python3 "$RUNCTL" --setup --project-root "$PROJECT_ROOT" --runner-id main', script)
-        self.assertNotIn("__runner-loop", script)
-
-    def test_exec_script_retains_restart_and_lock_handling(self):
+    def test_exec_script_runs_interactive_controller(self):
         with patch("src.runner_loop.resolve_target_project_root", return_value=Path("/Users/jian/Dev/Repos/blog")):
             paths = build_runner_paths(
                 dev="/Users/jian/Dev",
@@ -138,19 +94,171 @@ class LoopScriptTests(unittest.TestCase):
             runner_id="main",
             model="gpt-5.1-codex",
             reasoning_effort="high",
-            hil_mode="setup-only",
             paths=paths,
         )
 
-        self.assertIn('if [[ -f "$STOP_LOCK" ]]; then', script)
-        self.assertIn('if [[ -f "$DONE_LOCK" ]]; then', script)
-        self.assertIn("restarting interactive runner chat in 3s", script)
-        self.assertIn("sleep 3", script)
-        self.assertIn(
-            'codex --search --dangerously-bypass-approvals-and-sandbox exec -C "$PROJECT_ROOT" -m gpt-5.1-codex',
-            script,
+        self.assertIn('STOP_LOCK=', script)
+        self.assertIn('DONE_LOCK=', script)
+        self.assertIn('cd /Users/jian/Dev/workspace/tmux-codex', script)
+        self.assertIn('PYTHONPATH=/Users/jian/Dev/workspace/tmux-codex${PYTHONPATH:+:$PYTHONPATH} python3 -m src.main __runner-controller', script)
+        self.assertIn('while true; do', script)
+        self.assertIn('codex --search --dangerously-bypass-approvals-and-sandbox', script)
+        self.assertIn('cycle controller pid=', script)
+        self.assertIn('cycle ended codex_rc=', script)
+        self.assertIn('exec zsh -l', script)
+        self.assertIn('-m gpt-5.1-codex', script)
+        self.assertIn('reasoning.effort="high"', script)
+        self.assertNotIn('python3 -m src.main __runner-loop', script)
+
+    def test_module_entrypoint_executes_main(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "src.main", "--help"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertIn('git -C "$PROJECT_ROOT" checkout "$TARGET_BRANCH"', script)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Usage:", result.stdout)
+        self.assertIn("cl loop <project>", result.stdout)
+
+    def test_interactive_runner_controller_dispatches_execute_only_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(paths.exec_context_json, {"phase": "implement"})
+
+            tmux_instance = unittest.mock.Mock()
+            tmux_instance.has_session.side_effect = [True, False]
+            tmux_instance.capture_pane.return_value = "OpenAI Codex\n› Run /review on my current changes\n"
+            tmux_instance.get_pane_process.return_value = "node"
+            tmux_instance.clear_prompt_line.return_value = True
+            tmux_instance.send_keys.return_value = True
+            tmux_instance.press_enter.return_value = True
+            tmux_instance.send_eof.return_value = True
+
+            marker_path = paths.cycle_prepared_file
+            marker_path.write_text("{}", encoding="utf-8")
+            initial_marker_mtime = marker_path.stat().st_mtime
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                tmux_instance.has_session.side_effect = repeat(True)
+
+                def capture_side_effect(*_args, **_kwargs):
+                    count = tmux_instance.capture_pane.call_count
+                    if count == 1:
+                        return "OpenAI Codex\n› Run /review on my current changes\n"
+                    if count == 2:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_execute DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root} PHASE=implement\n"
+                        )
+                    if count == 3:
+                        return "OpenAI Codex\n/prompts:run_execute send saved prompt\n"
+                    if count == 4:
+                        return "Running execute...\n"
+                    if count == 5:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 6:
+                        return "OpenAI Codex\n› \nphase_done=yes\nvalidation=pass\nexiting=yes\n"
+                    if count == 7:
+                        return (
+                            "OpenAI Codex\n"
+                            f"› /prompts:run_update DEV={dev} PROJECT=blog RUNNER_ID=main "
+                            f"PWD={project_root} PROJECT_ROOT={project_root}\n"
+                        )
+                    if count == 8:
+                        return "OpenAI Codex\n/prompts:run_update send saved prompt\n"
+                    if count == 9:
+                        marker_path.write_text('{"prepared_at":"later"}', encoding="utf-8")
+                        os.utime(marker_path, (initial_marker_mtime + 5, initial_marker_mtime + 5))
+                        return "Running update...\n"
+                    return "OpenAI Codex\n› \nstate_refreshed=yes\nprepared_marker=yes\nexiting=yes\n"
+
+                tmux_instance.capture_pane.side_effect = capture_side_effect
+                tmux_instance.get_pane_process.side_effect = repeat("node")
+
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(tmux_instance.clear_prompt_line.call_count, 3)
+            first_command = tmux_instance.send_keys.call_args_list[0].args[1]
+            second_command = tmux_instance.send_keys.call_args_list[1].args[1]
+            self.assertIn("/prompts:run_execute", first_command)
+            self.assertIn(f"DEV={dev}", first_command)
+            self.assertIn("PROJECT=blog", first_command)
+            self.assertIn(f"PROJECT_ROOT={project_root}", first_command)
+            self.assertIn("RUNNER_ID=main", first_command)
+            self.assertIn("PHASE=implement", first_command)
+            self.assertIn("/prompts:run_update", second_command)
+            self.assertEqual(tmux_instance.press_enter.call_count, 4)
+            self.assertEqual(tmux_instance.send_eof.call_count, 2)
+
+    def test_submit_runner_prompt_retries_after_empty_placeholder_expansion(self):
+        tmux_instance = unittest.mock.Mock()
+        command = (
+            "/prompts:run_update "
+            "DEV=/tmp/dev "
+            "PROJECT=blog "
+            "RUNNER_ID=main "
+            "PWD=/tmp/dev/Repos/blog "
+            "PROJECT_ROOT=/tmp/dev/Repos/blog"
+        )
+        tmux_instance.clear_prompt_line.return_value = True
+        tmux_instance.send_keys.return_value = True
+        tmux_instance.press_enter.side_effect = [True, True, True]
+        tmux_instance.send_escape.return_value = True
+        tmux_instance.capture_pane.side_effect = [
+            f"OpenAI Codex\n› {command}\n",
+            'OpenAI Codex\n/prompts:run_update DEV="" PROJECT="" RUNNER_ID="" PWD="" PROJECT_ROOT="" send saved prompt\n',
+            f"OpenAI Codex\n› {command}\n",
+            "OpenAI Codex\n/prompts:run_update send saved prompt\n",
+        ]
+
+        ok = _submit_runner_prompt(
+            tmux=tmux_instance,
+            session_name="runner-blog",
+            command=command,
+            settle_attempts=1,
+            settle_delay_seconds=0,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(tmux_instance.send_keys.call_count, 2)
+        first_kwargs = tmux_instance.send_keys.call_args_list[0].kwargs
+        second_kwargs = tmux_instance.send_keys.call_args_list[1].kwargs
+        self.assertTrue(first_kwargs["force_buffer"])
+        self.assertTrue(second_kwargs["force_buffer"])
+        self.assertEqual(tmux_instance.press_enter.call_count, 3)
+        self.assertEqual(tmux_instance.send_escape.call_count, 2)
 
 
 class LoopPromptTests(unittest.TestCase):
@@ -160,7 +268,7 @@ class LoopPromptTests(unittest.TestCase):
             prompt = _build_prompt(project="blog", runner_id="main", paths=paths)
 
         self.assertIn(f"Runner state file: {paths.state_file}", prompt)
-        self.assertIn("Use .memory/runner/RUNNER_EXEC_CONTEXT.json plus runner state to respect the current phase goal and next task.", prompt)
+        self.assertIn("Use .memory/runner/RUNNER_EXEC_CONTEXT.json plus .memory/runner/RUNNER_HANDOFF.md and runner state to respect the current phase goal and next task.", prompt)
 
 
 class LoopLoggingTests(unittest.TestCase):
@@ -274,6 +382,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            paths.done_lock.parent.mkdir(parents=True, exist_ok=True)
             paths.done_lock.touch()
 
             with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
@@ -302,6 +411,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            paths.done_lock.parent.mkdir(parents=True, exist_ok=True)
             paths.done_lock.touch()
 
             codex_result = CodexRunResult(
@@ -555,6 +665,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state["enabled"] = True
             state["session_id"] = "previous-thread"
             write_json(paths.state_file, state)
+            paths.stop_lock.parent.mkdir(parents=True, exist_ok=True)
             paths.stop_lock.write_text("stop now\n")
 
             codex_result = CodexRunResult(

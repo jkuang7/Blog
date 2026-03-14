@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.runctl import clear_runner_state, create_runner_state, parse_args, run
+from src.runctl import clear_runner_state, create_runner_state, inspect_runner_start_state, parse_args, run
 from src.runner_state import build_runner_state_paths, build_runner_state_paths_for_root, compute_worktree_fingerprint, read_json, write_json
 
 
@@ -46,6 +46,7 @@ class RunctlTests(unittest.TestCase):
         paths.memory_dir.mkdir(parents=True, exist_ok=True)
         paths.runner_dir.mkdir(parents=True, exist_ok=True)
         (paths.memory_dir / "GOALS.md").write_text("# legacy\n", encoding="utf-8")
+        paths.legacy_refactor_status_file.write_text("# old status\n", encoding="utf-8")
         (paths.runner_dir / "RUNNER_NEXT.md").write_text("legacy\n", encoding="utf-8")
         (paths.runner_dir / "RUNNER_DOD.md").write_text("legacy\n", encoding="utf-8")
         (paths.runner_dir / "RUNNER_PLAN.md").write_text("legacy\n", encoding="utf-8")
@@ -60,8 +61,11 @@ class RunctlTests(unittest.TestCase):
         self.assertTrue(paths.prd_json.exists())
         self.assertTrue(paths.exec_context_json.exists())
         self.assertTrue(paths.ledger_file.exists())
+        self.assertTrue(paths.project_prd_file.exists())
+        self.assertTrue(paths.runner_handoff_file.exists())
 
         self.assertFalse((paths.memory_dir / "GOALS.md").exists())
+        self.assertFalse(paths.legacy_refactor_status_file.exists())
         self.assertFalse((paths.runner_dir / "RUNNER_NEXT.md").exists())
         self.assertFalse((paths.runner_dir / "RUNNER_DOD.md").exists())
         self.assertFalse((paths.runner_dir / "RUNNER_PLAN.md").exists())
@@ -79,15 +83,89 @@ class RunctlTests(unittest.TestCase):
         self.assertTrue(str(state.get("next_task", "")).strip())
         self.assertEqual(state["current_phase"], "discover")
         self.assertEqual(state["phase_status"], "active")
-        self.assertEqual(state["phase_budget_minutes"], 20)
+        self.assertEqual(state["phase_budget_minutes"], 45)
 
         exec_context = read_json(paths.exec_context_json)
         self.assertIsNotNone(exec_context)
         assert exec_context is not None
         self.assertEqual(exec_context["phase"], "discover")
-        self.assertEqual(exec_context["prompt_name"], "runner-discover")
         self.assertIn("context_delta", exec_context)
         self.assertIn("context_sources", exec_context)
+        source_paths = {
+            str(Path(str(entry.get("path", ""))).resolve())
+            for entry in exec_context["context_sources"]
+            if isinstance(entry, dict) and str(entry.get("path", "")).strip()
+        }
+        self.assertIn(str(paths.project_prd_file.resolve()), source_paths)
+        self.assertIn(str(paths.runner_handoff_file.resolve()), source_paths)
+        self.assertIn("Next task:", paths.runner_handoff_file.read_text(encoding="utf-8"))
+
+    def test_inspect_runner_start_state_requires_setup(self):
+        result = inspect_runner_start_state(str(self.dev), "blog", "main")
+        self.assertFalse(result["ok"])
+        self.assertIn("Run /prompts:run_setup first", result["error"])
+
+    def test_inspect_runner_start_state_passes_after_enable_approval(self):
+        initial = create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        token = initial["enable_token"]
+        approved = create_runner_state(str(self.dev), "blog", "main", approve_enable=token)
+        self.assertTrue(approved["ok"])
+
+        result = inspect_runner_start_state(str(self.dev), "blog", "main")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["next_task_id"], "TT-001")
+
+    def test_inspect_runner_start_state_repairs_stale_done_next_task(self):
+        initial = create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        token = initial["enable_token"]
+        approved = create_runner_state(str(self.dev), "blog", "main", approve_enable=token)
+        self.assertTrue(approved["ok"])
+
+        project_root = self.dev / "Repos" / "blog"
+        self._write_tasks(
+            [
+                {
+                    "task_id": "TT-001",
+                    "title": "Already complete",
+                    "status": "done",
+                    "priority": "p1",
+                    "depends_on": [],
+                    "project_root": str(project_root),
+                    "target_branch": "main",
+                    "acceptance": ["done"],
+                    "validation": ["verify"],
+                    "updated_at": "2026-03-01T00:00:00Z",
+                },
+                {
+                    "task_id": "TT-002",
+                    "title": "Current open task",
+                    "status": "open",
+                    "priority": "p1",
+                    "depends_on": [],
+                    "project_root": str(project_root),
+                    "target_branch": "main",
+                    "acceptance": ["done"],
+                    "validation": ["verify"],
+                    "updated_at": "2026-03-02T00:00:00Z",
+                },
+            ]
+        )
+
+        paths = self._paths()
+        state = read_json(paths.state_file)
+        self.assertIsNotNone(state)
+        assert state is not None
+        state["next_task_id"] = "TT-001"
+        state["next_task"] = "Already complete"
+        write_json(paths.state_file, state)
+
+        result = inspect_runner_start_state(str(self.dev), "blog", "main")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["next_task_id"], "TT-002")
+        refreshed_state = read_json(paths.state_file)
+        self.assertIsNotNone(refreshed_state)
+        assert refreshed_state is not None
+        self.assertEqual(refreshed_state["next_task_id"], "TT-002")
 
     def test_setup_seeds_default_tasks_when_missing(self):
         created = create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
@@ -165,6 +243,44 @@ class RunctlTests(unittest.TestCase):
         self.assertEqual(state["next_task_id"], "TT-020")
         self.assertEqual(state["next_task"], "Highest priority oldest")
 
+    def test_setup_hardens_parity_task_acceptance_and_validation(self):
+        create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        project_root = self.dev / "Repos" / "blog"
+
+        self._write_tasks(
+            [
+                {
+                    "task_id": "TT-010",
+                    "title": "Restore styling parity for archive panel",
+                    "status": "open",
+                    "priority": "p1",
+                    "depends_on": [],
+                    "project_root": str(project_root),
+                    "target_branch": "main",
+                    "acceptance": ["Matches old styling"],
+                    "validation": ["Run tests"],
+                    "updated_at": "2026-03-01T00:00:00Z",
+                }
+            ]
+        )
+
+        create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+
+        tasks_payload = read_json(self._paths().tasks_json)
+        exec_context = read_json(self._paths().exec_context_json)
+        self.assertIsNotNone(tasks_payload)
+        self.assertIsNotNone(exec_context)
+        assert tasks_payload is not None
+        assert exec_context is not None
+        task = tasks_payload["tasks"][0]
+        acceptance_text = " ".join(task["acceptance"]).lower()
+        validation_text = " ".join(task["validation"]).lower()
+        self.assertIn("fail-closed", acceptance_text)
+        self.assertIn("explicit baseline comparison", acceptance_text)
+        self.assertIn("side-by-side comparison", validation_text)
+        self.assertIn("keep the task open", validation_text)
+        self.assertIn("parity_tasks_fail_closed_until_no_known_delta_remains", exec_context["hard_rules"])
+
     def test_setup_builds_phase_exec_context_from_repo_contract_order(self):
         project_root = self.dev / "Repos" / "blog"
         (project_root / "docs" / "llm").mkdir(parents=True)
@@ -193,10 +309,9 @@ class RunctlTests(unittest.TestCase):
         source_paths = [Path(item["path"]).name for item in exec_context["context_sources"]]
         self.assertEqual(
             source_paths,
-            ["AGENTS.md", "harness.config.json", "golden-path.md", "context-pack.md", "context-pack.json"],
+            ["AGENTS.md", "harness.config.json", "golden-path.md", "context-pack.md", "context-pack.json", "PRD.md", "RUNNER_HANDOFF.md"],
         )
         self.assertEqual(exec_context["phase"], "discover")
-        self.assertEqual(exec_context["prompt_name"], "runner-discover")
 
     def test_setup_prefers_context_pack_when_required_context_omits_it(self):
         project_root = self.dev / "Repos" / "blog"
@@ -222,7 +337,7 @@ class RunctlTests(unittest.TestCase):
         source_paths = [Path(item["path"]).name for item in exec_context["context_sources"]]
         self.assertEqual(
             source_paths,
-            ["AGENTS.md", "context-pack.md", "context-pack.json", "harness.config.json", "golden-path.md"],
+            ["AGENTS.md", "context-pack.md", "context-pack.json", "harness.config.json", "golden-path.md", "PRD.md", "RUNNER_HANDOFF.md"],
         )
 
     def test_setup_promotes_verify_phase_when_blocker_surface_is_validation(self):
@@ -247,7 +362,6 @@ class RunctlTests(unittest.TestCase):
         assert exec_context is not None
         self.assertEqual(refreshed["current_phase"], "verify")
         self.assertEqual(exec_context["phase"], "verify")
-        self.assertEqual(exec_context["prompt_name"], "runner-verify")
 
     def test_done_lock_cleared_when_pending_tasks_exist(self):
         create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
@@ -395,11 +509,13 @@ class RunctlTests(unittest.TestCase):
         task_statuses = {task["task_id"]: task["status"] for task in tasks_payload["tasks"]}
         self.assertEqual(task_statuses["TT-002"], "done")
 
-    def test_clear_is_two_phase_and_does_not_delete_goals_file(self):
+    def test_clear_is_two_phase_and_deletes_runner_managed_project_prd(self):
         create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
         paths = self._paths()
         goals_file = paths.memory_dir / "GOALS.md"
         goals_file.write_text("# user note\n", encoding="utf-8")
+        paths.project_prd_file.write_text("# objective\n", encoding="utf-8")
+        paths.legacy_refactor_status_file.write_text("# stale objective\n", encoding="utf-8")
 
         pending = clear_runner_state(str(self.dev), "blog", "main", confirm=None)
         self.assertTrue(pending["ok"])
@@ -407,6 +523,9 @@ class RunctlTests(unittest.TestCase):
         self.assertTrue(done["ok"])
         self.assertFalse(paths.runner_dir.exists())
         self.assertTrue(goals_file.exists())
+        self.assertFalse(paths.project_prd_file.exists())
+        self.assertFalse(paths.legacy_refactor_status_file.exists())
+        self.assertFalse(paths.runner_handoff_file.exists())
 
     def test_setup_refresh_drops_legacy_conversation_digest_fields(self):
         create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
@@ -462,7 +581,7 @@ class RunctlTests(unittest.TestCase):
             ]
         )
         self.assertEqual(code, 0)
-        self.assertTrue((custom_root / ".memory" / "runner" / "RUNNER_STATE.json").exists())
+        self.assertTrue((custom_root / ".memory" / "runner" / "runtime" / "RUNNER_STATE.json").exists())
 
     def test_run_setup_quiet_prints_minimal_output(self):
         with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
@@ -483,7 +602,7 @@ class RunctlTests(unittest.TestCase):
 
         code = run(["--setup", "--project", "blog", "--runner-id", "main", "--dev", str(self.dev)])
         self.assertEqual(code, 0)
-        self.assertTrue((worktree_root / ".memory" / "runner" / "RUNNER_STATE.json").exists())
+        self.assertTrue((worktree_root / ".memory" / "runner" / "runtime" / "RUNNER_STATE.json").exists())
 
     def test_prepare_cycle_writes_canonical_marker(self):
         create_runner_state(str(self.dev), "blog", "main", approve_enable=None)

@@ -61,6 +61,17 @@ class TmuxClientTests(unittest.TestCase):
         self.assertEqual(client._run.call_args_list[1].args[0], "paste-buffer")
         self.assertEqual(client._run.call_args_list[2].args[0], "send-keys")
 
+    def test_send_keys_force_buffer_uses_buffer_paste_for_short_text(self):
+        client = TmuxClient()
+        client._run = Mock(side_effect=[_Result(0), _Result(0), _Result(0)])
+
+        ok = client.send_keys("runner-blog", "/prompts:run_update DEV=x", enter=True, delay_ms=0, force_buffer=True)
+
+        self.assertTrue(ok)
+        self.assertEqual(client._run.call_args_list[0].args[0], "load-buffer")
+        self.assertEqual(client._run.call_args_list[1].args[0], "paste-buffer")
+        self.assertEqual(client._run.call_args_list[2].args[0], "send-keys")
+
     def test_list_panes_returns_ids(self):
         client = TmuxClient()
         client._run = Mock(return_value=_Result(0, stdout="%1\n%2\n"))
@@ -99,14 +110,11 @@ class SessionMenuRunTests(unittest.TestCase):
 
         with patch("src.menu.curses.wrapper", return_value=(["Blog"], "high")), patch(
             "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), True)
-        ) as ensure_gates, patch("src.menu.create_runner_state",
-            side_effect=[
-                {"ok": True, "enable_token": "tok"},
-                {"ok": True},
-            ],
+        ) as ensure_gates, patch(
+            "src.menu.inspect_runner_start_state", return_value={"ok": True}
         ), patch("src.menu.build_runner_paths", return_value=object()), patch(
-            "src.menu.make_codex_chat_loop_script", return_value="echo runner"
-        ), patch("src.menu.spawn_runner_watchdog") as spawn_watchdog, patch("src.menu.print"):
+            "src.menu.make_codex_exec_loop_script", return_value="echo runner"
+        ), patch("src.menu.print"):
             attach_name = menu._start_runner_session()
 
         ensure_gates.assert_called_once()
@@ -114,7 +122,6 @@ class SessionMenuRunTests(unittest.TestCase):
         self.assertEqual(kwargs.get("dev"), "/Users/jian/Dev")
         self.assertEqual(kwargs.get("project"), "Blog")
         menu.tmux.create_session.assert_called_once()
-        spawn_watchdog.assert_called_once()
         self.assertEqual(attach_name, "runner-Blog")
 
     def test_runner_start_attaches_first_when_multiple_projects_selected(self):
@@ -125,26 +132,19 @@ class SessionMenuRunTests(unittest.TestCase):
         with patch("src.menu.curses.wrapper", return_value=(["Blog", "Shop"], "high")), patch(
             "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), True)
         ), patch(
-            "src.menu.create_runner_state",
-            side_effect=[
-                {"ok": True, "enable_token": "tok-blog"},
-                {"ok": True},
-                {"ok": True, "enable_token": "tok-shop"},
-                {"ok": True},
-            ],
+            "src.menu.inspect_runner_start_state", return_value={"ok": True}
         ), patch("src.menu.build_runner_paths", return_value=object()), patch(
-            "src.menu.make_codex_chat_loop_script", return_value="echo runner"
-        ), patch("src.menu.spawn_runner_watchdog") as spawn_watchdog, patch("src.menu.print"):
+            "src.menu.make_codex_exec_loop_script", return_value="echo runner"
+        ), patch("src.menu.print"):
             attach_name = menu._start_runner_session()
 
         self.assertEqual(menu.tmux.create_session.call_count, 2)
-        self.assertEqual(spawn_watchdog.call_count, 2)
         self.assertEqual(attach_name, "runner-Blog")
 
     def test_runner_start_skips_project_when_runner_already_active(self):
         with tempfile.TemporaryDirectory() as tmp:
             dev = Path(tmp)
-            active_lock = dev / "Repos" / "Blog" / ".memory" / "RUNNER_ACTIVE.lock"
+            active_lock = dev / "Repos" / "Blog" / ".memory" / "runner" / "locks" / "RUNNER_ACTIVE.lock"
             active_lock.parent.mkdir(parents=True, exist_ok=True)
             active_lock.write_text("active\n")
 
@@ -158,19 +158,19 @@ class SessionMenuRunTests(unittest.TestCase):
             with patch.dict(os.environ, {"DEV": str(dev)}), patch(
                 "src.menu.curses.wrapper", return_value=(["Blog"], "high")
             ), patch("src.menu.ensure_gates_file") as ensure_gates, patch(
-                "src.menu.create_runner_state"
-            ) as create_state, patch("src.menu.print"):
+                "src.menu.inspect_runner_start_state"
+            ) as state_check, patch("src.menu.print"):
                 attach_name = menu._start_runner_session()
 
             self.assertIsNone(attach_name)
             ensure_gates.assert_not_called()
-            create_state.assert_not_called()
+            state_check.assert_not_called()
             menu.tmux.create_session.assert_not_called()
 
     def test_stale_active_lock_is_cleared_when_no_runner_session_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             dev = Path(tmp)
-            active_lock = dev / "Repos" / "Blog" / ".memory" / "RUNNER_ACTIVE.lock"
+            active_lock = dev / "Repos" / "Blog" / ".memory" / "runner" / "locks" / "RUNNER_ACTIVE.lock"
             active_lock.parent.mkdir(parents=True, exist_ok=True)
             active_lock.write_text("stale\n")
 
@@ -184,6 +184,24 @@ class SessionMenuRunTests(unittest.TestCase):
 
             self.assertFalse(is_active)
             self.assertFalse(active_lock.exists())
+
+    def test_runner_start_skips_unprepared_project(self):
+        menu = self._make_menu()
+        menu.tmux.create_session = Mock(return_value="%1")
+        menu.tmux.socket = "/tmp/tmux-codex-test.sock"
+
+        with patch("src.menu.curses.wrapper", return_value=(["Blog"], "high")), patch(
+            "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), False)
+        ), patch(
+            "src.menu.inspect_runner_start_state",
+            return_value={"ok": False, "error": "Runner is not set up. Run /prompts:run_setup first."},
+        ), patch("src.menu.print") as print_mock:
+            attach_name = menu._start_runner_session()
+
+        self.assertIsNone(attach_name)
+        menu.tmux.create_session.assert_not_called()
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertIn("Run /prompts:run_setup first", printed)
 
     def test_idle_runner_shell_session_is_not_treated_as_running(self):
         menu = self._make_menu()
@@ -208,6 +226,32 @@ class SessionMenuRunTests(unittest.TestCase):
                     result = menu._fallback_project_selector()
 
             self.assertEqual(result, (["Shop"], "high"))
+
+    def test_fallback_selector_supports_arrow_navigation_and_space_toggle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            tmux = Mock()
+            tmux.list_sessions.return_value = []
+            tmux.get_pane_title.return_value = None
+
+            with patch.dict(os.environ, {"DEV": str(dev), "HOME": str(dev)}):
+                menu = SessionMenu(tmux)
+                with patch.object(
+                    menu,
+                    "_get_all_projects",
+                    return_value=[("Blog", 0), ("Shop", 0)],
+                ), patch.object(
+                    menu,
+                    "_active_runner_projects",
+                    return_value=set(),
+                ), patch.object(
+                    menu,
+                    "_read_fallback_project_selector_input",
+                    side_effect=["__down__", "__toggle__", ""],
+                ):
+                    result = menu._fallback_project_selector()
+
+            self.assertEqual(result, (["Blog"], "high"))
 
     def test_persists_prefs_and_tags_into_global_codex_namespace(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,17 +1,32 @@
 # tmux-codex (`cl` / `clls`)
 
-Standalone tmux wrapper for Codex sessions and lock-gated multi-runner loops.
+Standalone tmux wrapper for Codex sessions and lock-gated runner loops.
+
+## Minimal User Flow
+
+From inside the target repo or active worktree, users should only need to know:
+
+- `/prompts:run_setup`
+- `/prompts:run_execute` and `/prompts:run_update` are internal only
+- `cl` -> `r=runner`
+
+Important:
+- `r=runner` only launches from existing runner state.
+- It does not run setup, clear, auto-approve enablement, or rewrite `.memory/runner/*`.
+- If setup is missing or not approved, runner start should fail fast and tell you to run `/prompts:run_setup`.
+
+Everything else in this README is implementation detail for recovery, automation, or debugging.
 
 ## Commands
 
 - `cl` - interactive menu
 - `cl ls` / `clls` - same interactive entrypoint
-- `cl loop <project> [--runner-id <id>] [--complexity low|med|high|xhigh] [--model <provider/model>] [--hil-mode setup-only] [--runner-mode interactive-watchdog|exec]`
+- `cl loop <project> [--runner-id <id>] [--complexity low|med|high|xhigh] [--model <provider/model>]`
 - `cl runner <project>` / `cl run <project>` / `cl r <project>` - loop aliases
 - `cl stop <project>` / `cl k <project>` / `cl ka <project>` / `cl kb <project>` - immediate runner stop (writes stop lock + kills runner session)
 - `cl k*` - stop all active runner sessions
-- `python3 bin/runctl --setup ...` - deterministic runner state bootstrap + HIL enable gate
-- `python3 bin/runctl --clear ...` - token-confirmed two-phase state clear
+- `python3 bin/runctl --setup ...` - advanced/internal equivalent of `/prompts:run_setup`
+- `python3 bin/runctl --clear ...` - advanced/internal teardown primitive used by `/prompts:run_setup`
 
 Single-runner policy:
 - one loop runner per project
@@ -29,35 +44,46 @@ Single-runner policy:
 
 Runner-scoped files under `Repos/<project>/.memory/runner/`:
 
-- `RUNNER_STATE.json` (`runner_id` is stored in JSON metadata)
-- `RUNNER_LEDGER.ndjson`
+- `runtime/RUNNER_STATE.json` (`runner_id` is stored in JSON metadata)
+- `runtime/RUNNER_LEDGER.ndjson`
 - `PRD.json`
 - `TASKS.json`
 - `RUNNER_EXEC_CONTEXT.json`
-- `RUNNER_WATCHDOG.json`
-- `RUNNER_CYCLE_PREPARED.json`
+- `runtime/RUNNER_CYCLE_PREPARED.json`
 - `RUNNER_TASK_INTAKE.json`
-- `RUNNER_ENABLE.pending.json` (setup token gate; removed after approval)
-- `RUNNER_CLEAR.pending.json` (two-phase clear token/manifest)
-- `RUNNER_HOOKS.ndjson` (hook events)
+- `locks/RUNNER_ENABLE.pending.json` (setup token gate; removed after approval)
+- `locks/RUNNER_CLEAR.pending.json` (two-phase clear token/manifest)
+- `runtime/RUNNER_HOOKS.ndjson` (hook events)
 
-Project-level lock files stay in `Repos/<project>/.memory/`:
+Runner lock files stay in `Repos/<project>/.memory/runner/locks/`:
 
 - `RUNNER_DONE.lock`
 - `RUNNER_STOP.lock`
+
+Project-level top-level files stay in `Repos/<project>/.memory/`:
+
+- `PRD.md` (runner-managed objective snapshot)
 - `gates.sh` (must define `run_gates`)
 
-## `/run` Prompt Command
+## Runner Prompts
 
 Canonical command spec lives at [`run.md`](/Users/jian/Dev/workspace/tmux-codex/run.md).
 
-Default `/prompts:run` usage is plan-first and human-in-the-loop:
-- use it to refine setup state, repo scope, and `.memory/runner/*` file conditions with the human
-- do not treat it as permission to auto-start the runner
-- once setup is satisfactory, the human can start the runner later from `cl` / TUI with `r=runner`
+Normal usage from inside the repo/worktree:
+- `/prompts:run_setup`
+- approve enablement if prompted
+- then `cl` -> `r=runner`
+
+`/prompts:run_setup` now performs a two-phase clear before rebuilding runner state on non-approval runs. Manual teardown still exists at the CLI level via `python3 bin/runctl --clear ...`, but it is no longer a default installed prompt.
+
+Internal runner dispatch:
+- `r=runner` runs a two-step cycle:
+  - `/prompts:run_execute`
+  - `/prompts:run_update`
+- setup/clear are decoupled and must never be injected into the runner pane
 
 Fast task intake from a project conversation:
-- `/prompts:add <task>` resolves the current runner root from the conversation cwd or active runner state, then queues the task via `runctl --task add`
+- `/add <task>` resolves the current runner root from the conversation cwd or active runner state, then queues the task via `runctl --task add`
 - it defaults to non-preempting intake, so the new task waits behind the active cycle unless you explicitly ask to interrupt
 
 While a runner is already active, queue extra work safely with:
@@ -76,33 +102,27 @@ Install prompt into Codex:
 bash /Users/jian/Dev/workspace/tmux-codex/scripts/install-codex-run-prompt.sh
 ```
 
-This validates `~/.codex/prompts/run.md`, `~/.codex/prompts/add.md`, the four phase prompts, and the legacy `runner-cycle.md` compatibility prompt in the global Codex home.
+This validates `~/.codex/prompts/run_setup.md`, `run_execute.md`, `run_update.md`, and `add.md` in the global Codex home.
 
 ## Runner Runtime
 
-- Default mode (`interactive-watchdog`) runs a live interactive `codex --search` pane (same UX class as `n=new`) plus a detached watchdog.
-- Runner chat launches from the resolved project root (not `~/Dev`) and uses `--dangerously-bypass-approvals-and-sandbox` to avoid approval prompts.
-- Interactive wrapper keeps one Codex session alive for a bounded prompt phase and rotates on phase handoff, no-progress, budget expiry, or lock.
-- Watchdog behavior:
-  - detects idle prompt state
-  - injects a phase-specific execute-only prompt (`runner-discover`, `runner-implement`, `runner-verify`, `runner-closeout`)
-  - falls back to `/prompts:run ... MODE=execute_only PHASE=<phase>` if the dedicated phase prompt is unavailable
-  - respawns Codex in the same project root with the same auto-approval profile if process exits
+- Public runner entrypoints launch an interactive Codex CLI pane with the infinite runner controller.
+- `cl -> r=runner` and `cl loop <project>` should run work directly from existing runner state; they should not re-run setup as part of normal execution.
+- `cl -> r=runner` and `cl loop <project>` are start-only paths. They must not bootstrap setup or approve enablement implicitly.
 - setup builds phase-scoped exec context from compact repo context sources plus runner delta for better context carry-over
-- "Infinite" means watchdog reseeds work whenever Codex returns idle and can restart Codex after exits.
-- Watchdog exits on runner lock files:
-  - `.memory/RUNNER_STOP.lock`
-  - `.memory/RUNNER_DONE.lock`
+- setup/refresh also writes `.memory/runner/RUNNER_HANDOFF.md` so each fresh cycle gets a durable resume summary, not just thin state fields
+- "Infinite" means the controller runs medium bounded slices, updates runner state, exits the current Codex session, then relaunches a fresh interactive TUI session until stop or done criteria are met.
+- Runner exits on lock files:
+  - `.memory/runner/locks/RUNNER_STOP.lock`
+  - `.memory/runner/locks/RUNNER_DONE.lock`
 - Fast manual stop:
   - `cl stop <project>` or `cl k <project>`
-- `--runner-mode exec` keeps legacy non-interactive `codex --search exec` cycle behavior as a compatibility fallback.
 - Existing tmux runner sessions must be restarted to pick up wrapper changes (tmux keeps the original startup command per session).
 
-## HIL and Done Enforcement
+## Done Enforcement
 
 - Loops are fail-closed until enable token approval is applied.
-- Default runtime mode is `setup-only` HIL (no per-iteration approval blocking).
-- Legacy deterministic worker path (`cl __runner-loop`) remains available only for backward compatibility.
+- Internal worker paths (`cl __runner-controller`, `cl __runner-loop`) are implementation details and not public entrypoints.
 - Done lock is created only when `done_candidate=true` update + passing `run_gates`.
 - `runctl --setup` also performs final closeout when `TASKS.json` is already fully done and `run_gates` passes, so finished worktrees converge without requiring one extra runner spin.
 - Done lock is only honored when project gates (`run_gates`) pass at lock detection time and `TASKS.json` has no open work.
