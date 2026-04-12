@@ -314,6 +314,138 @@ def command_set_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def update_single_select_field(
+    *,
+    owner: str,
+    project_number: int,
+    item_id: str,
+    field_name: str,
+    value_name: str | None,
+) -> None:
+    if not value_name:
+        return
+
+    fields = load_fields(owner, project_number)
+    field = fields.get(field_name)
+    if not field:
+        return
+
+    option_id = field.options.get(value_name)
+    if not option_id:
+        raise SystemExit(f"Unknown {field_name} value: {value_name}")
+
+    subprocess.run(
+        [
+            "gh",
+            "project",
+            "item-edit",
+            "--id",
+            item_id,
+            "--project-id",
+            project_node_id(owner, project_number),
+            "--field-id",
+            field.id,
+            "--single-select-option-id",
+            option_id,
+        ],
+        check=True,
+        text=True,
+    )
+
+
+def command_create_issue(args: argparse.Namespace) -> int:
+    create_args = [
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        args.repo,
+        "--title",
+        args.title,
+        "--body-file",
+        args.body_file,
+    ]
+
+    if args.label:
+        for label in args.label:
+            create_args.extend(["--label", label])
+
+    proc = subprocess.run(
+        create_args,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    issue_url = proc.stdout.strip()
+    if not issue_url:
+        raise SystemExit("Issue create did not return an issue URL")
+
+    subprocess.run(
+        [
+            "gh",
+            "project",
+            "item-add",
+            str(args.project_number),
+            "--owner",
+            args.owner,
+            "--url",
+            issue_url,
+        ],
+        check=True,
+        text=True,
+    )
+
+    items = load_project_items(args.owner, args.project_number)
+    target = next((item for item in items if item["url"] == issue_url), None)
+    if not target:
+        raise SystemExit(f"Created issue was not added to project: {issue_url}")
+
+    project_field_value = args.project_field or repo_name_to_project_value(args.repo)
+    update_single_select_field(
+        owner=args.owner,
+        project_number=args.project_number,
+        item_id=target["itemId"],
+        field_name="Status",
+        value_name=args.status,
+    )
+    update_single_select_field(
+        owner=args.owner,
+        project_number=args.project_number,
+        item_id=target["itemId"],
+        field_name="Project",
+        value_name=project_field_value,
+    )
+    update_single_select_field(
+        owner=args.owner,
+        project_number=args.project_number,
+        item_id=target["itemId"],
+        field_name="Priority",
+        value_name=args.priority,
+    )
+    update_single_select_field(
+        owner=args.owner,
+        project_number=args.project_number,
+        item_id=target["itemId"],
+        field_name="Type",
+        value_name=args.type,
+    )
+
+    refreshed = load_project_items(args.owner, args.project_number)
+    item = next((candidate for candidate in refreshed if candidate["url"] == issue_url), None)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "issueUrl": issue_url,
+                "repo": args.repo,
+                "item": item,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def project_node_id(owner: str, project_number: int) -> str:
     data = run_gh(
         ["project", "view", str(project_number), "--owner", owner, "--format", "json"]
@@ -352,6 +484,19 @@ def build_parser() -> argparse.ArgumentParser:
     set_status_parser.add_argument("--issue-url", required=True)
     set_status_parser.add_argument("--status", required=True)
     set_status_parser.set_defaults(func=command_set_status)
+
+    create_issue_parser = subparsers.add_parser("create-issue")
+    create_issue_parser.add_argument("--owner", default=DEFAULT_OWNER)
+    create_issue_parser.add_argument("--project-number", type=int, default=DEFAULT_PROJECT_NUMBER)
+    create_issue_parser.add_argument("--repo", required=True)
+    create_issue_parser.add_argument("--title", required=True)
+    create_issue_parser.add_argument("--body-file", required=True)
+    create_issue_parser.add_argument("--label", action="append")
+    create_issue_parser.add_argument("--status", default="Inbox")
+    create_issue_parser.add_argument("--project-field")
+    create_issue_parser.add_argument("--priority")
+    create_issue_parser.add_argument("--type")
+    create_issue_parser.set_defaults(func=command_create_issue)
 
     return parser
 

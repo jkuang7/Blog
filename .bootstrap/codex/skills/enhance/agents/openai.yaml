@@ -1,0 +1,7 @@
+interface:
+  display_name: "Enhance"
+  short_description: "Turn rough ideas into kanban-ready issues"
+  default_prompt: "Use $enhance to turn a rough ticket idea into a richer GitHub issue draft, use GitHub MCP for repo and thread context where helpful, ask for approval, then create it in the same GitHub Project used by $kanban with the right repo and project fields."
+
+policy:
+  allow_implicit_invocation: true

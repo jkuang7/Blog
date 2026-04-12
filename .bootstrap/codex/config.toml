@@ -81,14 +81,6 @@ url = "https://mcp.neon.tech/mcp"
   [mcp_servers.Neon.http_headers]
   Authorization = "Bearer napi_w4cvd6tfzp4f3348wexmps13p471tzx0vsrrnlkx4f76y6jrh9kqq5tz7efozpxs"
 
-[mcp_servers.vibe_kanban]
-command = "/Users/jian/.nvm/versions/node/v23.11.0/bin/npx"
-args = [ "-y", "vibe-kanban@latest", "--mcp" ]
-
-  [mcp_servers.vibe_kanban.env]
-  PATH = "/Users/jian/.nvm/versions/node/v23.11.0/bin:/usr/local/bin:/usr/bin:/bin"
-  NODE_PATH = "/Users/jian/.nvm/versions/node/v23.11.0/lib/node_modules"
-
 [notice]
 hide_rate_limit_model_nudge = true
 
