@@ -76,6 +76,14 @@ function createDevLayout(tempRoot) {
   return { devRoot, reposRoot, configPath };
 }
 
+function createFreshCloneLayout(tempRoot) {
+  const devRoot = path.join(tempRoot, "Dev");
+  const reposRoot = path.join(devRoot, "Repos");
+  const configPath = path.join(devRoot, "workspace", "repos.txt");
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  return { devRoot, reposRoot, configPath };
+}
+
 function createHomeEnv(tempRoot, extraEnv = {}) {
   const homeDir = path.join(tempRoot, "home");
   fs.mkdirSync(homeDir, { recursive: true });
@@ -275,6 +283,30 @@ test("bootstrap clones missing repos and runs npm and pnpm installs", () => {
     const logLines = readLog(tooling.logPath);
     assert(logLines.some((line) => line.includes("npm|") && line.endsWith("|install")), logLines.join("\n"));
     assert(logLines.some((line) => line.includes("pnpm|") && line.endsWith("|install")), logLines.join("\n"));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("bootstrap creates the Repos root for a fresh clone layout", () => {
+  const tempRoot = makeTempDir("repos-bootstrap-fresh-clone-");
+  const { devRoot, reposRoot, configPath } = createFreshCloneLayout(tempRoot);
+  const tooling = createFakeTooling(tempRoot);
+  const home = createHomeEnv(tempRoot, tooling.env);
+
+  try {
+    const blogOrigin = createBareOrigin(tempRoot, "Blog", {
+      "package.json": JSON.stringify({ name: "blog" }, null, 2),
+      "package-lock.json": "{}\n",
+    });
+
+    writeFile(configPath, `Blog\t${blogOrigin}\n`);
+
+    const result = runScript(["bootstrap", "--dev-root", devRoot], { env: home.env });
+    assertSuccess(result);
+
+    assert.equal(fs.existsSync(reposRoot), true);
+    assert.equal(fs.existsSync(path.join(reposRoot, "Blog", ".git")), true);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

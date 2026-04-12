@@ -203,7 +203,7 @@ function runGenerate(args) {
 
 function runBootstrap(args) {
   ensureShellHook(args.devRoot);
-  ensureDirectoryExists(args.reposRoot, "Repos root");
+  fs.mkdirSync(args.reposRoot, { recursive: true });
   const entries = parseConfigFile(args.configPath);
   const summary = {
     cloned: 0,
