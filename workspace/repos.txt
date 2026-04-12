@@ -1,12 +1,12 @@
 # Managed repositories - one per line
-# Format: <directory>\t<remote-origin-url>
+# Format: <directory>\t<remote-origin-url>[\t<branch>]
 # Remove line to stop bootstrap management (won't auto-delete local folders)
 # Generated from standalone git repos under Repos/*
 
 Banksy	git@github.com:jkuang7/Banksy.git
-Blog	git@github.com:jkuang7/Blog.git
-DeckFoundry	git@github.com:jkuang7/DeckFoundry.git
-eslint-config-jian	git@github.com:jkuang7/eslint-config-jian.git
+create-t3-jian	git@github.com:jkuang7/create-t3-jian.git
+helix-work	git@github.com:jkuang7/helix-work.git
 recert-studio	git@github.com:jkuang7/recert-studio.git
+stonks	git@github.com:jkuang7/stonks-workbench.git
 stonks-web-t3	https://github.com/jkuang7/stonks-web.git
 time-track	git@github.com:jkuang7/time-track.git
