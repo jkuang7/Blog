@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ from typing import Any
 DEFAULT_OWNER = "jkuang7"
 DEFAULT_PROJECT_NUMBER = 5
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2}
+ACTIONABLE_STATUSES = {"Ready", "Inbox", ""}
+TRACKER_BODY_MARKERS = (
+    "now an umbrella tracker",
+    "deprecated as an implementation spec",
+    "source of truth",
+)
+ISSUE_URL_RE = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/issues/\d+")
 
 
 @dataclass
@@ -192,22 +200,100 @@ def next_candidate_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
+def issue_is_deprecated_tracker(body: str) -> bool:
+    normalized = body.lower()
+    return all(marker in normalized for marker in TRACKER_BODY_MARKERS)
+
+
+def extract_issue_urls(body: str) -> list[str]:
+    urls = ISSUE_URL_RE.findall(body)
+    return list(dict.fromkeys(urls))
+
+
+def load_issue_details(repo: str, issue_number: int) -> dict[str, Any]:
+    return run_gh(
+        [
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            repo,
+            "--json",
+            "body,number,title,url",
+        ]
+    )
+
+
+def is_actionable_item(item: dict[str, Any]) -> bool:
+    return item["state"] == "OPEN" and status_value(item) in ACTIONABLE_STATUSES
+
+
+def choose_actionable_candidate(
+    candidates: list[dict[str, Any]],
+    all_items: list[dict[str, Any]],
+    issue_loader,
+) -> dict[str, Any] | None:
+    actionable_by_url = {
+        item["url"]: item
+        for item in all_items
+        if is_actionable_item(item)
+    }
+
+    for candidate in sorted(candidates, key=next_candidate_sort_key):
+        details = issue_loader(candidate)
+        body = details.get("body", "")
+        if not issue_is_deprecated_tracker(body):
+            return {"selection": "repo-candidate", "item": candidate}
+
+        linked_child_urls = [
+            url for url in extract_issue_urls(body) if url != candidate["url"]
+        ]
+        linked_children = [
+            actionable_by_url[url]
+            for url in linked_child_urls
+            if url in actionable_by_url
+        ]
+        linked_children.sort(key=next_candidate_sort_key)
+        if linked_children:
+            return {
+                "selection": "tracker-child",
+                "item": linked_children[0],
+                "tracker": candidate,
+                "linkedChildUrls": linked_child_urls,
+            }
+
+        return {
+            "selection": "tracker-candidate",
+            "item": candidate,
+            "tracker": True,
+            "linkedChildUrls": linked_child_urls,
+            "message": "Top candidate is a deprecated tracker issue. Split child tickets are the source of truth.",
+        }
+
+    return None
+
+
 def command_next(args: argparse.Namespace) -> int:
     items = load_project_items(args.owner, args.project_number)
     repo_candidates = [
         item
         for item in items
-        if item["repo"] == args.repo and item["state"] == "OPEN" and status_value(item) in {"Ready", "Inbox", ""}
+        if item["repo"] == args.repo and is_actionable_item(item)
     ]
-    repo_candidates.sort(key=next_candidate_sort_key)
     if repo_candidates:
-        print(
-            json.dumps(
-                {"found": True, "selection": "repo-candidate", "item": repo_candidates[0]},
-                indent=2,
-            )
+        selected = choose_actionable_candidate(
+            repo_candidates,
+            items,
+            lambda item: load_issue_details(item["repo"], item["number"]),
         )
-        return 0
+        if selected:
+            print(
+                json.dumps(
+                    {"found": True, **selected},
+                    indent=2,
+                )
+            )
+            return 0
 
     if args.repos_root:
         local_repos = local_repos_from_root(args.repos_root)
@@ -215,20 +301,23 @@ def command_next(args: argparse.Namespace) -> int:
             item
             for item in items
             if item["repo"] in local_repos
-            and item["state"] == "OPEN"
-            and status_value(item) in {"Ready", "Inbox", ""}
+            and is_actionable_item(item)
         ]
-        candidates.sort(key=next_candidate_sort_key)
         if candidates:
-            selected = candidates[0]
+            selected = choose_actionable_candidate(
+                candidates,
+                items,
+                lambda item: load_issue_details(item["repo"], item["number"]),
+            )
+            if not selected:
+                selected = {"selection": "workspace-fallback", "item": sorted(candidates, key=next_candidate_sort_key)[0]}
             print(
                 json.dumps(
                     {
                         "found": True,
-                        "selection": "workspace-fallback",
+                        **selected,
                         "requestedRepo": args.repo,
                         "reposRoot": args.repos_root,
-                        "item": selected,
                     },
                     indent=2,
                 )
@@ -332,6 +421,12 @@ def update_single_select_field(
 
     option_id = field.options.get(value_name)
     if not option_id:
+        if field_name == "Project":
+            print(
+                f"warning: skipped {field_name}={value_name!r} because the project board has no matching option",
+                file=sys.stderr,
+            )
+            return
         raise SystemExit(f"Unknown {field_name} value: {value_name}")
 
     subprocess.run(

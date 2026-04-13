@@ -6,7 +6,7 @@
     "bootstrap:generate": "node workspace/scripts/repos-bootstrap.mjs generate",
     "bootstrap:help": "node workspace/scripts/repos-bootstrap.mjs help",
     "bootstrap:pull": "node workspace/scripts/bootstrap-pull.mjs",
-    "bootstrap:push": "npm run bootstrap:generate",
+    "bootstrap:push": "node workspace/scripts/bootstrap-push.mjs",
     "bs:pull": "npm run bootstrap:pull",
     "bs:push": "npm run bootstrap:push"
   }

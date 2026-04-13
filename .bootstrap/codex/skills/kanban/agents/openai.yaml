@@ -1,7 +1,7 @@
 interface:
   display_name: "Kanban"
-  short_description: "Work GitHub project issues and threads"
-  default_prompt: "Use $kanban to pick the next issue linked to my GitHub Project, read the full issue thread, turn it into a stronger execution plan, then start working and leave concise human ticket updates only when work starts, finishes, or needs attention."
+  short_description: "Work actionable project issues, not stale trackers"
+  default_prompt: "Use $kanban to sync safely before new work, pick the next actionable issue linked to my GitHub Project, reject deprecated umbrella tickets in favor of child tickets, read the full issue thread, turn it into a stronger execution plan, then start working and leave concise human ticket updates only when work starts, finishes, or needs attention."
 
 policy:
   allow_implicit_invocation: true
