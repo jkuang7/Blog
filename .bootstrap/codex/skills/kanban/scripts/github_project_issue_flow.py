@@ -22,6 +22,11 @@ TRACKER_BODY_MARKERS = (
     "source of truth",
 )
 ISSUE_URL_RE = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/issues/\d+")
+START_COMMENT_PREFIX = "Picking this up now."
+REVIEW_COMMENT_PREFIX = "Ready for review."
+DONE_COMMENT_PREFIX = "Done."
+BACKTRACK_COMMENT_PREFIX = "Adjusting course based on feedback."
+BLOCKED_COMMENT_PREFIX = "Blocked on "
 
 
 @dataclass
@@ -224,6 +229,95 @@ def load_issue_details(repo: str, issue_number: int) -> dict[str, Any]:
     )
 
 
+def load_repo_open_issues(repo: str) -> list[dict[str, Any]]:
+    return run_gh(
+        [
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            "number,title,url,updatedAt",
+        ]
+    )
+
+
+def load_issue_thread(repo: str, issue_number: int) -> dict[str, Any]:
+    return run_gh(
+        [
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            repo,
+            "--json",
+            "body,comments,number,title,url",
+        ]
+    )
+
+
+def workflow_comment_state(body: str) -> str | None:
+    stripped = body.strip()
+    if stripped.startswith(START_COMMENT_PREFIX):
+        return "in_progress"
+    if stripped.startswith(BACKTRACK_COMMENT_PREFIX):
+        return "in_progress"
+    if stripped.startswith(REVIEW_COMMENT_PREFIX):
+        return "review"
+    if stripped.startswith(DONE_COMMENT_PREFIX):
+        return "done"
+    if stripped.startswith(BLOCKED_COMMENT_PREFIX):
+        return "blocked"
+    return None
+
+
+def latest_workflow_state(comments: list[dict[str, Any]]) -> str | None:
+    latest_state: str | None = None
+    latest_time: str | None = None
+
+    for comment in comments:
+        state = workflow_comment_state(comment.get("body", ""))
+        if not state:
+            continue
+
+        created_at = comment.get("createdAt", "")
+        if latest_time is None or created_at > latest_time:
+            latest_state = state
+            latest_time = created_at
+
+    return latest_state
+
+
+def find_active_started_issue(repo: str) -> dict[str, Any] | None:
+    active_candidates: list[dict[str, Any]] = []
+    for issue in load_repo_open_issues(repo):
+        details = load_issue_thread(repo, issue["number"])
+        workflow_state = latest_workflow_state(details.get("comments", []))
+        if workflow_state != "in_progress":
+            continue
+
+        active_candidates.append(
+            {
+                "repo": repo,
+                "number": details["number"],
+                "title": details["title"],
+                "url": details["url"],
+                "workflowState": workflow_state,
+                "updatedAt": issue.get("updatedAt", ""),
+            }
+        )
+
+    if not active_candidates:
+        return None
+
+    active_candidates.sort(key=lambda item: (item["updatedAt"], item["number"]), reverse=True)
+    return active_candidates[0]
+
+
 def is_actionable_item(item: dict[str, Any]) -> bool:
     return item["state"] == "OPEN" and status_value(item) in ACTIONABLE_STATUSES
 
@@ -324,13 +418,85 @@ def command_next(args: argparse.Namespace) -> int:
             )
             return 0
 
+    project_candidates = [
+        item
+        for item in items
+        if is_actionable_item(item)
+    ]
+    if project_candidates:
+        selected = choose_actionable_candidate(
+            project_candidates,
+            items,
+            lambda item: load_issue_details(item["repo"], item["number"]),
+        )
+        if not selected:
+            selected = {
+                "selection": "project-fallback",
+                "item": sorted(project_candidates, key=next_candidate_sort_key)[0],
+            }
+        elif selected["selection"] not in {"tracker-child", "tracker-candidate"}:
+            selected["selection"] = "project-fallback"
+        print(
+            json.dumps(
+                {
+                    "found": True,
+                    **selected,
+                    "requestedRepo": args.repo,
+                    "reposRoot": args.repos_root,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
     print(
         json.dumps(
             {
                 "found": False,
                 "repo": args.repo,
                 "reposRoot": args.repos_root,
-                "message": "No matching project issue found for this repo or local workspace.",
+                "message": "No actionable project issue found for this repo, local workspace, or shared project board.",
+            },
+            indent=2,
+        )
+    )
+    return 1
+
+
+def command_active(args: argparse.Namespace) -> int:
+    active_item = find_active_started_issue(args.repo)
+    if active_item:
+        print(json.dumps({"found": True, "selection": "repo-started-issue", "item": active_item}, indent=2))
+        return 0
+
+    if args.repos_root:
+        local_repos = sorted(local_repos_from_root(args.repos_root))
+        for repo in local_repos:
+            if repo == args.repo:
+                continue
+            active_item = find_active_started_issue(repo)
+            if active_item:
+                print(
+                    json.dumps(
+                        {
+                            "found": True,
+                            "selection": "workspace-started-issue",
+                            "item": active_item,
+                            "requestedRepo": args.repo,
+                            "reposRoot": args.repos_root,
+                        },
+                        indent=2,
+                    )
+                )
+                return 0
+
+    print(
+        json.dumps(
+            {
+                "found": False,
+                "repo": args.repo,
+                "reposRoot": args.repos_root,
+                "message": "No started issue found from kanban workflow comments for this repo or local workspace.",
             },
             indent=2,
         )
@@ -559,6 +725,13 @@ def build_parser() -> argparse.ArgumentParser:
     next_parser.add_argument("--repo", required=True)
     next_parser.add_argument("--repos-root")
     next_parser.set_defaults(func=command_next)
+
+    active_parser = subparsers.add_parser("active")
+    active_parser.add_argument("--owner", default=DEFAULT_OWNER)
+    active_parser.add_argument("--project-number", type=int, default=DEFAULT_PROJECT_NUMBER)
+    active_parser.add_argument("--repo", required=True)
+    active_parser.add_argument("--repos-root")
+    active_parser.set_defaults(func=command_active)
 
     issue_item_parser = subparsers.add_parser("issue-item")
     issue_item_parser.add_argument("--owner", default=DEFAULT_OWNER)

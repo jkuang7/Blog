@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import pathlib
 import sys
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 
@@ -135,6 +137,90 @@ class TrackerSelectionTests(unittest.TestCase):
         self.assertEqual(selected["selection"], "tracker-candidate")
         self.assertTrue(selected["tracker"])
         self.assertEqual(selected["item"]["url"], tracker["url"])
+
+
+class CommandNextTests(unittest.TestCase):
+    def test_falls_back_to_project_candidate_when_repo_and_workspace_do_not_match(self):
+        project_item = {
+            "itemId": "project-item",
+            "number": 5,
+            "title": "Project-wide task",
+            "url": "https://github.com/jkuang7/other-repo/issues/5",
+            "state": "OPEN",
+            "repo": "jkuang7/other-repo",
+            "fields": {"Status": "Ready", "Priority": "P1"},
+        }
+
+        args = MODULE.argparse.Namespace(
+            owner="jkuang7",
+            project_number=5,
+            repo="jkuang7/Dev",
+            repos_root="/tmp/Repos",
+        )
+
+        with (
+            mock.patch.object(MODULE, "load_project_items", return_value=[project_item]),
+            mock.patch.object(MODULE, "local_repos_from_root", return_value={"jkuang7/Banksy"}),
+            mock.patch.object(
+                MODULE,
+                "load_issue_details",
+                return_value={"body": "Normal actionable issue body."},
+            ),
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = MODULE.command_next(args)
+
+        payload = MODULE.json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["selection"], "project-fallback")
+        self.assertEqual(payload["item"]["url"], project_item["url"])
+
+
+class WorkflowCommentTests(unittest.TestCase):
+    def test_latest_workflow_state_prefers_most_recent_matching_comment(self):
+        comments = [
+            {"body": "Picking this up now. Plan is one line.", "createdAt": "2026-04-12T10:00:00Z"},
+            {"body": "Ready for review. I changed x.", "createdAt": "2026-04-12T11:00:00Z"},
+            {"body": "Adjusting course based on feedback. I am moving this back to In Progress. Next I am going to y.", "createdAt": "2026-04-12T12:00:00Z"},
+        ]
+
+        self.assertEqual(MODULE.latest_workflow_state(comments), "in_progress")
+
+
+class CommandActiveTests(unittest.TestCase):
+    def test_returns_repo_started_issue_when_comment_marks_it_in_progress(self):
+        args = MODULE.argparse.Namespace(
+            owner="jkuang7",
+            project_number=5,
+            repo="jkuang7/time-track",
+            repos_root="/tmp/Repos",
+        )
+
+        with mock.patch.object(
+            MODULE,
+            "find_active_started_issue",
+            side_effect=[
+                {
+                    "repo": "jkuang7/time-track",
+                    "number": 1,
+                    "title": "Started",
+                    "url": "https://github.com/jkuang7/time-track/issues/1",
+                    "workflowState": "in_progress",
+                    "updatedAt": "2026-04-12T22:57:54Z",
+                }
+            ],
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = MODULE.command_active(args)
+
+        payload = MODULE.json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["selection"], "repo-started-issue")
+        self.assertEqual(payload["item"]["url"], "https://github.com/jkuang7/time-track/issues/1")
 
 
 if __name__ == "__main__":

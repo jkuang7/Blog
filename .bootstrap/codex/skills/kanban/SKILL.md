@@ -29,14 +29,16 @@ Override these only when the user explicitly says to.
 3. Before starting anything new, check for an active issue:
    - Prefer an item in `In Progress` for the current repo if one already exists.
    - In a multi-repo workspace, if the current repo has no active item, check project items for the local repos under `Repos/` before concluding there is no active work.
+   - Also check for open issues in the current repo or local workspace repos whose latest kanban workflow comment is a start/backtrack comment like `Picking this up now.` or `Adjusting course...`, because the project item can be missing or stale while the issue thread is current.
    - Do not start a second issue unless the current one is in `Review`, `Done`, or explicitly blocked.
 4. If there is no active issue, pick the next task:
    - Use `scripts/github_project_issue_flow.py next --repo <owner/name>`.
    - If you are at a workspace root, also pass `--repos-root <path-to-Repos>` so the helper can fall back to local child repos.
    - Treat issue presence in the GitHub project as enough to surface it. Do not require a matching custom `Project` field or a pre-set `Ready` status.
    - Prefer `Status=Ready`, then `Inbox`, then unset status. Use `Priority` (`P0`, `P1`, `P2`) and issue number as tie-breakers.
+   - Selection order is: current repo, then local child repos under `Repos/`, then the next actionable item anywhere on the shared project board.
    - Treat a matching custom `Project` field as a preference only when it is present; never make it a hard requirement for discovery.
-   - If no candidate exists for the current repo or local workspace, report that clearly instead of guessing outside the project.
+   - Only report "nothing found" after checking the current repo, the local workspace, and the broader shared project board.
 5. Read the full issue thread before acting:
    - Always inspect the issue body and the latest comments before starting work, replying, or moving status.
    - Treat issue comments as the source of truth for the latest direction, clarifications, screenshots, and review feedback.
@@ -119,6 +121,12 @@ Read the full issue thread before acting:
 
 ```bash
 gh issue view 123 --repo jkuang7/Banksy --comments
+```
+
+Check for an already-started issue before selecting something new:
+
+```bash
+python3 ~/.codex/skills/kanban/scripts/github_project_issue_flow.py active --repo jkuang7/Banksy
 ```
 
 Find the project item for a specific issue:
