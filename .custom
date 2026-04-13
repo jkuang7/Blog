@@ -76,19 +76,20 @@ clls() {
 # Helix-work Codex shortcut
 alias clh='codex "$REPOS_HOME/helix-work"'
 
-alias aero='pgrep -x AeroSpace >/dev/null || open -a AeroSpace; sleep 0.5; aerospace reload-config 2>/dev/null'
-alias bs:pull='(cd "$DEV" && npm run pull)'
-alias bs:push='(cd "$DEV" && npm run push)'
-
-#=======================================
-# Development Aliases
-#=======================================
-alias recert='cd $DEV/Repos/recert && source .venv/bin/activate && recert'
 #=======================================
 # Package Manager Aliases
 #=======================================
 alias p='pnpm'
 alias n='npm'
+
+alias aero='pgrep -x AeroSpace >/dev/null || open -a AeroSpace; sleep 0.5; aerospace reload-config 2>/dev/null'
+alias bs:pull='(cd "$DEV" && n run pull)'
+alias bs:push='(cd "$DEV" && n run push)'
+
+#=======================================
+# Development Aliases
+#=======================================
+alias recert='cd $DEV/Repos/recert && source .venv/bin/activate && recert'
 
 #=======================================
 # Infrastructure Aliases
