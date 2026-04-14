@@ -8,5 +8,5 @@ create-t3-jian	git@github.com:jkuang7/create-t3-jian.git
 helix-work	git@github.com:jkuang7/helix-work.git
 recert-studio	git@github.com:jkuang7/recert-studio.git
 stonks	git@github.com:jkuang7/stonks-workbench.git
-telecodex	https://github.com/Headcrab/telecodex.git	master
+telecodex	git@github.com:jkuang7/telecodex.git	master
 time-track	git@github.com:jkuang7/time-track.git
