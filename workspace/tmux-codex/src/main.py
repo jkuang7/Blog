@@ -63,6 +63,45 @@ def detect_session_type(args: list[str]) -> tuple[str, str]:
     return "codex", "session"
 
 
+def session_profile_overrides(args: list[str]) -> list[str]:
+    """Return explicit high-end overrides for planning/execution sessions.
+
+    Raw Codex config can carry a cheap default model, but wrapper-launched
+    execution flows should still force the expensive profile up front.
+    """
+    if not args:
+        return []
+
+    normalized_args = [arg.lower() for arg in args]
+    joined = " ".join(normalized_args)
+    execution_markers = (
+        "/plan",
+        "/kanban",
+        "continue kanban",
+        "run kanban",
+        "/run",
+        "/prompts:run_",
+        "/integrate",
+        "/spec",
+        "/refactor",
+        "/commit-main",
+        "/enhance",
+        "/prune",
+        "/review",
+    )
+    if not any(marker in joined for marker in execution_markers):
+        return []
+
+    return [
+        "-c",
+        'model="gpt-5.4"',
+        "-c",
+        'model_reasoning_effort="high"',
+        "-c",
+        'plan_mode_reasoning_effort="high"',
+    ]
+
+
 def create_session(args: list[str]) -> None:
     """Create new Codex session and attach."""
     prompt_error = ensure_runner_prompt_install()
@@ -79,10 +118,16 @@ def create_session(args: list[str]) -> None:
 
     dev = os.environ.get("DEV", "/Users/jian/Dev")
     workdir = os.getcwd()
-    extra_args = " ".join(args) if args else ""
+    codex_parts = [
+        "codex",
+        "--search",
+        "--dangerously-bypass-approvals-and-sandbox",
+        *session_profile_overrides(args),
+        *args,
+    ]
     cmd = (
         f'cd "{workdir}" && '
-        f'codex --search --dangerously-bypass-approvals-and-sandbox {extra_args}; '
+        f"{shlex.join(codex_parts)}; "
         "clear; exec zsh -l"
     )
 
@@ -97,13 +142,48 @@ def create_session(args: list[str]) -> None:
     tmux.attach(sess_name)
 
 
-def list_sessions() -> None:
-    """Show interactive session menu."""
+def _resolve_list_selector(tmux: TmuxClient, selector: str) -> str | None:
+    """Resolve a direct `cl ls` selector to a session name.
+
+    Numeric selectors map to regular codex sessions using the same 1-based
+    numbering shown in the interactive menu. Single letters map to runner
+    sessions using the same a-z labels shown in the menu.
+    """
+    sessions = tmux.list_sessions(prefix="codex")
+    regular_sessions = [sess for sess in sessions if not sess.startswith("runner-")]
+    runner_sessions = [sess for sess in sessions if sess.startswith("runner-")]
+
+    normalized = selector.strip()
+    if normalized.isdigit() and normalized != "0":
+        index = int(normalized) - 1
+        if 0 <= index < len(regular_sessions):
+            return regular_sessions[index]
+        return None
+
+    if len(normalized) == 1 and normalized.isalpha():
+        index = ord(normalized.lower()) - ord("a")
+        if 0 <= index < len(runner_sessions):
+            return runner_sessions[index]
+        return None
+
+    return None
+
+
+def list_sessions(selector: str | None = None) -> None:
+    """Show interactive session menu or attach directly by selector."""
     dev = os.environ.get("DEV", "/Users/jian/Dev")
     os.chdir(dev)
 
     config = get_tmux_config()
     tmux = TmuxClient(config=config)
+
+    if selector is not None:
+        session_name = _resolve_list_selector(tmux, selector)
+        if session_name is None:
+            print(f"Session selector not found: {selector}")
+            return
+        tmux.attach(session_name)
+        return
 
     menu = SessionMenu(tmux)
     menu.run()
@@ -595,7 +675,9 @@ def main() -> None:
         return
 
     if args[0] == "ls":
-        list_sessions()
+        if len(args) > 2:
+            raise SystemExit("Usage: cl ls [selector]")
+        list_sessions(args[1] if len(args) == 2 else None)
         return
 
     if args[0] in ("loop", "runner", "run", "r"):
@@ -645,7 +727,7 @@ def main() -> None:
     if args[0] in ("-h", "--help", "help"):
         print("Usage:")
         print("  cl                    # interactive session menu")
-        print("  cl ls                 # list/attach sessions")
+        print("  cl ls [selector]      # list sessions or attach directly (e.g. cl ls 1, cl ls a)")
         print(
             "  cl loop <project> [--runner-id <id>] [--complexity <low|med|high|xhigh>] "
             "[--model <provider/model>]"

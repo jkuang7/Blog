@@ -246,6 +246,15 @@ def load_repo_open_issues(repo: str) -> list[dict[str, Any]]:
     )
 
 
+def try_load_repo_open_issues(repo: str) -> list[dict[str, Any]] | None:
+    try:
+        return load_repo_open_issues(repo)
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr.strip() if error.stderr else str(error)
+        print(f"warning: skipped active issue scan for {repo}: {stderr}", file=sys.stderr)
+        return None
+
+
 def load_issue_thread(repo: str, issue_number: int) -> dict[str, Any]:
     return run_gh(
         [
@@ -294,7 +303,11 @@ def latest_workflow_state(comments: list[dict[str, Any]]) -> str | None:
 
 def find_active_started_issue(repo: str) -> dict[str, Any] | None:
     active_candidates: list[dict[str, Any]] = []
-    for issue in load_repo_open_issues(repo):
+    issues = try_load_repo_open_issues(repo)
+    if issues is None:
+        return None
+
+    for issue in issues:
         details = load_issue_thread(repo, issue["number"])
         workflow_state = latest_workflow_state(details.get("comments", []))
         if workflow_state != "in_progress":

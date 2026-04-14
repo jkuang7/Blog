@@ -34,6 +34,8 @@ Single-runner policy:
 
 ## Model Mapping
 
+- Plain interactive `cl` sessions inherit the global Codex default profile. In this workspace that now means cheap control-plane chat on `gpt-5.4-mini` with `medium` reasoning.
+- Wrapper-launched planning and execution sessions such as `/plan`, `/kanban`, `/run`, `/integrate`, `/spec`, `/refactor`, `/enhance`, and `/review` are promoted to `gpt-5.4` with `high` reasoning at launch time.
 - `low` -> `gpt-5.3-codex` (effort `low`)
 - `med` -> `gpt-5.3-codex` (effort `medium`)
 - `high` -> `gpt-5.3-codex` (effort `high`)

@@ -1,6 +1,6 @@
 personality = "pragmatic"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
 plan_mode_reasoning_effort = "high"
 notify = [ "/Users/jian/Dev/workspace/hooks/notify-codex.sh" ]
 

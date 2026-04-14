@@ -222,6 +222,43 @@ class CommandActiveTests(unittest.TestCase):
         self.assertEqual(payload["selection"], "repo-started-issue")
         self.assertEqual(payload["item"]["url"], "https://github.com/jkuang7/time-track/issues/1")
 
+    def test_workspace_active_skips_repo_failures_and_finds_later_match(self):
+        args = MODULE.argparse.Namespace(
+            owner="jkuang7",
+            project_number=5,
+            repo="jkuang7/Dev",
+            repos_root="/tmp/Repos",
+        )
+
+        with (
+            mock.patch.object(MODULE, "find_active_started_issue", side_effect=[
+                None,
+                None,
+                {
+                    "repo": "jkuang7/time-track",
+                    "number": 1,
+                    "title": "Started",
+                    "url": "https://github.com/jkuang7/time-track/issues/1",
+                    "workflowState": "in_progress",
+                    "updatedAt": "2026-04-12T22:57:54Z",
+                },
+            ]),
+            mock.patch.object(
+                MODULE,
+                "local_repos_from_root",
+                return_value={"jkuang7/recert-studio", "jkuang7/time-track"},
+            ),
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = MODULE.command_active(args)
+
+        payload = MODULE.json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["selection"], "workspace-started-issue")
+        self.assertEqual(payload["item"]["repo"], "jkuang7/time-track")
+
 
 if __name__ == "__main__":
     unittest.main()

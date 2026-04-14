@@ -3,7 +3,7 @@
 
 Usage:
     cl                              Interactive session menu
-    cl ls                           List/attach sessions
+    cl ls [selector]                List sessions or attach directly
     cl loop <project>               Start Codex infinite loop runner
     cl loop <project> --complexity high
     cl loop <project> --complexity xhigh
