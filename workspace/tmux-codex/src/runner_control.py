@@ -515,17 +515,6 @@ class RunnerControlPlane:
                 CREATE INDEX IF NOT EXISTS idx_orchestrator_overrides_status
                     ON orchestrator_operator_overrides(status, created_at ASC);
 
-                CREATE TABLE IF NOT EXISTS orchestrator_intake_requests(
-                    request_fingerprint TEXT PRIMARY KEY,
-                    request_text TEXT NOT NULL,
-                    current_repo TEXT,
-                    requested_by TEXT,
-                    status TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
                 CREATE TABLE IF NOT EXISTS orchestrator_metrics(
                     metric_key TEXT PRIMARY KEY,
                     metric_value INTEGER NOT NULL,
@@ -536,60 +525,6 @@ class RunnerControlPlane:
             self._ensure_column(conn, "orchestrator_conditions", "message", "TEXT")
             self._ensure_column(conn, "orchestrator_operator_overrides", "target_run_id", "TEXT")
             self._ensure_column(conn, "orchestrator_operator_overrides", "payload_json", "TEXT")
-
-    def get_intake_request(self, fingerprint: str) -> dict[str, Any] | None:
-        with self._connection() as conn:
-            row = conn.execute(
-                """
-                SELECT request_fingerprint, request_text, current_repo, requested_by, status,
-                       result_json, created_at, updated_at
-                FROM orchestrator_intake_requests
-                WHERE request_fingerprint = ?1
-                """,
-                (fingerprint,),
-            ).fetchone()
-        payload = _row_dict(row)
-        if not payload:
-            return None
-        payload["result"] = _parse_json(payload.get("result_json"))
-        return payload
-
-    def record_intake_request(
-        self,
-        *,
-        fingerprint: str,
-        request_text: str,
-        current_repo: str | None,
-        requested_by: str | None,
-        status: str,
-        result: dict[str, Any],
-    ) -> None:
-        now = utc_now()
-        with self._connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO orchestrator_intake_requests(
-                    request_fingerprint, request_text, current_repo, requested_by,
-                    status, result_json, created_at, updated_at
-                ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-                ON CONFLICT(request_fingerprint) DO UPDATE SET
-                    request_text = excluded.request_text,
-                    current_repo = excluded.current_repo,
-                    requested_by = excluded.requested_by,
-                    status = excluded.status,
-                    result_json = excluded.result_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    fingerprint,
-                    request_text,
-                    current_repo,
-                    requested_by,
-                    status,
-                    _json(result),
-                    now,
-                ),
-            )
 
     def _upsert_issue_snapshot(self, issue: dict[str, Any], *, phase: str | None) -> None:
         issue_url = _as_text(issue.get("url"))

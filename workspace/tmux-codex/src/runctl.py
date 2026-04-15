@@ -20,7 +20,6 @@ from .runner_graph import (
     load_graph_config_for_project,
     summarize_task_graph_slice,
 )
-from .github_intake import handle_add_intake
 from .runner_state import (
     DONE_NEXT_TASK_TEXT,
     DEFAULT_PHASE_BUDGET_MINUTES,
@@ -4531,8 +4530,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--query", help="Search query for --task find")
     parser.add_argument("--objective", choices=["show", "set"], help="Objective command")
     parser.add_argument("--objective-id", help="Objective id for --objective set")
-    parser.add_argument("--intake", choices=["add"], help="GitHub intake command")
-    parser.add_argument("--text", help="Raw request text for --intake add")
     parser.add_argument(
         "--operator",
         choices=["status", "queue", "pause", "resume", "force", "skip", "block", "resume-run", "override-split"],
@@ -4590,21 +4587,17 @@ def run(argv: list[str]) -> int:
     if args.operator and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):
         _err("ERROR: --operator cannot be combined with --setup/--clear/--prepare-cycle/--approve-enable/--confirm")
         return 1
-    if args.intake and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):
-        _err("ERROR: --intake cannot be combined with --setup/--clear/--prepare-cycle/--approve-enable/--confirm")
-        return 1
     selected_modes = [
         name
         for name, enabled in (
             ("task", args.task),
             ("objective", args.objective),
             ("operator", args.operator),
-            ("intake", args.intake),
         )
         if enabled
     ]
     if len(selected_modes) > 1:
-        _err("ERROR: choose only one of --task, --objective, --operator, or --intake")
+        _err("ERROR: choose only one of --task, --objective, or --operator")
         return 1
 
     runner_id = _default_runner_id(args.runner_id)
@@ -4677,22 +4670,6 @@ def run(argv: list[str]) -> int:
             issue_title=args.issue_title,
             run_id=args.run_id,
             reason=args.reason,
-            requested_by=args.requested_by,
-        )
-        print(output)
-        return code
-
-    if args.intake:
-        paths = build_runner_state_paths_for_root(
-            project_root=project_root,
-            dev=args.dev,
-            project=project,
-            runner_id=runner_id,
-        )
-        code, output = handle_add_intake(
-            paths=paths,
-            project_root=project_root,
-            text=args.text or "",
             requested_by=args.requested_by,
         )
         print(output)

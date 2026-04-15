@@ -2206,27 +2206,6 @@ class RunctlTests(unittest.TestCase):
         self.assertEqual(kanban_state["phase"], "blocked")
         self.assertEqual(kanban_state["blocker"]["category"], "operator")
 
-    def test_intake_add_routes_to_github_intake_handler(self):
-        with patch("src.runctl.handle_add_intake", return_value=(0, '{"status":"created"}')) as intake:
-            with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
-                code = run(
-                    [
-                        "--intake",
-                        "add",
-                        "--text",
-                        "build the feature",
-                        "--project",
-                        "blog",
-                        "--runner-id",
-                        "main",
-                        "--dev",
-                        str(self.dev),
-                    ]
-                )
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(mocked_stdout.getvalue())["status"], "created")
-        intake.assert_called_once()
-
     def test_parse_args_rejects_obsolete_create_flag(self):
         with patch("sys.stderr", new=io.StringIO()):
             with self.assertRaises(SystemExit):
