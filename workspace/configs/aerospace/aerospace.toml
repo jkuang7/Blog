@@ -2,7 +2,16 @@
 # Source of truth: /Users/jian/Dev/workspace/configs/aerospace/aerospace.toml
 # Symlinked to: ~/.aerospace.toml
 
+config-version = 2
 start-at-login = true
+enable-normalization-flatten-containers = true
+enable-normalization-opposite-orientation-for-nested-containers = true
+gaps.inner.horizontal = 0
+gaps.inner.vertical = 0
+gaps.outer.left = 0
+gaps.outer.bottom = 0
+gaps.outer.top = 0
+gaps.outer.right = 0
 
 # =============================================================================
 # CALLBACKS
