@@ -53,6 +53,7 @@ When setup inputs are missing, generic, or stale, create fresh concrete files af
 - write `<target_root>/.memory/runner/GAPS.json`
 - write `<target_root>/.memory/runner/PRD.json`
 - write `<target_root>/.memory/runner/TASKS.json`
+- write `<target_root>/.memory/runner/KANBAN_STATE.json` as additive ticket-native continuity state during the migration away from file-managed planning
 - write `<target_root>/.memory/runner/RUNNER_PARITY.json` when the objective is a migration, refactor, parity-sensitive UI change, or regression-restoration effort
 
 Use the latest explicit user goal as the source of truth. Distill broad notes into:

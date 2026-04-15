@@ -26,6 +26,9 @@ class CreateSessionTests(unittest.TestCase):
         kanban_overrides = session_profile_overrides(["continue kanban"])
         self.assertIn('model="gpt-5.4"', kanban_overrides)
 
+        workflow_overrides = session_profile_overrides(["continuous workflow"])
+        self.assertIn('model="gpt-5.4"', workflow_overrides)
+
     def test_create_session_checks_runner_prompt_install_before_launch(self):
         tmux_instance = MagicMock()
 

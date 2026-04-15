@@ -64,6 +64,10 @@ class LoopArgsTests(unittest.TestCase):
         parsed = parse_loop_args(["blog", "--runner-id", "main"])
         self.assertEqual(parsed["runner_id"], "main")
 
+    def test_parse_loop_accepts_project_root_override(self):
+        parsed = parse_loop_args(["blog", "--project-root", "/tmp/blog-worktree"])
+        self.assertEqual(parsed["project_root"], "/tmp/blog-worktree")
+
     def test_parse_loop_invalid_complexity(self):
         with self.assertRaises(ValueError):
             parse_loop_args(["blog", "--complexity", "extreme"])
@@ -249,6 +253,50 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(calls, [("gpt-5.4-mini", "medium"), ("gpt-5.4", "high")])
+
+    def test_interactive_runner_controller_writes_runner_status_snapshot_when_session_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            state = default_runner_state("blog", "main")
+            state["project_root"] = str(project_root)
+            write_json(paths.state_file, state)
+
+            tmux_instance = unittest.mock.Mock()
+            tmux_instance.has_session.return_value = False
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux_instance),
+            ):
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            runner_status = read_json(paths.runner_status_json)
+            self.assertEqual(runner_status.get("project"), "blog")
+            self.assertEqual(runner_status.get("status"), "stopped")
+            self.assertEqual(runner_status.get("project_root"), str(project_root))
 
     def test_archive_runner_threads_for_cwd_archives_only_runner_threads(self):
         threads = [

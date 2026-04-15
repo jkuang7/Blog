@@ -69,9 +69,13 @@ class RunctlTests(unittest.TestCase):
         self.assertTrue(paths.gaps_json.exists())
         self.assertTrue(paths.tasks_json.exists())
         self.assertTrue(paths.prd_json.exists())
+        self.assertTrue(paths.kanban_state_json.exists())
         self.assertTrue(paths.runner_parity_json.exists())
         self.assertTrue(paths.exec_context_json.exists())
         self.assertTrue(paths.active_backlog_json.exists())
+        self.assertTrue(paths.runner_status_json.exists())
+        self.assertTrue(paths.action_queue_json.exists())
+        self.assertTrue(paths.reconcile_result_json.exists())
         self.assertTrue(paths.ledger_file.exists())
         self.assertTrue(paths.project_prd_file.exists())
         self.assertTrue(paths.runner_handoff_file.exists())
@@ -116,6 +120,7 @@ class RunctlTests(unittest.TestCase):
             if isinstance(entry, dict) and str(entry.get("path", "")).strip()
         }
         self.assertIn(str(paths.project_prd_file.resolve()), source_paths)
+        self.assertIn(str(paths.kanban_state_json.resolve()), source_paths)
         self.assertNotIn(str(paths.runner_handoff_file.resolve()), source_paths)
         self.assertIn("Next task:", paths.runner_handoff_file.read_text(encoding="utf-8"))
         active_backlog = read_json(paths.active_backlog_json)
@@ -124,6 +129,45 @@ class RunctlTests(unittest.TestCase):
         self.assertEqual(active_backlog["next_task_id"], state["next_task_id"])
         self.assertIsNone(active_backlog["selected_task"]["graph_cluster_label"])
         self.assertFalse(active_backlog["selected_task"]["parity_enabled"])
+        self.assertEqual(active_backlog["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(active_backlog["kanban"]["mode"], "ticket_native")
+        self.assertEqual(active_backlog["kanban"]["continue_until"], "board_complete_or_all_blocked")
+        kanban_state = read_json(paths.kanban_state_json)
+        self.assertIsNotNone(kanban_state)
+        assert kanban_state is not None
+        self.assertEqual(kanban_state["mode"], "ticket_native")
+        self.assertEqual(kanban_state["phase"], "selecting")
+        self.assertEqual(
+            Path(kanban_state["active_checkout"]["repo_root"]).resolve(),
+            (self.dev / "Repos" / "blog").resolve(),
+        )
+        self.assertEqual(exec_context["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(exec_context["kanban_mode"], "ticket_native")
+        self.assertEqual(exec_context["kanban_phase"], "selecting")
+        self.assertEqual(exec_context["kanban_continue_until"], "board_complete_or_all_blocked")
+        self.assertEqual(Path(exec_context["kanban_state_file"]).resolve(), paths.kanban_state_json.resolve())
+        runner_status = read_json(paths.runner_status_json)
+        self.assertIsNotNone(runner_status)
+        assert runner_status is not None
+        self.assertEqual(runner_status["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(runner_status["kanban"]["phase"], "selecting")
+        self.assertEqual(runner_status["kanban"]["continue_until"], "board_complete_or_all_blocked")
+        self.assertEqual(Path(runner_status["kanban"]["checkout_root"]).resolve(), (self.dev / "Repos" / "blog").resolve())
+        self.assertEqual(runner_status["architecture"]["work_definition"], "github_mcp_projects_issues")
+        self.assertEqual(runner_status["architecture"]["execution_engine"], "tmux-codex")
+        self.assertEqual(runner_status["architecture"]["operator_shell"], "telecodex")
+        self.assertIn("unmet_conditions", runner_status)
+        self.assertIn("reconcile", runner_status)
+        self.assertIn("control", runner_status)
+        action_queue = read_json(paths.action_queue_json)
+        self.assertIsNotNone(action_queue)
+        assert action_queue is not None
+        self.assertTrue(action_queue["actions"])
+        reconcile_result = read_json(paths.reconcile_result_json)
+        self.assertIsNotNone(reconcile_result)
+        assert reconcile_result is not None
+        self.assertIn("stage_results", reconcile_result)
+        self.assertIn("unmet_conditions", reconcile_result)
 
     def test_inspect_runner_start_state_requires_setup(self):
         result = inspect_runner_start_state(str(self.dev), "blog", "main")
@@ -1207,7 +1251,16 @@ class RunctlTests(unittest.TestCase):
         source_paths = [Path(item["path"]).name for item in exec_context["context_sources"]]
         self.assertEqual(
             source_paths,
-            ["AGENTS.md", "harness.config.json", "golden-path.md", "context-pack.md", "context-pack.json", "PRD.md", "RUNNER_PARITY.json"],
+            [
+                "AGENTS.md",
+                "harness.config.json",
+                "golden-path.md",
+                "context-pack.md",
+                "context-pack.json",
+                "PRD.md",
+                "KANBAN_STATE.json",
+                "RUNNER_PARITY.json",
+            ],
         )
         self.assertEqual(exec_context["phase"], "verify")
 
@@ -1235,7 +1288,16 @@ class RunctlTests(unittest.TestCase):
         source_paths = [Path(item["path"]).name for item in exec_context["context_sources"]]
         self.assertEqual(
             source_paths,
-            ["AGENTS.md", "context-pack.md", "context-pack.json", "harness.config.json", "golden-path.md", "PRD.md", "RUNNER_PARITY.json"],
+            [
+                "AGENTS.md",
+                "context-pack.md",
+                "context-pack.json",
+                "harness.config.json",
+                "golden-path.md",
+                "PRD.md",
+                "KANBAN_STATE.json",
+                "RUNNER_PARITY.json",
+            ],
         )
 
     def test_setup_promotes_verify_phase_when_blocker_surface_is_validation(self):
@@ -2022,6 +2084,148 @@ class RunctlTests(unittest.TestCase):
         payload = json.loads(mocked_stdout.getvalue())
         self.assertEqual(len(payload["tasks"]), 1)
         self.assertEqual(payload["tasks"][0]["title"], "Queue follow-up polish.")
+
+    def test_operator_pause_persists_override_and_refreshes_runner_status(self):
+        create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        paths = self._paths()
+        kanban_state = read_json(paths.kanban_state_json)
+        assert kanban_state is not None
+        kanban_state["phase"] = "executing"
+        kanban_state["active_issue"] = {
+            "url": "https://github.com/jkuang7/blog/issues/9",
+            "repo": "jkuang7/blog",
+            "number": 9,
+            "title": "Pause me",
+            "issue_class": "feature",
+            "complexity": "S",
+            "routing": "backend",
+        }
+        write_json(paths.kanban_state_json, kanban_state)
+
+        with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
+            code = run(
+                [
+                    "--operator",
+                    "pause",
+                    "--project",
+                    "blog",
+                    "--runner-id",
+                    "main",
+                    "--dev",
+                    str(self.dev),
+                    "--reason",
+                    "manual pause",
+                    "--requested-by",
+                    "telegram",
+                ]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(mocked_stdout.getvalue())
+        self.assertEqual(payload["requested"]["action"], "pause")
+
+        status = read_json(paths.runner_status_json)
+        assert status is not None
+        self.assertEqual(status["conditions"]["human_approval_required"], True)
+
+    def test_operator_force_promotes_target_issue_into_queue_state(self):
+        create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        paths = self._paths()
+
+        with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
+            code = run(
+                [
+                    "--operator",
+                    "force",
+                    "--project",
+                    "blog",
+                    "--runner-id",
+                    "main",
+                    "--dev",
+                    str(self.dev),
+                    "--issue-url",
+                    "https://github.com/jkuang7/blog/issues/12",
+                    "--issue-repo",
+                    "jkuang7/blog",
+                    "--issue-number",
+                    "12",
+                    "--issue-title",
+                    "Forced issue",
+                    "--requested-by",
+                    "telegram",
+                ]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(mocked_stdout.getvalue())
+        self.assertEqual(payload["requested"]["action"], "force")
+
+        kanban_state = read_json(paths.kanban_state_json)
+        assert kanban_state is not None
+        self.assertEqual(kanban_state["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+        self.assertEqual(kanban_state["phase"], "executing")
+
+    def test_operator_block_marks_active_issue_blocked(self):
+        create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
+        paths = self._paths()
+        kanban_state = read_json(paths.kanban_state_json)
+        assert kanban_state is not None
+        kanban_state["phase"] = "executing"
+        kanban_state["active_issue"] = {
+            "url": "https://github.com/jkuang7/blog/issues/9",
+            "repo": "jkuang7/blog",
+            "number": 9,
+            "title": "Pause me",
+            "issue_class": "feature",
+            "complexity": "S",
+            "routing": "backend",
+        }
+        write_json(paths.kanban_state_json, kanban_state)
+
+        with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
+            code = run(
+                [
+                    "--operator",
+                    "block",
+                    "--project",
+                    "blog",
+                    "--runner-id",
+                    "main",
+                    "--dev",
+                    str(self.dev),
+                    "--reason",
+                    "waiting on review",
+                    "--requested-by",
+                    "telegram",
+                ]
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(mocked_stdout.getvalue())
+        self.assertEqual(payload["requested"]["action"], "mark_blocked")
+
+        kanban_state = read_json(paths.kanban_state_json)
+        assert kanban_state is not None
+        self.assertEqual(kanban_state["phase"], "blocked")
+        self.assertEqual(kanban_state["blocker"]["category"], "operator")
+
+    def test_intake_add_routes_to_github_intake_handler(self):
+        with patch("src.runctl.handle_add_intake", return_value=(0, '{"status":"created"}')) as intake:
+            with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:
+                code = run(
+                    [
+                        "--intake",
+                        "add",
+                        "--text",
+                        "build the feature",
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--dev",
+                        str(self.dev),
+                    ]
+                )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(mocked_stdout.getvalue())["status"], "created")
+        intake.assert_called_once()
 
     def test_parse_args_rejects_obsolete_create_flag(self):
         with patch("sys.stderr", new=io.StringIO()):

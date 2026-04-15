@@ -64,6 +64,7 @@ class RunDocsContractTests(unittest.TestCase):
         self.assertIn("SEAMS.json", text)
         self.assertIn("GAPS.json", text)
         self.assertIn("TASKS.json", text)
+        self.assertIn("KANBAN_STATE.json", text)
         self.assertIn("Use the latest explicit user goal as the source of truth.", text)
         self.assertIn("current repo state, not just stored memory", text)
         self.assertIn("git status --short", text)
@@ -110,6 +111,12 @@ class RunDocsContractTests(unittest.TestCase):
         self.assertIn("RUNNER_STATE.json", text)
         self.assertIn("TASKS.json", text)
         self.assertIn("Do not start the runner from this prompt.", text)
+
+    def test_readme_marks_file_managed_planning_as_deprecated(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("file-managed planning layer is being deprecated", text)
+        self.assertIn("GitHub issues and the shared project board own task selection", text)
+        self.assertIn("KANBAN_STATE.json", text)
 
     def test_run_execute_prompt_exists_and_is_execute_only(self):
         text = (PROMPTS_ROOT / "run_execute.md").read_text(encoding="utf-8")

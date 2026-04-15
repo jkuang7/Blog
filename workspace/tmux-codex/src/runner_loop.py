@@ -32,6 +32,7 @@ from .runner_state import (
     read_json,
     update_state,
     utc_now,
+    write_runner_status_snapshot,
     write_json,
 )
 from .tmux import LINES_FULL, LINES_STATUS, TmuxClient
@@ -296,6 +297,11 @@ def _active_seam_from_runtime_payload(paths: RunnerStatePaths, seam_id: str | No
                     }
                 return raw
     return None
+
+
+def _sync_runner_status_snapshot(paths: RunnerStatePaths, state: dict[str, object]) -> None:
+    kanban_state = read_json(paths.kanban_state_json) or {}
+    write_runner_status_snapshot(paths, state, kanban_state)
 
 
 def resolve_active_seam_execution_profile(
@@ -2104,6 +2110,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
     active_step: Literal["execute", "update"] = "update" if pending_update_profile else "execute"
     next_current_step = f"{RUNNER_UPDATE_PENDING_PREFIX}:{pending_update_profile}" if pending_update_profile else "interactive_runner"
     state = update_state(state_paths.state_file, state, status="running", current_step=next_current_step)
+    _sync_runner_status_snapshot(state_paths, state)
     state_paths.active_lock.write_text(
         f"started_at={utc_now()}\nproject={project}\nrunner_id={runner_id}\nsession={session_name}\nmode=interactive\n"
     )
@@ -2126,18 +2133,21 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                 _append_ledger(state_paths, "runner.session_missing", session_name=session_name)
                 _log_line(state_paths, f"Runner session disappeared: {session_name}")
                 state = update_state(state_paths.state_file, state, status="stopped", current_step="")
+                _sync_runner_status_snapshot(state_paths, state)
                 return 0
 
             if state_paths.stop_lock.exists():
                 _append_ledger(state_paths, "runner.manual_stop", stop_lock=str(state_paths.stop_lock))
                 _log_line(state_paths, "Infinite runner stop requested")
                 state = update_state(state_paths.state_file, state, status="stopped", current_step="")
+                _sync_runner_status_snapshot(state_paths, state)
                 return 0
 
             if state_paths.done_lock.exists():
                 _append_ledger(state_paths, "runner.done_lock_observed", done_lock=str(state_paths.done_lock))
                 _log_line(state_paths, "Done lock detected; infinite runner exiting")
                 state = update_state(state_paths.state_file, state, status="done", current_step="")
+                _sync_runner_status_snapshot(state_paths, state)
                 return 0
 
             output = tmux.capture_pane(session_name, lines=LINES_FULL) or ""
@@ -2148,6 +2158,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
             process_name = tmux.get_pane_process(session_name)
             pane_state = detect_runner_state(output, process_name, last_output_change_at)
             state = read_json(state_paths.state_file) or state
+            _sync_runner_status_snapshot(state_paths, state)
             exec_context = read_json(state_paths.exec_context_json) or {}
             phase = coerce_runner_phase(
                 exec_context.get("phase") or state.get("current_phase"),
@@ -2339,6 +2350,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                             f"Execute completed for phase={injected_phase}, but failed to exit Codex chat cleanly",
                         )
                         state = update_state(state_paths.state_file, state, status="error", current_step="")
+                        _sync_runner_status_snapshot(state_paths, state)
                         return 1
                     _append_ledger(
                         state_paths,
@@ -2389,6 +2401,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                                 f"Prepared marker observed for phase={injected_phase}, but failed to exit Codex chat cleanly",
                             )
                             state = update_state(state_paths.state_file, state, status="error", current_step="")
+                            _sync_runner_status_snapshot(state_paths, state)
                             return 1
 
                         _append_ledger(
@@ -2547,6 +2560,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                             f"Update refresh failed for phase={injected_phase}, and Codex chat exit also failed",
                         )
                         state = update_state(state_paths.state_file, state, status="error", current_step="")
+                        _sync_runner_status_snapshot(state_paths, state)
                         return 1
                     _append_ledger(
                         state_paths,
@@ -2688,6 +2702,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
         )
         _log_line(state_paths, f"Infinite runner exception: {type(exc).__name__}: {exc}")
         state = update_state(state_paths.state_file, state, status="error", current_step="")
+        _sync_runner_status_snapshot(state_paths, state)
         return 1
     finally:
         state_paths.active_lock.unlink(missing_ok=True)

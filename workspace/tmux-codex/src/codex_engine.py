@@ -78,6 +78,10 @@ def _is_tool_event(event: dict[str, Any]) -> bool:
 
 
 _SESSION_ID_RE = re.compile(r"^\s*session id:\s*([0-9a-fA-F-]+)\s*$")
+_PLAIN_STREAM_PROVIDER_BANNER_RE = re.compile(
+    r"^(OpenAI Codex|Claude Code|Gemini CLI|Mistral Code|Qwen Code)(?:\b| v)",
+    re.IGNORECASE,
+)
 
 
 def _extract_session_id_from_plain_line(line: str) -> str | None:
@@ -87,36 +91,46 @@ def _extract_session_id_from_plain_line(line: str) -> str | None:
     return match.group(1)
 
 
-def _extract_final_message_from_plain_lines(lines: list[str]) -> str:
-    skip_prefixes = (
-        "OpenAI Codex v",
-        "workdir:",
-        "model:",
-        "provider:",
-        "approval:",
-        "sandbox:",
-        "reasoning effort:",
-        "reasoning summaries:",
-        "session id:",
-        "mcp:",
-        "mcp startup:",
-        "tokens used",
-    )
+def _is_plain_stream_metadata_line(line: str) -> bool:
+    normalized = line.strip()
+    if not normalized:
+        return True
 
+    lower = normalized.lower()
+    if normalized == "--------":
+        return True
+    if lower in {"user", "thinking", "codex"}:
+        return True
+    if _PLAIN_STREAM_PROVIDER_BANNER_RE.match(normalized):
+        return True
+    if lower.startswith(
+        (
+            "workdir:",
+            "model:",
+            "provider:",
+            "approval:",
+            "sandbox:",
+            "reasoning effort:",
+            "reasoning summaries:",
+            "session id:",
+            "mcp:",
+            "mcp startup:",
+            "tokens used",
+        )
+    ):
+        return True
+    if normalized.startswith("{") and normalized.endswith("}"):
+        return True
+    if normalized[:4].isdigit() and " WARN " in normalized:
+        return True
+    return False
+
+
+def _extract_final_message_from_plain_lines(lines: list[str]) -> str:
     final = ""
     for raw in lines:
         line = raw.strip()
-        if not line:
-            continue
-        if line == "--------":
-            continue
-        if line.lower() in {"user", "thinking", "codex"}:
-            continue
-        if line.startswith(skip_prefixes):
-            continue
-        if line.startswith("{") and line.endswith("}"):
-            continue
-        if line[:4].isdigit() and " WARN " in line:
+        if _is_plain_stream_metadata_line(line):
             continue
         final = line
     return final

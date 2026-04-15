@@ -35,7 +35,7 @@ Single-runner policy:
 ## Model Mapping
 
 - Plain interactive `cl` sessions inherit the global Codex default profile. In this workspace that now means cheap control-plane chat on `gpt-5.4-mini` with `medium` reasoning.
-- Wrapper-launched planning and execution sessions such as `/plan`, `/kanban`, `/run`, `/integrate`, `/spec`, `/refactor`, `/enhance`, and `/review` are promoted to `gpt-5.4` with `high` reasoning at launch time.
+- Wrapper-launched planning and execution sessions such as `/plan`, `/kanban`, `/continuous-workflow`, `/run`, `/integrate`, `/spec`, `/refactor`, `/enhance`, and `/review` are promoted to `gpt-5.4` with `high` reasoning at launch time.
 - `low` -> `gpt-5.3-codex` (effort `low`)
 - `med` -> `gpt-5.3-codex` (effort `medium`)
 - `high` -> `gpt-5.3-codex` (effort `high`)
@@ -50,6 +50,7 @@ Runner-scoped files under `Repos/<project>/.memory/runner/`:
 - `runtime/RUNNER_LEDGER.ndjson`
 - `PRD.json`
 - `TASKS.json`
+- `KANBAN_STATE.json`
 - `RUNNER_EXEC_CONTEXT.json`
 - `runtime/RUNNER_CYCLE_PREPARED.json`
 - `RUNNER_TASK_INTAKE.json`
@@ -66,6 +67,16 @@ Project-level top-level files stay in `Repos/<project>/.memory/`:
 
 - `PRD.md` (runner-managed objective snapshot)
 - `gates.sh` (must define `run_gates`)
+
+## Deprecation Direction
+
+- The legacy infinite runner remains operational today, but its file-managed planning layer is being deprecated.
+- `PRD.json` and `TASKS.json` should be treated as legacy compatibility artifacts during the migration, not the long-term source of truth for infinite execution.
+- The target model is ticket-native kanban execution:
+  - GitHub issues and the shared project board own task selection, blockers, dependencies, review, and completion.
+  - Local runner state owns continuity, active issue identity, recovery, and session metadata only.
+  - `KANBAN_STATE.json` is the first additive step in that migration.
+- Keep the current shell ergonomics (`cl`, tmux loops, stop locks, fresh-session relaunch) while moving runtime authority away from local planning files.
 
 ## Runner Prompts
 

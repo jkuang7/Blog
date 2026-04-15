@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 import json
@@ -12,7 +13,12 @@ from pathlib import Path
 
 from .menu import SessionMenu
 from .runner_graph import run_runner_build_graph_command
-from .runctl import ensure_runner_prompt_install, inspect_runner_start_state, resolve_target_project_root
+from .runctl import (
+    create_runner_state,
+    ensure_runner_prompt_install,
+    inspect_runner_start_state,
+    resolve_target_project_root,
+)
 from .runner_loop import (
     build_runner_paths,
     ensure_gates_file,
@@ -23,7 +29,7 @@ from .runner_loop import (
     run_loop_worker,
     run_runner_profile,
 )
-from .runner_state import build_runner_state_paths_for_root, coerce_runner_phase, read_json
+from .runner_state import build_runner_state_paths_for_root, coerce_runner_phase, read_json, write_json
 from .tmux import TmuxClient
 
 
@@ -77,6 +83,11 @@ def session_profile_overrides(args: list[str]) -> list[str]:
     execution_markers = (
         "/plan",
         "/kanban",
+        "/continuous-workflow",
+        "/continuous_workflow",
+        "continuous workflow",
+        "continue workflow",
+        "run continuous workflow",
         "continue kanban",
         "run kanban",
         "/run",
@@ -194,6 +205,11 @@ def _print_loop_usage() -> None:
         "Usage: cl loop <project> "
         "[--runner-id <id>] [--complexity <low|med|high|xhigh>] [--model <provider/model>]"
     )
+    print(
+        "       cl loop-bg <project> "
+        "[--runner-id <id>] [--complexity <low|med|high|xhigh>] [--model <provider/model>] "
+        "[--project-root <absolute_path>]"
+    )
 
 
 def _print_stop_usage() -> None:
@@ -224,12 +240,405 @@ def _ensure_runner_ready_for_start(
     return False
 
 
+def _auto_prepare_runner_for_start(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+) -> bool:
+    setup_result = create_runner_state(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        approve_enable=None,
+        project_root=project_root,
+    )
+    if not setup_result.get("ok"):
+        print(
+            f"Runner auto-setup failed for {project}: {setup_result.get('error', 'unknown error')}"
+        )
+        return False
+
+    token = str(setup_result.get("enable_token") or "").strip()
+    if setup_result.get("enable_pending_file") and token:
+        approve_result = create_runner_state(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+            approve_enable=token,
+            project_root=project_root,
+        )
+        if not approve_result.get("ok"):
+            print(
+                f"Runner enable approval failed for {project}: {approve_result.get('error', 'unknown error')}"
+            )
+            return False
+    return _ensure_runner_ready_for_start(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+    )
+
+
+def _github_repo_from_origin(project_root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    origin = completed.stdout.strip()
+    if not origin:
+        return None
+
+    match = re.search(r"github\.com[:/](?P<repo>[^/]+/[^/.]+)(?:\.git)?$", origin)
+    if not match:
+        return None
+    return match.group("repo")
+
+
+def _current_git_branch(project_root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    branch = completed.stdout.strip()
+    return branch or None
+
+
+def _kanban_helper_path() -> Path:
+    return Path.home() / ".codex" / "skills" / "kanban" / "scripts" / "github_project_issue_flow.py"
+
+
+def _query_kanban_issue_item(project_root: Path, repo: str, command: str) -> dict[str, object] | None:
+    helper = _kanban_helper_path()
+    if not helper.exists():
+        return None
+    try:
+        completed = subprocess.run(
+            ["python3", str(helper), command, "--repo", repo],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    try:
+        payload = json.loads(completed.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return None
+
+    if not payload.get("found"):
+        return None
+    item = payload.get("item")
+    return item if isinstance(item, dict) else None
+
+
+def _list_kanban_board_items(project_root: Path) -> list[dict[str, object]]:
+    helper = _kanban_helper_path()
+    if not helper.exists():
+        return []
+    try:
+        completed = subprocess.run(
+            ["python3", str(helper), "list"],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+
+    try:
+        payload = json.loads(completed.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _load_issue_thread(repo: str, issue_number: object, project_root: Path) -> dict[str, object] | None:
+    if not repo or issue_number in (None, ""):
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "view",
+                str(issue_number),
+                "--repo",
+                repo,
+                "--json",
+                "body,comments,number,title,url",
+            ],
+            cwd=str(project_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    try:
+        payload = json.loads(completed.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _sync_selected_issue_snapshot(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+    item: dict[str, object],
+) -> None:
+    from .runner_control import RunnerControlPlane
+
+    repo = str(item.get("repo") or "").strip()
+    issue_thread = _load_issue_thread(repo, item.get("number"), project_root) if repo else None
+    paths = build_runner_state_paths_for_root(
+        project_root=project_root,
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+    )
+    RunnerControlPlane(paths).import_github_item(
+        item=item,
+        issue=issue_thread,
+        issue_thread=issue_thread,
+    )
+
+
+def _sync_board_issue_snapshots(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+) -> list[dict[str, object]]:
+    from .runner_control import RunnerControlPlane
+
+    items = _list_kanban_board_items(project_root)
+    for item in items:
+        repo = str(item.get("repo") or "").strip()
+        if not repo:
+            continue
+        issue_thread = _load_issue_thread(repo, item.get("number"), project_root)
+        paths = build_runner_state_paths_for_root(
+            project_root=project_root,
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+        )
+        RunnerControlPlane(paths).import_github_item(
+            item=item,
+            issue=issue_thread,
+            issue_thread=issue_thread,
+        )
+    return items
+
+
+def _board_status(item: dict[str, object] | None) -> str:
+    if not isinstance(item, dict):
+        return ""
+    fields = item.get("fields")
+    if isinstance(fields, dict):
+        return str(fields.get("Status") or item.get("workflowState") or item.get("state") or "").strip()
+    return str(item.get("workflowState") or item.get("state") or "").strip()
+
+
+def _board_item_is_runtime_actionable(item: dict[str, object] | None) -> bool:
+    return _board_status(item) in {"", "Inbox", "Ready", "In Progress"}
+
+
+def _active_issue_requires_runtime_reset(*, paths, issue_url: str | None) -> bool:
+    issue_url = str(issue_url or "").strip()
+    if not issue_url:
+        return False
+    runner_status = read_json(paths.runner_status_json)
+    if not isinstance(runner_status, dict):
+        return False
+    runtime_phase = str(runner_status.get("current_phase") or "").strip().lower()
+    done_gate_status = str(runner_status.get("done_gate_status") or "").strip().lower()
+    if runtime_phase not in {"closeout", "done"} and done_gate_status != "failed":
+        return False
+
+    from .runner_control import RunnerControlPlane
+
+    control = RunnerControlPlane(paths)
+    conditions = control._issue_conditions(issue_url)
+    ready_for_execution = conditions.get("ready_for_execution") or {}
+    planning_satisfied = conditions.get("planning_satisfied") or {}
+    ready_reason = str(ready_for_execution.get("reason") or "").strip().lower()
+    planning_reason = str(planning_satisfied.get("reason") or "").strip().lower()
+    planning_failed = planning_satisfied.get("status") in {0, False}
+    return ready_reason == "enhance_required" or (planning_failed and planning_reason == "phase_not_advanced")
+
+
+def _reset_runner_runtime_for_reselection(*, paths) -> None:
+    state_data = read_json(paths.state_file)
+    if isinstance(state_data, dict) and state_data:
+        state_data["current_phase"] = "discover"
+        state_data["phase_status"] = "active"
+        state_data["done_gate_status"] = "pending"
+        state_data["done_candidate"] = False
+        state_data["next_task"] = "Seed the first concrete task slice from the active objective."
+        state_data["next_task_reason"] = "A new active issue was selected after stale closeout recovery."
+        write_json(paths.state_file, state_data)
+
+    status_data = read_json(paths.runner_status_json)
+    if isinstance(status_data, dict) and status_data:
+        status_data["current_phase"] = "discover"
+        status_data["phase_status"] = "active"
+        status_data["done_gate_status"] = "pending"
+        status_data["next_task"] = "Seed the first concrete task slice from the active objective."
+        status_data["next_reason"] = "A new active issue was selected after stale closeout recovery."
+        write_json(paths.runner_status_json, status_data)
+
+    exec_context = read_json(paths.exec_context_json)
+    if isinstance(exec_context, dict) and exec_context:
+        exec_context["phase"] = "discover"
+        write_json(paths.exec_context_json, exec_context)
+
+
+def _seed_kanban_state_for_background_runner(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+) -> dict[str, object] | None:
+    paths = build_runner_state_paths_for_root(
+        project_root=project_root,
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+    )
+    kanban_state = read_json(paths.kanban_state_json)
+    if not isinstance(kanban_state, dict):
+        kanban_state = {"project": project, "mode": "ticket_native", "version": 1}
+    existing_active_issue = (
+        kanban_state.get("active_issue")
+        if isinstance(kanban_state.get("active_issue"), dict)
+        else None
+    )
+    existing_active_issue_url = str((existing_active_issue or {}).get("url") or "").strip() or None
+
+    active_checkout = kanban_state.get("active_checkout")
+    if not isinstance(active_checkout, dict):
+        active_checkout = {}
+        kanban_state["active_checkout"] = active_checkout
+    active_checkout["repo_root"] = str(project_root)
+    active_checkout["worktree"] = str(project_root)
+    active_checkout["branch"] = _current_git_branch(project_root)
+
+    loop_state = kanban_state.get("loop")
+    if not isinstance(loop_state, dict):
+        loop_state = {}
+        kanban_state["loop"] = loop_state
+    loop_state["continue_until"] = "board_complete_or_all_blocked"
+
+    board = kanban_state.get("board")
+    if not isinstance(board, dict):
+        board = {}
+        kanban_state["board"] = board
+
+    board_items = _sync_board_issue_snapshots(
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+    )
+    board["snapshot_count"] = len(board_items)
+    board_items_by_url = {
+        str(item.get("url") or "").strip(): item
+        for item in board_items
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    }
+
+    existing_board_item = board_items_by_url.get(existing_active_issue_url or "")
+    runtime_reset_existing_issue = False
+    if existing_active_issue_url and existing_board_item and not _board_item_is_runtime_actionable(existing_board_item):
+        kanban_state["active_issue"] = None
+        existing_active_issue = None
+        existing_active_issue_url = None
+    if existing_active_issue_url and _active_issue_requires_runtime_reset(paths=paths, issue_url=existing_active_issue_url):
+        kanban_state["active_issue"] = None
+        kanban_state["phase"] = "selecting"
+        existing_active_issue = None
+        existing_active_issue_url = None
+        loop_state["resume_source"] = "runtime_recovery_reset"
+        runtime_reset_existing_issue = True
+        _reset_runner_runtime_for_reselection(paths=paths)
+
+    repo = _github_repo_from_origin(project_root)
+    item = None
+    if repo:
+        if not runtime_reset_existing_issue:
+            item = _query_kanban_issue_item(project_root, repo, "active")
+            if item and not _board_item_is_runtime_actionable(board_items_by_url.get(str(item.get("url") or "").strip())):
+                item = None
+        if item is None:
+            item = _query_kanban_issue_item(project_root, repo, "next")
+
+    if item and not existing_active_issue_url:
+        _sync_selected_issue_snapshot(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+            project_root=project_root,
+            item=item,
+        )
+        kanban_state["active_issue"] = {
+            "repo": str(item.get("repo") or "").strip() or None,
+            "number": item.get("number"),
+            "title": str(item.get("title") or "").strip() or None,
+            "url": str(item.get("url") or "").strip() or None,
+        }
+        status_fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+        board["last_known_status"] = str(status_fields.get("Status") or item.get("workflowState") or item.get("state") or "").strip() or None
+        kanban_state["phase"] = "executing"
+        loop_state["resume_source"] = "github_project_issue_flow"
+    elif item:
+        status_fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+        board["last_known_status"] = str(status_fields.get("Status") or item.get("workflowState") or item.get("state") or "").strip() or None
+    elif existing_board_item:
+        board["last_known_status"] = _board_status(existing_board_item) or None
+    else:
+        kanban_state["active_issue"] = None
+        kanban_state["phase"] = "selecting"
+
+    kanban_state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_json(paths.kanban_state_json, kanban_state)
+    return item
+
+
 def parse_loop_args(args: list[str]) -> dict[str, str]:
     """Parse loop command options."""
     project: str | None = None
     runner_id: str | None = None
     complexity = "med"
     model_override: str | None = None
+    project_root: str | None = None
 
     i = 0
     while i < len(args):
@@ -256,6 +665,13 @@ def parse_loop_args(args: list[str]) -> dict[str, str]:
             if i >= len(args):
                 raise ValueError("Missing value for --model")
             model_override = args[i]
+        elif arg.startswith("--project-root="):
+            project_root = arg.split("=", 1)[1]
+        elif arg == "--project-root":
+            i += 1
+            if i >= len(args):
+                raise ValueError("Missing value for --project-root")
+            project_root = args[i]
         elif arg.startswith("-"):
             raise ValueError(f"Unknown option: {arg}")
         else:
@@ -280,6 +696,7 @@ def parse_loop_args(args: list[str]) -> dict[str, str]:
         "complexity": complexity,
         "model": model,
         "reasoning_effort": reasoning_effort,
+        "project_root": project_root or "",
     }
 
 
@@ -341,13 +758,17 @@ def _prepare_loop_runner(
     return session_name, paths, script
 
 
-def create_loop_session(
+def start_loop_session(
     project: str,
     runner_id: str,
     model: str,
     reasoning_effort: str,
+    *,
+    project_root_override: Path | None = None,
+    attach: bool = True,
+    auto_setup: bool = False,
 ) -> None:
-    """Create and attach to interactive Codex CLI runner."""
+    """Create a Codex CLI runner, optionally attaching to tmux."""
     config = get_tmux_config()
     tmux = TmuxClient(config=config)
 
@@ -356,6 +777,7 @@ def create_loop_session(
         dev=dev,
         project=project,
         runner_id=runner_id,
+        project_root_override=project_root_override,
     )
     if not project_root.exists():
         print(f"Missing project directory: {project_root}")
@@ -370,13 +792,30 @@ def create_loop_session(
     if created_now:
         print(f"Created gates template: {gates_path}")
 
-    if not _ensure_runner_ready_for_start(
+    ready = (
+        _auto_prepare_runner_for_start(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+            project_root=project_root,
+        )
+        if auto_setup
+        else _ensure_runner_ready_for_start(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+            project_root=project_root,
+        )
+    )
+    if not ready:
+        return
+
+    selected_issue = _seed_kanban_state_for_background_runner(
         dev=dev,
         project=project,
         runner_id=runner_id,
         project_root=project_root,
-    ):
-        return
+    )
 
     session_name, paths, script = _prepare_loop_runner(
         dev=dev,
@@ -429,11 +868,33 @@ def create_loop_session(
     print(f"  Session:   {session_name}")
     print("  Driver:    __runner-controller")
     print(f"  Root:      {project_root}")
+    if selected_issue:
+        issue_number = selected_issue.get("number")
+        issue_title = str(selected_issue.get("title") or "").strip()
+        print(f"  Issue:     #{issue_number} {issue_title}")
     print(f"  Done lock: {paths.complete_lock}")
     print(f"  Stop lock: {paths.stop_file}")
     print()
 
-    tmux.attach(session_name)
+    if attach:
+        tmux.attach(session_name)
+
+
+def create_loop_session(
+    project: str,
+    runner_id: str,
+    model: str,
+    reasoning_effort: str,
+) -> None:
+    """Create and attach to interactive Codex CLI runner."""
+    start_loop_session(
+        project=project,
+        runner_id=runner_id,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        attach=True,
+        auto_setup=False,
+    )
 
 
 def stop_loop_session(project: str, runner_id: str) -> None:
@@ -680,12 +1141,12 @@ def main() -> None:
         list_sessions(args[1] if len(args) == 2 else None)
         return
 
-    if args[0] in ("loop", "runner", "run", "r"):
+    if args[0] in ("loop", "runner", "run", "r", "loop-bg"):
         loop_args = args[1:]
         if loop_args and loop_args[0] in ("-h", "--help", "help"):
             _print_loop_usage()
             return
-        if loop_args and loop_args[0] in ("--all", "all"):
+        if args[0] != "loop-bg" and loop_args and loop_args[0] in ("--all", "all"):
             spawn_all_loop_runners()
             return
 
@@ -696,12 +1157,26 @@ def main() -> None:
             _print_loop_usage()
             return
 
-        create_loop_session(
-            project=parsed["project"],
-            runner_id=parsed["runner_id"],
-            model=parsed["model"],
-            reasoning_effort=parsed["reasoning_effort"],
-        )
+        if args[0] == "loop-bg":
+            project_root = parsed.get("project_root") or None
+            start_loop_session(
+                project=parsed["project"],
+                runner_id=parsed["runner_id"],
+                model=parsed["model"],
+                reasoning_effort=parsed["reasoning_effort"],
+                project_root_override=Path(project_root).expanduser().resolve()
+                if project_root
+                else None,
+                attach=False,
+                auto_setup=True,
+            )
+        else:
+            create_loop_session(
+                project=parsed["project"],
+                runner_id=parsed["runner_id"],
+                model=parsed["model"],
+                reasoning_effort=parsed["reasoning_effort"],
+            )
         return
 
     if args[0] in ("stop", "k") or re.fullmatch(r"k[a-z*]", args[0] or ""):
@@ -731,6 +1206,10 @@ def main() -> None:
         print(
             "  cl loop <project> [--runner-id <id>] [--complexity <low|med|high|xhigh>] "
             "[--model <provider/model>]"
+        )
+        print(
+            "  cl loop-bg <project> [--runner-id <id>] [--complexity <low|med|high|xhigh>] "
+            "[--model <provider/model>] [--project-root <absolute_path>]"
         )
         print("  cl runner <project>   # alias of loop")
         print("  cl stop <project>     # stop runner (alias: cl k <project>)")

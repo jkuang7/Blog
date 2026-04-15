@@ -20,6 +20,7 @@ from .runner_graph import (
     load_graph_config_for_project,
     summarize_task_graph_slice,
 )
+from .github_intake import handle_add_intake
 from .runner_state import (
     DONE_NEXT_TASK_TEXT,
     DEFAULT_PHASE_BUDGET_MINUTES,
@@ -31,6 +32,7 @@ from .runner_state import (
     count_open_tasks,
     detect_git_context,
     ensure_memory_dir,
+    load_or_init_kanban_state,
     load_or_init_state,
     load_state_snapshot,
     managed_runner_files,
@@ -38,6 +40,7 @@ from .runner_state import (
     worktrees_home,
     update_state,
     utc_now,
+    write_runner_status_snapshot,
     write_json,
 )
 
@@ -626,6 +629,7 @@ def _collect_context_sources(project_root: Path) -> list[dict[str, Any]]:
     memory_dir = project_root / ".memory"
     _add(memory_dir / "PRD.md", kind="repo_prd")
     _add(memory_dir / "lessons.md", kind="repo_lessons")
+    _add(memory_dir / "runner" / "KANBAN_STATE.json", kind="runner_kanban")
     _add(memory_dir / "runner" / "RUNNER_PARITY.json", kind="runner_parity")
     if not (memory_dir / "PRD.md").exists():
         _add(memory_dir / "REFRACTOR_STATUS.md", kind="legacy_repo_prd")
@@ -801,11 +805,16 @@ def _write_active_backlog_view(
     phase_goal: str,
     graph_summary: dict[str, Any] | None = None,
     parity_scope: dict[str, Any] | None = None,
+    kanban_state: dict[str, Any] | None = None,
 ) -> None:
     selected_task_id = _as_text(selected_task.get("task_id")) if isinstance(selected_task, dict) else ""
     selected_title = _as_text(selected_task.get("title")) if isinstance(selected_task, dict) else ""
     graph_summary = graph_summary if isinstance(graph_summary, dict) else {}
     parity_scope = parity_scope if isinstance(parity_scope, dict) else {}
+    kanban_state = kanban_state if isinstance(kanban_state, dict) else {}
+    runtime_policy = state.get("runtime_policy") if isinstance(state.get("runtime_policy"), dict) else {}
+    active_issue = kanban_state.get("active_issue") if isinstance(kanban_state.get("active_issue"), dict) else {}
+    loop_state = kanban_state.get("loop") if isinstance(kanban_state.get("loop"), dict) else {}
     payload = {
         "objective_id": _as_text(state.get("objective_id")) or None,
         "active_seam_id": _as_text(state.get("active_seam_id")) or selected_task_id or None,
@@ -860,6 +869,19 @@ def _write_active_backlog_view(
                 if str(item).strip()
             ][:3],
             "parity_audit_mode": _as_text(parity_scope.get("parity_audit_mode")) or None,
+        },
+        "runtime_policy": {
+            "runner_mode": _as_text(runtime_policy.get("runner_mode")) or None,
+            "task_source": _as_text(runtime_policy.get("task_source")) or None,
+            "kanban_enabled": bool(runtime_policy.get("kanban_enabled", False)),
+            "completion_policy": _as_text(runtime_policy.get("completion_policy")) or None,
+        },
+        "kanban": {
+            "mode": _as_text(kanban_state.get("mode")) or None,
+            "phase": _as_text(kanban_state.get("phase")) or None,
+            "active_issue_url": _as_text(active_issue.get("url")) or None,
+            "active_issue_repo": _as_text(active_issue.get("repo")) or None,
+            "continue_until": _as_text(loop_state.get("continue_until")) or None,
         },
         "active_backlog": _build_active_backlog_entries(
             tasks_payload=tasks_payload,
@@ -2531,10 +2553,13 @@ def _write_exec_context(
     context_delta: dict[str, Any],
     graph_summary: dict[str, Any] | None = None,
     parity_scope: dict[str, Any] | None = None,
+    kanban_state: dict[str, Any] | None = None,
 ) -> None:
     existing_exec_context = read_json(paths.exec_context_json) or {}
     graph_summary = graph_summary if isinstance(graph_summary, dict) else {}
     parity_scope = parity_scope if isinstance(parity_scope, dict) else {}
+    kanban_state = kanban_state if isinstance(kanban_state, dict) else {}
+    runtime_policy = state.get("runtime_policy") if isinstance(state.get("runtime_policy"), dict) else {}
     current_snapshot = _capture_progress_snapshot(state=state, project_root=project_root, tasks_payload=tasks_payload)
     preserved_cycle_baseline = (
         existing_exec_context.get("cycle_progress_baseline")
@@ -2585,6 +2610,12 @@ def _write_exec_context(
     ]
     if parity_fail_closed:
         hard_rules.append("parity_tasks_fail_closed_until_no_known_delta_remains")
+    active_issue = kanban_state.get("active_issue") if isinstance(kanban_state.get("active_issue"), dict) else {}
+    active_checkout = (
+        kanban_state.get("active_checkout") if isinstance(kanban_state.get("active_checkout"), dict) else {}
+    )
+    kanban_loop = kanban_state.get("loop") if isinstance(kanban_state.get("loop"), dict) else {}
+    telegram_state = kanban_state.get("telegram") if isinstance(kanban_state.get("telegram"), dict) else {}
     payload = {
         "objective_id": _as_text(prd_payload.get("objective_id")),
         "phase": phase,
@@ -2643,6 +2674,21 @@ def _write_exec_context(
             for item in graph_summary.get("graph_boundary_warnings_top3", [])
             if str(item).strip()
         ][:3],
+        "runtime_policy": {
+            "runner_mode": _as_text(runtime_policy.get("runner_mode")) or None,
+            "session_strategy": _as_text(runtime_policy.get("session_strategy")) or None,
+            "task_source": _as_text(runtime_policy.get("task_source")) or None,
+            "kanban_enabled": bool(runtime_policy.get("kanban_enabled", False)),
+            "completion_policy": _as_text(runtime_policy.get("completion_policy")) or None,
+        },
+        "kanban_state_file": str(paths.kanban_state_json.resolve()),
+        "kanban_mode": _as_text(kanban_state.get("mode")) or None,
+        "kanban_phase": _as_text(kanban_state.get("phase")) or None,
+        "kanban_continue_until": _as_text(kanban_loop.get("continue_until")) or None,
+        "kanban_active_issue_url": _as_text(active_issue.get("url")) or None,
+        "kanban_active_issue_repo": _as_text(active_issue.get("repo")) or None,
+        "kanban_checkout_root": _as_text(active_checkout.get("repo_root")) or None,
+        "kanban_session_key": _as_text(telegram_state.get("session_key")) or None,
         "project_root": str(project_root.resolve()),
         "target_branch": target_branch or None,
         "state_revision": int(state.get("state_revision", 0)),
@@ -2970,6 +3016,7 @@ def create_runner_state(
         runner_id=runner_id,
     )
     previous_state = read_json(paths.state_file) or {}
+    had_kanban_state = paths.kanban_state_json.exists()
     ensure_memory_dir(paths)
     created: list[str] = []
     if approve_enable is None:
@@ -3000,6 +3047,9 @@ def create_runner_state(
         paths.active_lock.unlink(missing_ok=True)
 
     state = load_or_init_state(paths=paths, project=project, runner_id=runner_id)
+    kanban_state = load_or_init_kanban_state(paths=paths, project=project)
+    if not had_kanban_state:
+        created.append(str(paths.kanban_state_json.relative_to(paths.memory_dir)))
     if approve_enable is None and preserved_enabled:
         state = update_state(
             paths.state_file,
@@ -3010,6 +3060,19 @@ def create_runner_state(
         )
 
     git_context = detect_git_context(project_root)
+    active_checkout = kanban_state.get("active_checkout")
+    if not isinstance(active_checkout, dict):
+        active_checkout = {}
+    active_checkout = {
+        "repo_root": str(project_root),
+        "worktree": str(project_root),
+        "branch": _as_text(git_context.get("git_branch")) or active_checkout.get("branch"),
+    }
+    if kanban_state.get("active_checkout") != active_checkout:
+        kanban_state["active_checkout"] = active_checkout
+        kanban_state["updated_at"] = utc_now()
+        write_json(paths.kanban_state_json, kanban_state)
+
     branch_guess = (
         _as_text(state.get("target_branch"))
         or _as_text(git_context.get("git_branch"))
@@ -3475,7 +3538,9 @@ def create_runner_state(
         phase_goal=phase_goal,
         graph_summary=graph_summary,
         parity_scope=selected_parity_scope,
+        kanban_state=kanban_state,
     )
+    write_runner_status_snapshot(paths, state, kanban_state)
     context_sources = _collect_context_sources(project_root)
     phase_context_digest = _digest_text(
         "|".join(str(source.get("digest", "")) for source in context_sources if str(source.get("digest", "")).strip())
@@ -3498,6 +3563,7 @@ def create_runner_state(
         context_delta=context_delta,
         graph_summary=graph_summary,
         parity_scope=selected_parity_scope,
+        kanban_state=kanban_state,
     )
 
     if not paths.ledger_file.exists():
@@ -3560,6 +3626,9 @@ def create_runner_state(
             runtime_policy={
                 "runner_mode": "exec",
                 "session_strategy": "fresh_session",
+                "task_source": "github_mcp_project_issues",
+                "kanban_enabled": True,
+                "completion_policy": "tasks_done_and_gates_green",
             },
         )
         append_ndjson(
@@ -4356,6 +4425,89 @@ def _handle_objective_command(
     return 1, f"ERROR: unsupported --objective action: {action}"
 
 
+def _handle_operator_command(
+    *,
+    dev: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+    action: str,
+    issue_url: str | None,
+    issue_repo: str | None,
+    issue_number: int | None,
+    issue_title: str | None,
+    run_id: str | None,
+    reason: str | None,
+    requested_by: str | None,
+) -> tuple[int, str]:
+    from .runner_control import RunnerControlPlane
+
+    paths = build_runner_state_paths_for_root(
+        project_root=project_root,
+        dev=dev,
+        project=project,
+        runner_id=runner_id,
+    )
+    ensure_memory_dir(paths)
+    state = load_or_init_state(paths=paths, project=project, runner_id=runner_id)
+    kanban_state = load_or_init_kanban_state(paths=paths, project=project)
+    control = RunnerControlPlane(paths)
+
+    active_issue = kanban_state.get("active_issue") if isinstance(kanban_state.get("active_issue"), dict) else {}
+    current_issue_url = _as_text((active_issue or {}).get("url"))
+
+    if action == "status":
+        return 0, json.dumps(
+            {
+                "control": control.describe(issue_url=current_issue_url),
+                "runner_status": read_json(paths.runner_status_json) or {},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    if action == "queue":
+        return 0, json.dumps(
+            {
+                "control": control.describe(issue_url=current_issue_url),
+                "action_queue": read_json(paths.action_queue_json) or {},
+                "reconcile_result": read_json(paths.reconcile_result_json) or {},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    target_issue_url = issue_url or current_issue_url
+    if action in {"force", "skip"} and not target_issue_url:
+        return 1, f"ERROR: --issue-url is required for --operator {action} when no active issue is selected"
+    if action == "resume-run" and not run_id:
+        return 1, "ERROR: --run-id is required for --operator resume-run"
+
+    override_action = {
+        "block": "mark_blocked",
+        "resume-run": "resume_run",
+        "override-split": "override_split",
+    }.get(action, action.replace("-", "_"))
+
+    requested = control.request_override(
+        action=override_action,
+        requested_by=requested_by or "runctl",
+        reason=reason,
+        issue_url=current_issue_url,
+        target_issue={
+            "url": target_issue_url,
+            "repo": issue_repo,
+            "number": issue_number,
+            "title": issue_title,
+        }
+        if action in {"force", "skip"}
+        else None,
+        target_run_id=run_id if action == "resume-run" else None,
+    )
+    write_runner_status_snapshot(paths, state, kanban_state)
+    return 0, json.dumps({"requested": requested, "control": control.describe(issue_url=target_issue_url)}, indent=2, sort_keys=True)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse runctl options."""
     parser = argparse.ArgumentParser(description="Deterministic control for Codex infinite runners")
@@ -4379,6 +4531,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--query", help="Search query for --task find")
     parser.add_argument("--objective", choices=["show", "set"], help="Objective command")
     parser.add_argument("--objective-id", help="Objective id for --objective set")
+    parser.add_argument("--intake", choices=["add"], help="GitHub intake command")
+    parser.add_argument("--text", help="Raw request text for --intake add")
+    parser.add_argument(
+        "--operator",
+        choices=["status", "queue", "pause", "resume", "force", "skip", "block", "resume-run", "override-split"],
+        help="Operator command",
+    )
     parser.add_argument("--project", help="Project under $DEV/Repos")
     parser.add_argument("project_arg", nargs="?", help="Project under $DEV/Repos (positional shorthand)")
     parser.add_argument(
@@ -4388,6 +4547,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--runner-id", help="Runner id")
     parser.add_argument("--approve-enable", help="HIL token to approve --setup enablement")
     parser.add_argument("--confirm", help="HIL token to confirm --clear deletion")
+    parser.add_argument("--issue-url", help="Issue URL for operator commands")
+    parser.add_argument("--issue-repo", help="Issue repo for operator force/skip")
+    parser.add_argument("--issue-number", type=int, help="Issue number for operator force/skip")
+    parser.add_argument("--issue-title", help="Issue title for operator force/skip")
+    parser.add_argument("--run-id", help="Run id for operator resume-run")
+    parser.add_argument("--reason", help="Operator override reason")
+    parser.add_argument("--requested-by", help="Operator identity for durable overrides")
     parser.add_argument("--dev", default=_default_dev(), help="Dev root (default: ~/Dev)")
     parser.add_argument("--quiet", action="store_true", help="Minimize CLI output for automation flows")
     return parser.parse_args(argv)
@@ -4421,8 +4587,24 @@ def run(argv: list[str]) -> int:
     if args.objective and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):
         _err("ERROR: --objective cannot be combined with --setup/--clear/--prepare-cycle/--approve-enable/--confirm")
         return 1
-    if args.task and args.objective:
-        _err("ERROR: choose either --task or --objective, not both")
+    if args.operator and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):
+        _err("ERROR: --operator cannot be combined with --setup/--clear/--prepare-cycle/--approve-enable/--confirm")
+        return 1
+    if args.intake and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):
+        _err("ERROR: --intake cannot be combined with --setup/--clear/--prepare-cycle/--approve-enable/--confirm")
+        return 1
+    selected_modes = [
+        name
+        for name, enabled in (
+            ("task", args.task),
+            ("objective", args.objective),
+            ("operator", args.operator),
+            ("intake", args.intake),
+        )
+        if enabled
+    ]
+    if len(selected_modes) > 1:
+        _err("ERROR: choose only one of --task, --objective, --operator, or --intake")
         return 1
 
     runner_id = _default_runner_id(args.runner_id)
@@ -4478,6 +4660,40 @@ def run(argv: list[str]) -> int:
             project_root=project_root,
             action=args.objective,
             objective_id=args.objective_id,
+        )
+        print(output)
+        return code
+
+    if args.operator:
+        code, output = _handle_operator_command(
+            dev=args.dev,
+            project=project,
+            runner_id=runner_id,
+            project_root=project_root,
+            action=args.operator,
+            issue_url=args.issue_url,
+            issue_repo=args.issue_repo,
+            issue_number=args.issue_number,
+            issue_title=args.issue_title,
+            run_id=args.run_id,
+            reason=args.reason,
+            requested_by=args.requested_by,
+        )
+        print(output)
+        return code
+
+    if args.intake:
+        paths = build_runner_state_paths_for_root(
+            project_root=project_root,
+            dev=args.dev,
+            project=project,
+            runner_id=runner_id,
+        )
+        code, output = handle_add_intake(
+            paths=paths,
+            project_root=project_root,
+            text=args.text or "",
+            requested_by=args.requested_by,
         )
         print(output)
         return code
