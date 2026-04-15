@@ -11,6 +11,8 @@ source "$AEROSPACE_DIR/config.sh"
 UPNOTE_WIDS=()
 VSCODE_WID=""
 CODEX_WID=""
+TERMINAL_WID=""
+TELEGRAM_WID=""
 ZEN_WID=""
 SAFARI_WID=""
 STATE_BROWSER=""
@@ -315,7 +317,9 @@ enforce_precedence_order() {
     local upnote_wid="$1"
     local vscode_wid="$2"
     local codex_wid="$3"
-    local browser_wid="$4"
+    local terminal_wid="$4"
+    local telegram_wid="$5"
+    local browser_wid="$6"
     local wids=()
 
     if [[ -n "$upnote_wid" ]]; then
@@ -326,6 +330,12 @@ enforce_precedence_order() {
     fi
     if [[ -n "$codex_wid" ]]; then
         wids+=("$codex_wid")
+    fi
+    if [[ -n "$terminal_wid" ]]; then
+        wids+=("$terminal_wid")
+    fi
+    if [[ -n "$telegram_wid" ]]; then
+        wids+=("$telegram_wid")
     fi
     if [[ -n "$browser_wid" ]]; then
         wids+=("$browser_wid")
@@ -410,8 +420,46 @@ untile_workspace_windows() {
         done
 }
 
+build_home_core_order_csv() {
+    local upnote_wid="$1"
+    local vscode_wid="$2"
+    local codex_wid="$3"
+    local terminal_wid="$4"
+    local telegram_wid="$5"
+    local browser_wid="$6"
+    local ordered_wids=()
+
+    if [[ -n "$upnote_wid" ]]; then
+        ordered_wids+=("$upnote_wid")
+    fi
+    if [[ -n "$vscode_wid" ]]; then
+        ordered_wids+=("$vscode_wid")
+    fi
+    if [[ -n "$codex_wid" ]]; then
+        ordered_wids+=("$codex_wid")
+    fi
+    if [[ -n "$terminal_wid" ]]; then
+        ordered_wids+=("$terminal_wid")
+    fi
+    if [[ -n "$telegram_wid" ]]; then
+        ordered_wids+=("$telegram_wid")
+    fi
+    if [[ -n "$browser_wid" ]]; then
+        ordered_wids+=("$browser_wid")
+    fi
+
+    if [[ ${#ordered_wids[@]} -eq 0 ]]; then
+        echo ""
+        return 0
+    fi
+
+    local ordered_csv
+    ordered_csv=$(IFS=,; echo "${ordered_wids[*]}")
+    echo "$ordered_csv"
+}
+
 # Get all home app window IDs
-# Sets: VSCODE_WID, CODEX_WID, ZEN_WID, SAFARI_WID, UPNOTE_WIDS (array)
+# Sets: VSCODE_WID, CODEX_WID, TERMINAL_WID, TELEGRAM_WID, ZEN_WID, SAFARI_WID, UPNOTE_WIDS (array)
 # UPNOTE_WIDS is sorted: main "UpNote" window first, then note windows
 get_home_windows() {
     local all_windows
@@ -419,6 +467,8 @@ get_home_windows() {
 
     local vscode_min=""
     local codex_min=""
+    local terminal_min=""
+    local telegram_min=""
     local zen_min=""
     local safari_min=""
     UPNOTE_WIDS=()
@@ -436,6 +486,16 @@ get_home_windows() {
             "$CODEX")
                 if [[ -z "$codex_min" || "$wid" -lt "$codex_min" ]]; then
                     codex_min="$wid"
+                fi
+                ;;
+            "$TERMINAL")
+                if [[ -z "$terminal_min" || "$wid" -lt "$terminal_min" ]]; then
+                    terminal_min="$wid"
+                fi
+                ;;
+            "$TELEGRAM")
+                if [[ -z "$telegram_min" || "$wid" -lt "$telegram_min" ]]; then
+                    telegram_min="$wid"
                 fi
                 ;;
             "$ZEN")
@@ -461,6 +521,8 @@ get_home_windows() {
 
     VSCODE_WID="$vscode_min"
     CODEX_WID="$codex_min"
+    TERMINAL_WID="$terminal_min"
+    TELEGRAM_WID="$telegram_min"
     ZEN_WID="$zen_min"
     SAFARI_WID="$safari_min"
 
@@ -854,26 +916,17 @@ rebuild_workspace() {
         fi
     fi
     local codex_wid="$CODEX_WID"
+    local terminal_wid="$TERMINAL_WID"
+    local telegram_wid="$TELEGRAM_WID"
     local primary_upnote_wid=""
     if [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -gt 0 ]]; then
         primary_upnote_wid="${UPNOTE_WIDS[0]}"
     fi
-    local ordered_wids=()
-    if [[ -n "$primary_upnote_wid" ]]; then
-        ordered_wids+=("$primary_upnote_wid")
-    fi
-    if [[ -n "$VSCODE_WID" ]]; then
-        ordered_wids+=("$VSCODE_WID")
-    fi
-    if [[ -n "$codex_wid" ]]; then
-        ordered_wids+=("$codex_wid")
-    fi
-    if [[ -n "$browser_wid" ]]; then
-        ordered_wids+=("$browser_wid")
-    fi
     local target_order_csv=""
-    if [[ ${#ordered_wids[@]} -gt 0 ]]; then
-        target_order_csv=$(IFS=,; echo "${ordered_wids[*]}")
+    target_order_csv="$(build_home_core_order_csv "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid")"
+    local ordered_wids=()
+    if [[ -n "$target_order_csv" ]]; then
+        IFS=',' read -r -a ordered_wids <<< "$target_order_csv"
     fi
     local inactive_browser
     inactive_browser=$(get_inactive_browser)
@@ -958,6 +1011,18 @@ rebuild_workspace() {
             log "rebuild: browser on wrong workspace ($browser_ws != $ws)"
         fi
     fi
+    local terminal_ws
+    terminal_ws=$(echo "$all_ws_info" | grep "^$terminal_wid|" | cut -d'|' -f2 || true)
+    if [[ -n "$terminal_wid" && "$terminal_ws" != "$ws" ]]; then
+        needs_rebuild="true"
+        log "rebuild: Terminal on wrong workspace ($terminal_ws != $ws)"
+    fi
+    local telegram_ws
+    telegram_ws=$(echo "$all_ws_info" | grep "^$telegram_wid|" | cut -d'|' -f2 || true)
+    if [[ -n "$telegram_wid" && "$telegram_ws" != "$ws" ]]; then
+        needs_rebuild="true"
+        log "rebuild: Telegram on wrong workspace ($telegram_ws != $ws)"
+    fi
     if [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -gt 0 ]]; then
         for upnote_wid in "${UPNOTE_WIDS[@]}"; do
             local upnote_ws
@@ -986,7 +1051,7 @@ rebuild_workspace() {
         untile_workspace_windows "$ws"
 
         # Retile one-by-one in strict left-to-right precedence.
-        # Precedence: UpNote -> VSCode -> Codex -> Browser
+        # Precedence: UpNote -> VSCode -> Codex -> Terminal -> Telegram -> Browser
         for wid in "${ordered_wids[@]-}"; do
             if [[ "$wid" == "$browser_wid" ]]; then
                 log "tiling browser $STATE_BROWSER (wid=$browser_wid)"
@@ -1002,8 +1067,8 @@ rebuild_workspace() {
         aerospace flatten-workspace-tree 2>/dev/null || true
         aerospace balance-sizes 2>/dev/null || true
         # Apply sizing only after actual rebuild (not on focus changes)
-        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid"
-        enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$browser_wid"
+        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid" "$terminal_wid" "$telegram_wid"
+        enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid"
 
         # Restore captured floating overlays (excluding inactive browsers).
         if [[ -n "$master_floating_overlay_wids" ]]; then
@@ -1020,8 +1085,8 @@ rebuild_workspace() {
         enforce_single_browser_window_in_workspace "$ws" "$browser_wid" "$active_browser_bundle"
         aerospace flatten-workspace-tree 2>/dev/null || true
         aerospace balance-sizes 2>/dev/null || true
-        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid"
-        enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$browser_wid"
+        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid" "$terminal_wid" "$telegram_wid"
+        enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid"
 
         restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv"
         enforce_single_browser_window_in_workspace "$ws" "$browser_wid" "$active_browser_bundle"
@@ -1039,9 +1104,16 @@ apply_sizing() {
     local browser_wid="$2"
     local primary_upnote_wid="$3"
     local codex_wid="$4"
+    local terminal_wid="$5"
+    local telegram_wid="$6"
 
     if [[ -z "$browser_wid" ]]; then
         log "apply_sizing: no browser, skipping"
+        return 0
+    fi
+
+    if [[ -n "$terminal_wid" || -n "$telegram_wid" ]]; then
+        log "apply_sizing: auxiliary app tiled, keeping balanced widths"
         return 0
     fi
 

@@ -1,6 +1,8 @@
 export const KNOWN_BUNDLE_IDS = [
   "com.microsoft.VSCode",
   "com.openai.codex",
+  "com.apple.Terminal",
+  "com.tdesktop.Telegram",
   "app.zen-browser.zen",
   "com.apple.Safari",
   "com.getupnote.desktop",

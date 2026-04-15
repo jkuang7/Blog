@@ -92,4 +92,13 @@ UNTILE_OUT="$(printf '%s' "$UNTILE_LINES" | workspace_untile_ids_from_lines)"
 UNTILE_EXPECTED=$'10\n11\n12'
 assert_eq "$UNTILE_OUT" "$UNTILE_EXPECTED" "workspace untile helper includes all workspace windows exactly once"
 
+ORDER_WITH_TERMINAL="$(build_home_core_order_csv "10" "20" "30" "40" "" "50")"
+assert_eq "$ORDER_WITH_TERMINAL" "10,20,30,40,50" "terminal is inserted immediately before the browser in core order"
+
+ORDER_WITH_TELEGRAM="$(build_home_core_order_csv "10" "20" "30" "40" "45" "50")"
+assert_eq "$ORDER_WITH_TELEGRAM" "10,20,30,40,45,50" "telegram is inserted after terminal and before the browser in core order"
+
+ORDER_NO_TERMINAL="$(build_home_core_order_csv "" "20" "30" "" "" "50")"
+assert_eq "$ORDER_NO_TERMINAL" "20,30,50" "core order stays compact when terminal is absent"
+
 echo "PASS: unit normalization logic"

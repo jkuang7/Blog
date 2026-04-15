@@ -40,7 +40,7 @@ if [[ "$WS" != "$LAST_WS" && -n "$LAST_WS" ]]; then
         PULL_WID=$(echo "$FOCUSED_INFO" | cut -d'|' -f1)
 
         # If focused app is a home app, pull it to previous workspace
-        if [[ "$PULL_APP" == "$UPNOTE" || "$PULL_APP" == "$VSCODE" || "$PULL_APP" == "$CODEX" || "$PULL_APP" == "$ZEN" || "$PULL_APP" == "$SAFARI" ]]; then
+        if [[ "$PULL_APP" == "$UPNOTE" || "$PULL_APP" == "$VSCODE" || "$PULL_APP" == "$CODEX" || "$PULL_APP" == "$TERMINAL" || "$PULL_APP" == "$TELEGRAM" || "$PULL_APP" == "$ZEN" || "$PULL_APP" == "$SAFARI" ]]; then
             if is_home_ws "$LAST_WS"; then
                 log "on_focus: pulling $PULL_APP from $WS to $LAST_WS"
 
@@ -109,6 +109,10 @@ FOCUSED_IS_PRIMARY="true"
 if [[ "$FOCUSED_APP" == "$VSCODE" && -n "$VSCODE_WID" && "$FOCUSED_WID" != "$VSCODE_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
 elif [[ "$FOCUSED_APP" == "$CODEX" && -n "$CODEX_WID" && "$FOCUSED_WID" != "$CODEX_WID" ]]; then
+    FOCUSED_IS_PRIMARY="false"
+elif [[ "$FOCUSED_APP" == "$TERMINAL" && -n "$TERMINAL_WID" && "$FOCUSED_WID" != "$TERMINAL_WID" ]]; then
+    FOCUSED_IS_PRIMARY="false"
+elif [[ "$FOCUSED_APP" == "$TELEGRAM" && -n "$TELEGRAM_WID" && "$FOCUSED_WID" != "$TELEGRAM_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
 elif [[ "$FOCUSED_APP" == "$ZEN" && -n "$PRIMARY_ZEN_WID" && "$FOCUSED_WID" != "$PRIMARY_ZEN_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"

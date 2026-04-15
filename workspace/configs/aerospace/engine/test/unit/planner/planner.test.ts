@@ -131,4 +131,136 @@ describe("planner", () => {
     ]);
     expect(actions[0]?.reason).toBe("active-browser-closed-promote-zen");
   });
+
+  it("treats Terminal on_window as a managed non-browser app", () => {
+    const context = toCanonicalPlannerContext({
+      callback: {
+        kind: "on_window",
+        workspace: "w1",
+        bundleId: "com.apple.Terminal",
+        argv: ["com.apple.Terminal"],
+        timestampMs: 1730000000000
+      },
+      workspaceState: {
+        workspace: "w1",
+        browser: "zen",
+        upnoteTiled: false,
+        tiledOrder: [441, 80, 11670]
+      },
+      focusedWindow: {
+        windowId: 12000,
+        workspace: "w1",
+        bundleId: "com.apple.Terminal",
+        layout: "floating",
+        title: "jian — -zsh — 80×24"
+      },
+      windows: [
+        {
+          windowId: 441,
+          workspace: "w1",
+          bundleId: "com.microsoft.VSCode",
+          layout: "h_tiles",
+          title: "AGENTS.md"
+        },
+        {
+          windowId: 80,
+          workspace: "w1",
+          bundleId: "com.openai.codex",
+          layout: "h_tiles",
+          title: "Codex"
+        },
+        {
+          windowId: 11670,
+          workspace: "w1",
+          bundleId: "app.zen-browser.zen",
+          layout: "h_tiles",
+          title: "Zen"
+        },
+        {
+          windowId: 12000,
+          workspace: "w1",
+          bundleId: "com.apple.Terminal",
+          layout: "floating",
+          title: "jian — -zsh — 80×24"
+        }
+      ]
+    });
+
+    const actions = planActions(context);
+
+    expect(actions.map((action) => action.type)).toEqual([
+      "STATE_MUTATION",
+      "WRITE_STATE",
+      "DELEGATE",
+      "REBUILD"
+    ]);
+    expect(actions[0]?.reason).toBe("managed-window-open");
+    expect(actions[0]?.details.browser).toBe("zen");
+  });
+
+  it("treats Telegram on_window as a managed non-browser app", () => {
+    const context = toCanonicalPlannerContext({
+      callback: {
+        kind: "on_window",
+        workspace: "w1",
+        bundleId: "com.tdesktop.Telegram",
+        argv: ["com.tdesktop.Telegram"],
+        timestampMs: 1730000000000
+      },
+      workspaceState: {
+        workspace: "w1",
+        browser: "zen",
+        upnoteTiled: false,
+        tiledOrder: [441, 80, 11670]
+      },
+      focusedWindow: {
+        windowId: 12100,
+        workspace: "w1",
+        bundleId: "com.tdesktop.Telegram",
+        layout: "floating",
+        title: "Telegram"
+      },
+      windows: [
+        {
+          windowId: 441,
+          workspace: "w1",
+          bundleId: "com.microsoft.VSCode",
+          layout: "h_tiles",
+          title: "AGENTS.md"
+        },
+        {
+          windowId: 80,
+          workspace: "w1",
+          bundleId: "com.openai.codex",
+          layout: "h_tiles",
+          title: "Codex"
+        },
+        {
+          windowId: 11670,
+          workspace: "w1",
+          bundleId: "app.zen-browser.zen",
+          layout: "h_tiles",
+          title: "Zen"
+        },
+        {
+          windowId: 12100,
+          workspace: "w1",
+          bundleId: "com.tdesktop.Telegram",
+          layout: "floating",
+          title: "Telegram"
+        }
+      ]
+    });
+
+    const actions = planActions(context);
+
+    expect(actions.map((action) => action.type)).toEqual([
+      "STATE_MUTATION",
+      "WRITE_STATE",
+      "DELEGATE",
+      "REBUILD"
+    ]);
+    expect(actions[0]?.reason).toBe("managed-window-open");
+    expect(actions[0]?.details.browser).toBe("zen");
+  });
 });

@@ -5,6 +5,8 @@
 # === Home App Bundle IDs ===
 export VSCODE="com.microsoft.VSCode"
 export CODEX="com.openai.codex"
+export TERMINAL="com.apple.Terminal"
+export TELEGRAM="com.tdesktop.Telegram"
 export ZEN="app.zen-browser.zen"
 export SAFARI="com.apple.Safari"
 export UPNOTE="com.getupnote.desktop"

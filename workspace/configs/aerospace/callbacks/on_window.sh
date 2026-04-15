@@ -28,7 +28,7 @@ is_home_ws "$WS" || exit 0
 
 # Only handle home apps
 case "$BUNDLE" in
-    "$VSCODE"|"$CODEX"|"$ZEN"|"$SAFARI"|"$UPNOTE") ;;
+    "$VSCODE"|"$CODEX"|"$TERMINAL"|"$TELEGRAM"|"$ZEN"|"$SAFARI"|"$UPNOTE") ;;
     *) exit 0 ;;
 esac
 
@@ -97,7 +97,7 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
         # Extra windows (SSO popups, etc.) are excluded so they don't trigger rebuilds
         snapshot_windows() {
             aerospace list-windows --workspace "$1" --format '%{app-name}|%{window-id}' 2>/dev/null \
-                | grep -E '^(Zen|Safari|Code|Codex|UpNote)\|[0-9]+$' \
+                | grep -E '^(Zen|Safari|Code|Codex|UpNote|Terminal|Telegram)\|[0-9]+$' \
                 | awk -F'|' '
                     {
                         app=$1
@@ -211,7 +211,7 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
                     # UpNote may reopen from hidden state with the same window-id
                     # (snapshot unchanged). If it's currently untiled in state,
                     # still run the normalize/rebuild path so core order becomes
-                    # UpNote -> VSCode -> Codex -> Browser.
+                    # UpNote -> VSCode -> Codex -> Terminal -> Telegram -> Browser.
                     if [[ "${STATE_UPNOTE_TILED:-false}" == "true" ]]; then
                         log "on_window: snapshot unchanged for UpNote, skipping rebuild"
                         PERF_DECISION="snapshot_unchanged_upnote_skip"
@@ -262,6 +262,8 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
         case "$LAST_BUNDLE" in
             "$VSCODE") PRIMARY_WID="$VSCODE_WID" ;;
             "$CODEX") PRIMARY_WID="$CODEX_WID" ;;
+            "$TERMINAL") PRIMARY_WID="$TERMINAL_WID" ;;
+            "$TELEGRAM") PRIMARY_WID="$TELEGRAM_WID" ;;
             "$ZEN") PRIMARY_WID="$(get_primary_window_for_bundle "$ZEN" "$ALL_WINDOWS_LATE")" ;;
             "$SAFARI") PRIMARY_WID="$(get_primary_window_for_bundle "$SAFARI" "$ALL_WINDOWS_LATE")" ;;
             "$UPNOTE") PRIMARY_WID="${UPNOTE_WIDS[0]:-}" ;;

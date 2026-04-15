@@ -43,6 +43,14 @@ run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.getupnote.desktop']
 if.app-id = 'com.openai.codex'
 run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.openai.codex']
 
+[[on-window-detected]]
+if.app-id = 'com.apple.Terminal'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.apple.Terminal']
+
+[[on-window-detected]]
+if.app-id = 'com.tdesktop.Telegram'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.tdesktop.Telegram']
+
 # =============================================================================
 # KEYBINDINGS
 # =============================================================================

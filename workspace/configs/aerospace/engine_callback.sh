@@ -18,7 +18,7 @@ fi
 is_managed_bundle() {
     local bundle="${1:-}"
     case "$bundle" in
-        "$VSCODE"|"$CODEX"|"$ZEN"|"$SAFARI"|"$UPNOTE")
+        "$VSCODE"|"$CODEX"|"$TERMINAL"|"$TELEGRAM"|"$ZEN"|"$SAFARI"|"$UPNOTE")
             return 0
             ;;
         *)
@@ -99,6 +99,8 @@ build_planner_context_json() {
     ENGINE_STATE_TILED_ORDER="$STATE_TILED_ORDER" \
     ENGINE_VSCODE_WID="${VSCODE_WID:-}" \
     ENGINE_CODEX_WID="${CODEX_WID:-}" \
+    ENGINE_TERMINAL_WID="${TERMINAL_WID:-}" \
+    ENGINE_TELEGRAM_WID="${TELEGRAM_WID:-}" \
     ENGINE_ZEN_WID="${ZEN_WID:-}" \
     ENGINE_SAFARI_WID="${SAFARI_WID:-}" \
     ENGINE_UPNOTE_WID="${UPNOTE_WIDS[0]:-}" \
@@ -140,6 +142,8 @@ windows = []
 for window_id, bundle_id, title in [
     (wid("ENGINE_VSCODE_WID"), "com.microsoft.VSCode", "VSCode"),
     (wid("ENGINE_CODEX_WID"), "com.openai.codex", "Codex"),
+    (wid("ENGINE_TERMINAL_WID"), "com.apple.Terminal", "Terminal"),
+    (wid("ENGINE_TELEGRAM_WID"), "com.tdesktop.Telegram", "Telegram"),
     (wid("ENGINE_ZEN_WID"), "app.zen-browser.zen", "Zen"),
     (wid("ENGINE_SAFARI_WID"), "com.apple.Safari", "Safari"),
     (wid("ENGINE_UPNOTE_WID"), "com.getupnote.desktop", "UpNote")
