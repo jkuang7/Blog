@@ -47,12 +47,22 @@ export function parseWorkspaceStateFile(
     .filter((value) => value.length > 0)
     .map((value) => Number(value))
     .filter((value) => Number.isInteger(value) && value >= 0);
+  const activeUtilityBundle = (kv.get("ACTIVE_UTILITY_BUNDLE") ?? "") as
+    | "com.openai.codex"
+    | "com.apple.Terminal"
+    | "com.tdesktop.Telegram"
+    | "";
+  const activeUtilityWindowIdRaw = kv.get("ACTIVE_UTILITY_WID") ?? "";
+  const activeUtilityWindowId = activeUtilityWindowIdRaw.length > 0 ? Number(activeUtilityWindowIdRaw) : null;
 
   return workspaceStateSchema.parse({
     workspace: ws,
     browser,
     upnoteTiled,
-    tiledOrder
+    tiledOrder,
+    activeUtilityBundle,
+    activeUtilityWindowId:
+      Number.isInteger(activeUtilityWindowId) && (activeUtilityWindowId ?? -1) >= 0 ? activeUtilityWindowId : null
   });
 }
 
@@ -73,7 +83,9 @@ export function parseWorkspaceStateCompat(input: {
       workspace: v2.workspace,
       browser: v2.browser,
       upnoteTiled: v2.upnoteTiled,
-      tiledOrder: v2.tiledOrder
+      tiledOrder: v2.tiledOrder,
+      activeUtilityBundle: v2.activeUtilityBundle,
+      activeUtilityWindowId: v2.activeUtilityWindowId
     });
   }
 
@@ -85,7 +97,9 @@ export function parseWorkspaceStateCompat(input: {
     workspace: normalizeWorkspaceId(input.workspace),
     browser: "zen",
     upnoteTiled: true,
-    tiledOrder: []
+    tiledOrder: [],
+    activeUtilityBundle: "",
+    activeUtilityWindowId: null
   });
 }
 

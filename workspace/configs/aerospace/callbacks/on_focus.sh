@@ -59,6 +59,9 @@ if [[ "$WS" != "$LAST_WS" && -n "$LAST_WS" ]]; then
                     STATE_BROWSER="zen"
                 elif [[ "$PULL_APP" == "$SAFARI" ]]; then
                     STATE_BROWSER="safari"
+                elif is_utility_bundle "$PULL_APP"; then
+                    STATE_ACTIVE_UTILITY_BUNDLE="$PULL_APP"
+                    STATE_ACTIVE_UTILITY_WID="$PULL_WID"
                 fi
 
                 set_last_ws "$LAST_WS"
@@ -81,6 +84,11 @@ if [[ -z "${FOCUSED_INFO:-}" || "$IS_WS_CHANGE" == "true" ]]; then
 fi
 FOCUSED_WID=$(echo "$FOCUSED_INFO" | cut -d'|' -f1)
 FOCUSED_APP=$(echo "$FOCUSED_INFO" | cut -d'|' -f2)
+FOCUSED_TITLE=$(echo "$FOCUSED_INFO" | cut -d'|' -f3-)
+FOCUSED_LOOKS_POPUP="false"
+if is_popup_title "$FOCUSED_TITLE"; then
+    FOCUSED_LOOKS_POPUP="true"
+fi
 
 # If just a focus change within workspace, check churn window
 if [[ "$IS_WS_CHANGE" == "false" ]]; then
@@ -92,13 +100,13 @@ fi
 # Load current workspace state
 read_state "$WS"
 get_home_windows
+ALL_WINDOWS_FOCUS="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
 
 # Resolve browser primary windows directly from live windows to avoid stale
 # TILED_ORDER ids misclassifying which browser should drive retile decisions.
 PRIMARY_ZEN_WID="$ZEN_WID"
 PRIMARY_SAFARI_WID="$SAFARI_WID"
 if [[ "$FOCUSED_APP" == "$ZEN" || "$FOCUSED_APP" == "$SAFARI" ]]; then
-    ALL_WINDOWS_FOCUS="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
     PRIMARY_ZEN_WID="$(get_primary_window_for_bundle "$ZEN" "$ALL_WINDOWS_FOCUS")"
     PRIMARY_SAFARI_WID="$(get_primary_window_for_bundle "$SAFARI" "$ALL_WINDOWS_FOCUS")"
 fi
@@ -108,11 +116,7 @@ fi
 FOCUSED_IS_PRIMARY="true"
 if [[ "$FOCUSED_APP" == "$VSCODE" && -n "$VSCODE_WID" && "$FOCUSED_WID" != "$VSCODE_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
-elif [[ "$FOCUSED_APP" == "$CODEX" && -n "$CODEX_WID" && "$FOCUSED_WID" != "$CODEX_WID" ]]; then
-    FOCUSED_IS_PRIMARY="false"
-elif [[ "$FOCUSED_APP" == "$TERMINAL" && -n "$TERMINAL_WID" && "$FOCUSED_WID" != "$TERMINAL_WID" ]]; then
-    FOCUSED_IS_PRIMARY="false"
-elif [[ "$FOCUSED_APP" == "$TELEGRAM" && -n "$TELEGRAM_WID" && "$FOCUSED_WID" != "$TELEGRAM_WID" ]]; then
+elif is_utility_bundle "$FOCUSED_APP" && [[ -n "${STATE_ACTIVE_UTILITY_WID:-}" && "$FOCUSED_WID" != "$STATE_ACTIVE_UTILITY_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
 elif [[ "$FOCUSED_APP" == "$ZEN" && -n "$PRIMARY_ZEN_WID" && "$FOCUSED_WID" != "$PRIMARY_ZEN_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
@@ -170,6 +174,30 @@ if is_home_ws "$WS" && [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} 
     STATE_UPNOTE_TILED="false"
     NEEDS_REBUILD="true"
     log "on_focus: UpNote closed in w1, rebalancing"
+fi
+
+# Case 6: Utility owner repair only when the stored owner disappeared.
+PREV_UTILITY_BUNDLE="$STATE_ACTIVE_UTILITY_BUNDLE"
+PREV_UTILITY_WID="$STATE_ACTIVE_UTILITY_WID"
+UTILITY_OWNER_MISSING="false"
+if [[ -n "$PREV_UTILITY_WID" ]]; then
+    if ! window_exists_in_snapshot "$ALL_WINDOWS_FOCUS" "$PREV_UTILITY_WID"; then
+        UTILITY_OWNER_MISSING="true"
+    fi
+elif [[ -n "$PREV_UTILITY_BUNDLE" ]]; then
+    if [[ -z "$(get_latest_nonpopup_window_for_bundle_from_snapshot "$ALL_WINDOWS_FOCUS" "$PREV_UTILITY_BUNDLE")" ]]; then
+        UTILITY_OWNER_MISSING="true"
+    fi
+fi
+
+if [[ "$UTILITY_OWNER_MISSING" == "true" ]]; then
+    UTILITY_PAIR="$(resolve_active_utility_window "$ALL_WINDOWS_FOCUS")"
+    STATE_ACTIVE_UTILITY_BUNDLE="$(echo "$UTILITY_PAIR" | cut -d'|' -f1)"
+    STATE_ACTIVE_UTILITY_WID="$(echo "$UTILITY_PAIR" | cut -d'|' -f2)"
+    if [[ "$STATE_ACTIVE_UTILITY_BUNDLE" != "$PREV_UTILITY_BUNDLE" || "$STATE_ACTIVE_UTILITY_WID" != "$PREV_UTILITY_WID" ]]; then
+        NEEDS_REBUILD="true"
+        log "on_focus: repaired missing utility owner (${PREV_UTILITY_BUNDLE}:${PREV_UTILITY_WID} -> ${STATE_ACTIVE_UTILITY_BUNDLE}:${STATE_ACTIVE_UTILITY_WID})"
+    fi
 fi
 
 

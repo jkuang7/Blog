@@ -20,12 +20,21 @@ describe("boundary normalization", () => {
   it("parses workspace state file content", () => {
     const state = parseWorkspaceStateFile(
       "w1",
-      "BROWSER=zen\nUPNOTE_TILED=true\nTILED_ORDER=11410,441,80,11670\n"
+      [
+        "BROWSER=zen",
+        "UPNOTE_TILED=true",
+        "TILED_ORDER=11410,441,80,11670",
+        "ACTIVE_UTILITY_BUNDLE=com.openai.codex",
+        "ACTIVE_UTILITY_WID=80",
+        ""
+      ].join("\n")
     );
 
     expect(state.browser).toBe("zen");
     expect(state.upnoteTiled).toBe(true);
     expect(state.tiledOrder).toEqual([11410, 441, 80, 11670]);
+    expect(state.activeUtilityBundle).toBe("com.openai.codex");
+    expect(state.activeUtilityWindowId).toBe(80);
   });
 
   it("parses typed v2 workspace state content", () => {
@@ -36,6 +45,8 @@ describe("boundary normalization", () => {
         browser: "safari",
         upnoteTiled: false,
         tiledOrder: [441, 80, 11446],
+        activeUtilityBundle: "com.apple.Terminal",
+        activeUtilityWindowId: 80,
         updatedAtMs: 1740744000000
       })
     );
@@ -43,6 +54,8 @@ describe("boundary normalization", () => {
     expect(stateV2.version).toBe(2);
     expect(stateV2.browser).toBe("safari");
     expect(stateV2.upnoteTiled).toBe(false);
+    expect(stateV2.activeUtilityBundle).toBe("com.apple.Terminal");
+    expect(stateV2.activeUtilityWindowId).toBe(80);
   });
 
   it("prefers v2 state during compat parse", () => {
@@ -54,13 +67,17 @@ describe("boundary normalization", () => {
         workspace: "w1",
         browser: "safari",
         upnoteTiled: false,
-        tiledOrder: [9, 8, 7]
+        tiledOrder: [9, 8, 7],
+        activeUtilityBundle: "com.tdesktop.Telegram",
+        activeUtilityWindowId: 9
       })
     });
 
     expect(state.browser).toBe("safari");
     expect(state.upnoteTiled).toBe(false);
     expect(state.tiledOrder).toEqual([9, 8, 7]);
+    expect(state.activeUtilityBundle).toBe("com.tdesktop.Telegram");
+    expect(state.activeUtilityWindowId).toBe(9);
   });
 
   it("parses and sorts window snapshots", () => {

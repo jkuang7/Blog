@@ -258,12 +258,17 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
             FOCUSED_LOOKS_POPUP="true"
         fi
         ALL_WINDOWS_LATE="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+        RESOLVED_UTILITY_PAIR="$(resolve_active_utility_window "$ALL_WINDOWS_LATE" "$FOCUSED_APP" "$FOCUSED_WID" "$FOCUSED_LOOKS_POPUP")"
+        RESOLVED_UTILITY_BUNDLE="$(echo "$RESOLVED_UTILITY_PAIR" | cut -d'|' -f1)"
+        RESOLVED_UTILITY_WID="$(echo "$RESOLVED_UTILITY_PAIR" | cut -d'|' -f2)"
         PRIMARY_WID=""
         case "$LAST_BUNDLE" in
             "$VSCODE") PRIMARY_WID="$VSCODE_WID" ;;
-            "$CODEX") PRIMARY_WID="$CODEX_WID" ;;
-            "$TERMINAL") PRIMARY_WID="$TERMINAL_WID" ;;
-            "$TELEGRAM") PRIMARY_WID="$TELEGRAM_WID" ;;
+            "$CODEX"|"$TERMINAL"|"$TELEGRAM")
+                if [[ "$RESOLVED_UTILITY_BUNDLE" == "$LAST_BUNDLE" ]]; then
+                    PRIMARY_WID="$RESOLVED_UTILITY_WID"
+                fi
+                ;;
             "$ZEN") PRIMARY_WID="$(get_primary_window_for_bundle "$ZEN" "$ALL_WINDOWS_LATE")" ;;
             "$SAFARI") PRIMARY_WID="$(get_primary_window_for_bundle "$SAFARI" "$ALL_WINDOWS_LATE")" ;;
             "$UPNOTE") PRIMARY_WID="${UPNOTE_WIDS[0]:-}" ;;
@@ -293,6 +298,8 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
 
             if [[ "$IS_BROWSER_BUNDLE" == "true" && "$BROWSER_MAIN_INTENT" == "true" ]]; then
                 log "on_window: browser main-window intent for $LAST_BUNDLE, allowing retile"
+            elif is_utility_bundle "$LAST_BUNDLE" && [[ "$FOCUSED_APP" == "$LAST_BUNDLE" && "$FOCUSED_WID" == "$LATEST_BUNDLE_WID" && "$FOCUSED_LOOKS_POPUP" != "true" ]]; then
+                log "on_window: utility main-window intent for $LAST_BUNDLE, allowing retile"
             else
                 log "on_window: secondary window for tiled $LAST_BUNDLE, skipping rebuild"
                 if [[ -n "$LATEST_BUNDLE_WID" && "$LATEST_BUNDLE_WID" != "$PRIMARY_WID" && "$LAST_BUNDLE" == "$ACTIVE_BROWSER_BUNDLE" ]]; then
@@ -312,7 +319,7 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
             fi
         fi
 
-        if [[ "$FOCUSED_APP" == "$LAST_BUNDLE" && -n "$PRIMARY_WID" && "$FOCUSED_WID" != "$PRIMARY_WID" && "$BROWSER_MAIN_INTENT" != "true" ]]; then
+        if ! is_utility_bundle "$LAST_BUNDLE" && [[ "$FOCUSED_APP" == "$LAST_BUNDLE" && -n "$PRIMARY_WID" && "$FOCUSED_WID" != "$PRIMARY_WID" && "$BROWSER_MAIN_INTENT" != "true" ]]; then
             log "on_window: transient popup for $LAST_BUNDLE, skipping rebuild"
             if [[ "$LAST_BUNDLE" == "$ACTIVE_BROWSER_BUNDLE" ]]; then
                 aerospace layout --window-id "$FOCUSED_WID" floating 2>/dev/null || true
@@ -347,6 +354,10 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
             "$UPNOTE")
                 STATE_UPNOTE_TILED="true"
                 show_app "UpNote"
+                ;;
+            "$CODEX"|"$TERMINAL"|"$TELEGRAM")
+                STATE_ACTIVE_UTILITY_BUNDLE="$RESOLVED_UTILITY_BUNDLE"
+                STATE_ACTIVE_UTILITY_WID="$RESOLVED_UTILITY_WID"
                 ;;
         esac
 

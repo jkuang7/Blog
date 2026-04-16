@@ -5,6 +5,7 @@ import { activeLayoutProfile, isManagedBundle } from "./helpers.js";
 
 export function planOnWindow(context: PlannerContext): SemanticActionInput[] {
   const bundle = context.callback.bundleId;
+  const focusedWindowId = context.focusedWindow?.windowId ?? null;
 
   if (!context.guards.isHomeWorkspace) {
     return [
@@ -54,6 +55,23 @@ export function planOnWindow(context: PlannerContext): SemanticActionInput[] {
 
   const upnoteTiled =
     bundle === "com.getupnote.desktop" ? true : context.workspaceState.upnoteTiled;
+  const nextUtilityBundle =
+    bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram"
+      ? bundle
+      : context.workspaceState.activeUtilityBundle;
+  const nextUtilityWindowId =
+    bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram"
+      ? focusedWindowId
+      : context.workspaceState.activeUtilityWindowId;
+  const stateDetails: Record<string, string | boolean | number | null> = {
+    browser: nextBrowser,
+    upnoteTiled
+  };
+
+  if (bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram") {
+    stateDetails.activeUtilityBundle = nextUtilityBundle;
+    stateDetails.activeUtilityWindowId = nextUtilityWindowId;
+  }
 
   const actions: SemanticActionInput[] = [
     {
@@ -61,20 +79,14 @@ export function planOnWindow(context: PlannerContext): SemanticActionInput[] {
       type: "STATE_MUTATION",
       target: "workspace_state",
       reason: "managed-window-open",
-      details: {
-        browser: nextBrowser,
-        upnoteTiled
-      }
+      details: stateDetails
     },
     {
       order: 20,
       type: "WRITE_STATE",
       target: "w1.state",
       reason: "persist-state-before-balance",
-      details: {
-        browser: nextBrowser,
-        upnoteTiled
-      }
+      details: stateDetails
     },
     {
       order: 30,

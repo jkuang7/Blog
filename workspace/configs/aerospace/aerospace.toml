@@ -78,10 +78,10 @@ alt-k = 'focus up'
 alt-l = 'focus right'
 
 # Move windows
-alt-shift-h = 'move left'
-alt-shift-j = 'move down'
-alt-shift-k = 'move up'
-alt-shift-l = 'move right'
+alt-shift-h = 'exec-and-forget ~/.config/aerospace/move_and_balance.sh left'
+alt-shift-j = 'exec-and-forget ~/.config/aerospace/move_and_balance.sh down'
+alt-shift-k = 'exec-and-forget ~/.config/aerospace/move_and_balance.sh up'
+alt-shift-l = 'exec-and-forget ~/.config/aerospace/move_and_balance.sh right'
 
 # Resize
 alt-minus = 'resize smart -50'

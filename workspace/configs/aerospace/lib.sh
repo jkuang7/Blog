@@ -18,6 +18,8 @@ SAFARI_WID=""
 STATE_BROWSER=""
 STATE_UPNOTE_TILED="false"
 STATE_TILED_ORDER=""
+STATE_ACTIVE_UTILITY_BUNDLE=""
+STATE_ACTIVE_UTILITY_WID=""
 POPUP_TITLE_AWK_REGEX='oauth|auth|sign[[:space:]]in|log[[:space:]]in|login|permission|extension|download|save|open[[:space:]]file|alert|dialog|sheet|confirm|prompt'
 
 now_ms() {
@@ -85,6 +87,18 @@ should_allow_browser_snapshot_rebuild() {
     fi
 
     return 1
+}
+
+is_utility_bundle() {
+    local bundle="${1:-}"
+    case "$bundle" in
+        "$CODEX"|"$TERMINAL"|"$TELEGRAM")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 filter_overlay_candidates_from_lines() {
@@ -162,14 +176,36 @@ for value in data.get("tiledOrder", []):
     if number >= 0:
         tiled_order.append(str(number))
 
-print(f"{browser}|{upnote_tiled}|{','.join(tiled_order)}")
+active_utility_bundle = data.get("activeUtilityBundle", "")
+if active_utility_bundle not in {
+    "com.openai.codex",
+    "com.apple.Terminal",
+    "com.tdesktop.Telegram",
+    "",
+}:
+    active_utility_bundle = ""
+
+active_utility_wid = data.get("activeUtilityWindowId")
+if active_utility_wid is None:
+    active_utility_wid_str = ""
+else:
+    try:
+        parsed_wid = int(active_utility_wid)
+    except (TypeError, ValueError):
+        parsed_wid = -1
+    active_utility_wid_str = str(parsed_wid) if parsed_wid >= 0 else ""
+
+print(
+    f"{browser}|{upnote_tiled}|{','.join(tiled_order)}|"
+    f"{active_utility_bundle}|{active_utility_wid_str}"
+)
 PY
 }
 
 write_state_v2_file() {
     local ws="$1"
     local state_file_v2="$2"
-    python3 - "$ws" "$state_file_v2" "$STATE_BROWSER" "$STATE_UPNOTE_TILED" "$STATE_TILED_ORDER" <<'PY'
+    python3 - "$ws" "$state_file_v2" "$STATE_BROWSER" "$STATE_UPNOTE_TILED" "$STATE_TILED_ORDER" "$STATE_ACTIVE_UTILITY_BUNDLE" "$STATE_ACTIVE_UTILITY_WID" <<'PY'
 import json
 import sys
 import time
@@ -179,6 +215,8 @@ path = sys.argv[2]
 browser = sys.argv[3]
 upnote = sys.argv[4] == "true"
 tiled_order_raw = sys.argv[5]
+active_utility_bundle = sys.argv[6]
+active_utility_wid_raw = sys.argv[7]
 
 tiled_order = []
 for value in tiled_order_raw.split(","):
@@ -192,6 +230,12 @@ payload = {
     "browser": browser if browser in {"zen", "safari", ""} else "",
     "upnoteTiled": upnote,
     "tiledOrder": tiled_order,
+    "activeUtilityBundle": (
+        active_utility_bundle
+        if active_utility_bundle in {"com.openai.codex", "com.apple.Terminal", "com.tdesktop.Telegram", ""}
+        else ""
+    ),
+    "activeUtilityWindowId": int(active_utility_wid_raw) if active_utility_wid_raw.isdigit() else None,
     "updatedAtMs": int(time.time() * 1000),
 }
 
@@ -215,6 +259,8 @@ read_state() {
     STATE_BROWSER="$w1_default_browser"
     STATE_UPNOTE_TILED="$w1_default_upnote"
     STATE_TILED_ORDER=""
+    STATE_ACTIVE_UTILITY_BUNDLE=""
+    STATE_ACTIVE_UTILITY_WID=""
 
     # Prefer typed v2 state when available.
     if [[ -f "$state_file_v2" ]]; then
@@ -223,6 +269,8 @@ read_state() {
             STATE_BROWSER="$(echo "$v2_parsed" | cut -d'|' -f1)"
             STATE_UPNOTE_TILED="$(echo "$v2_parsed" | cut -d'|' -f2)"
             STATE_TILED_ORDER="$(echo "$v2_parsed" | cut -d'|' -f3)"
+            STATE_ACTIVE_UTILITY_BUNDLE="$(echo "$v2_parsed" | cut -d'|' -f4)"
+            STATE_ACTIVE_UTILITY_WID="$(echo "$v2_parsed" | cut -d'|' -f5)"
             return 0
         fi
         log "read_state: invalid v2 state for $ws, falling back to legacy state"
@@ -234,12 +282,16 @@ read_state() {
         STATE_BROWSER="${BROWSER:-$STATE_BROWSER}"
         STATE_UPNOTE_TILED="${UPNOTE_TILED:-$STATE_UPNOTE_TILED}"
         STATE_TILED_ORDER="${TILED_ORDER:-$STATE_TILED_ORDER}"
+        STATE_ACTIVE_UTILITY_BUNDLE="${ACTIVE_UTILITY_BUNDLE:-$STATE_ACTIVE_UTILITY_BUNDLE}"
+        STATE_ACTIVE_UTILITY_WID="${ACTIVE_UTILITY_WID:-$STATE_ACTIVE_UTILITY_WID}"
     elif [[ "$ws" == "w1" && -f "$STATE_DIR/1.state" ]]; then
         # Backward compatibility with temporary key naming.
         source "$STATE_DIR/1.state"
         STATE_BROWSER="${BROWSER:-$STATE_BROWSER}"
         STATE_UPNOTE_TILED="${UPNOTE_TILED:-$STATE_UPNOTE_TILED}"
         STATE_TILED_ORDER="${TILED_ORDER:-$STATE_TILED_ORDER}"
+        STATE_ACTIVE_UTILITY_BUNDLE="${ACTIVE_UTILITY_BUNDLE:-$STATE_ACTIVE_UTILITY_BUNDLE}"
+        STATE_ACTIVE_UTILITY_WID="${ACTIVE_UTILITY_WID:-$STATE_ACTIVE_UTILITY_WID}"
     fi
 }
 
@@ -257,6 +309,8 @@ write_state() {
 BROWSER=$STATE_BROWSER
 UPNOTE_TILED=$STATE_UPNOTE_TILED
 TILED_ORDER=$STATE_TILED_ORDER
+ACTIVE_UTILITY_BUNDLE=$STATE_ACTIVE_UTILITY_BUNDLE
+ACTIVE_UTILITY_WID=$STATE_ACTIVE_UTILITY_WID
 EOF
     }
 
@@ -311,6 +365,12 @@ window_x_from_map() {
     local map="$1"
     local wid="$2"
     echo "$map" | awk -F'|' -v w="$wid" '$1==w { print $2; exit }'
+}
+
+window_is_on_screen() {
+    local wid="${1:-}"
+    [[ "$wid" =~ ^[0-9]+$ ]] || return 1
+    [[ -n "$(get_window_x_map "$wid")" ]]
 }
 
 enforce_precedence_order() {
@@ -420,13 +480,11 @@ untile_workspace_windows() {
         done
 }
 
-build_home_core_order_csv() {
+build_tiled_slot_order_csv() {
     local upnote_wid="$1"
     local vscode_wid="$2"
-    local codex_wid="$3"
-    local terminal_wid="$4"
-    local telegram_wid="$5"
-    local browser_wid="$6"
+    local utility_wid="$3"
+    local browser_wid="$4"
     local ordered_wids=()
 
     if [[ -n "$upnote_wid" ]]; then
@@ -435,17 +493,14 @@ build_home_core_order_csv() {
     if [[ -n "$vscode_wid" ]]; then
         ordered_wids+=("$vscode_wid")
     fi
-    if [[ -n "$codex_wid" ]]; then
-        ordered_wids+=("$codex_wid")
-    fi
-    if [[ -n "$terminal_wid" ]]; then
-        ordered_wids+=("$terminal_wid")
-    fi
-    if [[ -n "$telegram_wid" ]]; then
-        ordered_wids+=("$telegram_wid")
-    fi
+
     if [[ -n "$browser_wid" ]]; then
+        if [[ ${#ordered_wids[@]} -lt 2 && -n "$utility_wid" ]]; then
+            ordered_wids+=("$utility_wid")
+        fi
         ordered_wids+=("$browser_wid")
+    elif [[ -n "$utility_wid" ]]; then
+        ordered_wids+=("$utility_wid")
     fi
 
     if [[ ${#ordered_wids[@]} -eq 0 ]]; then
@@ -456,6 +511,24 @@ build_home_core_order_csv() {
     local ordered_csv
     ordered_csv=$(IFS=,; echo "${ordered_wids[*]}")
     echo "$ordered_csv"
+}
+
+build_home_core_order_csv() {
+    local upnote_wid="$1"
+    local vscode_wid="$2"
+    local codex_wid="$3"
+    local terminal_wid="$4"
+    local telegram_wid="$5"
+    local browser_wid="$6"
+    local utility_wid=""
+
+    for utility_wid in "$codex_wid" "$terminal_wid" "$telegram_wid"; do
+        if [[ -n "$utility_wid" ]]; then
+            break
+        fi
+    done
+
+    build_tiled_slot_order_csv "$upnote_wid" "$vscode_wid" "$utility_wid" "$browser_wid"
 }
 
 # Get all home app window IDs
@@ -592,16 +665,214 @@ get_primary_window_for_bundle() {
     get_primary_window_for_bundle_from_snapshot "$snapshot" "$bundle"
 }
 
+get_on_screen_window_for_bundle() {
+    local bundle="${1:-}"
+    local snapshot="${2:-}"
+    local nonpopup_ids=""
+    local any_ids=""
+    local wid
+    [[ -z "$bundle" ]] && return 0
+
+    if [[ -z "$snapshot" ]]; then
+        snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    fi
+
+    nonpopup_ids="$(printf '%s\n' "$snapshot" | awk -F'|' -v b="$bundle" -v re="$POPUP_TITLE_AWK_REGEX" '
+        $2==b && tolower($4) !~ re { print $1 }
+    ' | sort -n)"
+    any_ids="$(printf '%s\n' "$snapshot" | awk -F'|' -v b="$bundle" '$2==b { print $1 }' | sort -n)"
+
+    while IFS= read -r wid; do
+        [[ -z "$wid" ]] && continue
+        if window_is_on_screen "$wid"; then
+            echo "$wid"
+            return 0
+        fi
+    done <<< "$nonpopup_ids"
+
+    while IFS= read -r wid; do
+        [[ -z "$wid" ]] && continue
+        if window_is_on_screen "$wid"; then
+            echo "$wid"
+            return 0
+        fi
+    done <<< "$any_ids"
+}
+
+window_exists_in_snapshot() {
+    local snapshot="${1:-}"
+    local wid="${2:-}"
+    [[ -z "$wid" ]] && return 1
+    printf '%s\n' "$snapshot" | awk -F'|' -v target="$wid" '$1==target { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+get_latest_nonpopup_window_for_bundle_from_snapshot() {
+    local snapshot="${1:-}"
+    local bundle="${2:-}"
+    [[ -z "$bundle" ]] && return 0
+    printf '%s\n' "$snapshot" \
+        | awk -F'|' -v b="$bundle" -v re="$POPUP_TITLE_AWK_REGEX" '
+            $2==b {
+                wid=$1+0
+                title=tolower($4)
+                if (title !~ re && wid > latest_nonpopup) {
+                    latest_nonpopup=wid
+                }
+                if (wid > latest_any) {
+                    latest_any=wid
+                }
+            }
+            END {
+                if (latest_nonpopup) print latest_nonpopup
+                else if (latest_any) print latest_any
+            }
+        '
+}
+
+get_latest_on_screen_window_for_bundle_from_snapshot() {
+    local snapshot="${1:-}"
+    local bundle="${2:-}"
+    local nonpopup_ids=""
+    local any_ids=""
+    local wid=""
+    [[ -z "$bundle" ]] && return 0
+
+    nonpopup_ids="$(printf '%s\n' "$snapshot" | awk -F'|' -v b="$bundle" -v re="$POPUP_TITLE_AWK_REGEX" '
+        $2==b && tolower($4) !~ re { print $1 }
+    ' | sort -nr)"
+    any_ids="$(printf '%s\n' "$snapshot" | awk -F'|' -v b="$bundle" '$2==b { print $1 }' | sort -nr)"
+
+    while IFS= read -r wid; do
+        [[ -z "$wid" ]] && continue
+        if window_is_on_screen "$wid"; then
+            echo "$wid"
+            return 0
+        fi
+    done <<< "$nonpopup_ids"
+
+    while IFS= read -r wid; do
+        [[ -z "$wid" ]] && continue
+        if window_is_on_screen "$wid"; then
+            echo "$wid"
+            return 0
+        fi
+    done <<< "$any_ids"
+}
+
+get_latest_nonpopup_utility_window_from_snapshot() {
+    local snapshot="${1:-}"
+    printf '%s\n' "$snapshot" \
+        | awk -F'|' -v re="$POPUP_TITLE_AWK_REGEX" '
+            function is_utility(bundle) {
+                return (bundle=="com.openai.codex" || bundle=="com.apple.Terminal" || bundle=="com.tdesktop.Telegram")
+            }
+            {
+                wid=$1+0
+                bundle=$2
+                title=tolower($4)
+                if (!is_utility(bundle)) next
+                if (title !~ re && wid > latest_nonpopup) {
+                    latest_nonpopup=wid
+                    latest_nonpopup_bundle=bundle
+                }
+                if (wid > latest_any) {
+                    latest_any=wid
+                    latest_any_bundle=bundle
+                }
+            }
+            END {
+                if (latest_nonpopup) print latest_nonpopup_bundle "|" latest_nonpopup
+                else if (latest_any) print latest_any_bundle "|" latest_any
+            }
+        '
+}
+
+get_latest_on_screen_utility_window_from_snapshot() {
+    local snapshot="${1:-}"
+    local bundle=""
+    local wid=""
+    for bundle in "$CODEX" "$TERMINAL" "$TELEGRAM"; do
+        wid="$(get_latest_on_screen_window_for_bundle_from_snapshot "$snapshot" "$bundle")"
+        if [[ -n "$wid" ]]; then
+            echo "${bundle}|${wid}"
+            return 0
+        fi
+    done
+}
+
+resolve_active_utility_window() {
+    local snapshot="${1:-}"
+    local focused_bundle="${2:-}"
+    local focused_wid="${3:-}"
+    local focused_is_popup="${4:-false}"
+    local selected_bundle=""
+    local selected_wid=""
+    local latest_pair=""
+
+    if [[ -z "$snapshot" ]]; then
+        snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    fi
+
+    latest_pair="$(get_latest_on_screen_utility_window_from_snapshot "$snapshot")"
+    if [[ -n "$latest_pair" ]]; then
+        selected_bundle="$(echo "$latest_pair" | cut -d'|' -f1)"
+        selected_wid="$(echo "$latest_pair" | cut -d'|' -f2)"
+    fi
+
+    if [[ -z "$selected_wid" ]] && is_utility_bundle "$focused_bundle" && [[ "$focused_is_popup" != "true" ]] && [[ "$focused_wid" =~ ^[0-9]+$ ]]; then
+        selected_bundle="$focused_bundle"
+        selected_wid="$focused_wid"
+    fi
+
+    if [[ -z "$selected_wid" ]]; then
+        for selected_bundle in "$CODEX" "$TERMINAL" "$TELEGRAM"; do
+            selected_wid="$(get_latest_nonpopup_window_for_bundle_from_snapshot "$snapshot" "$selected_bundle")"
+            if [[ -n "$selected_wid" ]]; then
+                break
+            fi
+        done
+        if [[ -z "$selected_wid" ]]; then
+            latest_pair="$(get_latest_nonpopup_utility_window_from_snapshot "$snapshot")"
+            if [[ -n "$latest_pair" ]]; then
+                selected_bundle="$(echo "$latest_pair" | cut -d'|' -f1)"
+                selected_wid="$(echo "$latest_pair" | cut -d'|' -f2)"
+            fi
+        fi
+    fi
+
+    echo "${selected_bundle}|${selected_wid}"
+}
+
+sync_active_utility_state_with_windows() {
+    local snapshot="${1:-}"
+    local resolved_bundle=""
+    local resolved_wid=""
+    local resolved_pair=""
+
+    if [[ -z "$snapshot" ]]; then
+        snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    fi
+
+    resolved_pair="$(resolve_active_utility_window "$snapshot")"
+    resolved_bundle="$(echo "$resolved_pair" | cut -d'|' -f1)"
+    resolved_wid="$(echo "$resolved_pair" | cut -d'|' -f2)"
+
+    STATE_ACTIVE_UTILITY_BUNDLE="$resolved_bundle"
+    STATE_ACTIVE_UTILITY_WID="$resolved_wid"
+}
+
 get_active_browser() {
     local resolved=""
+    local snapshot=""
+    snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
     if [[ "$STATE_BROWSER" == "zen" ]]; then
-        resolved="$(get_primary_window_for_bundle "$ZEN")"
+        resolved="$(get_on_screen_window_for_bundle "$ZEN" "$snapshot")"
         if [[ -n "$resolved" ]]; then
             echo "$resolved"
             return 0
         fi
     elif [[ "$STATE_BROWSER" == "safari" ]]; then
-        resolved="$(get_primary_window_for_bundle "$SAFARI")"
+        resolved="$(get_on_screen_window_for_bundle "$SAFARI" "$snapshot")"
         if [[ -n "$resolved" ]]; then
             echo "$resolved"
             return 0
@@ -609,13 +880,13 @@ get_active_browser() {
     fi
 
     # Fallback promotion path if state/browser windows diverged.
-    resolved="$(get_primary_window_for_bundle "$ZEN")"
+    resolved="$(get_on_screen_window_for_bundle "$ZEN" "$snapshot")"
     if [[ -n "$resolved" ]]; then
         STATE_BROWSER="zen"
         echo "$resolved"
         return 0
     fi
-    resolved="$(get_primary_window_for_bundle "$SAFARI")"
+    resolved="$(get_on_screen_window_for_bundle "$SAFARI" "$snapshot")"
     if [[ -n "$resolved" ]]; then
         STATE_BROWSER="safari"
         echo "$resolved"
@@ -626,17 +897,24 @@ get_active_browser() {
 # Sync state with actual window availability
 # Call after get_home_windows() to handle closed apps
 sync_state_with_windows() {
+    local snapshot=""
+    local visible_zen=""
+    local visible_safari=""
+    snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    visible_zen="$(get_on_screen_window_for_bundle "$ZEN" "$snapshot")"
+    visible_safari="$(get_on_screen_window_for_bundle "$SAFARI" "$snapshot")"
+
     # Browser: promote if active one closed
-    if [[ "$STATE_BROWSER" == "zen" && -z "$ZEN_WID" && -n "$SAFARI_WID" ]]; then
+    if [[ "$STATE_BROWSER" == "zen" && -z "$visible_zen" && -n "$visible_safari" ]]; then
         STATE_BROWSER="safari"
         log "Promoted Safari (Zen closed)"
-    elif [[ "$STATE_BROWSER" == "safari" && -z "$SAFARI_WID" && -n "$ZEN_WID" ]]; then
+    elif [[ "$STATE_BROWSER" == "safari" && -z "$visible_safari" && -n "$visible_zen" ]]; then
         STATE_BROWSER="zen"
         log "Promoted Zen (Safari closed)"
-    elif [[ "$STATE_BROWSER" == "zen" && -z "$ZEN_WID" && -z "$SAFARI_WID" ]]; then
+    elif [[ "$STATE_BROWSER" == "zen" && -z "$visible_zen" && -z "$visible_safari" ]]; then
         STATE_BROWSER=""
         log "No browser available"
-    elif [[ "$STATE_BROWSER" == "safari" && -z "$SAFARI_WID" && -z "$ZEN_WID" ]]; then
+    elif [[ "$STATE_BROWSER" == "safari" && -z "$visible_safari" && -z "$visible_zen" ]]; then
         STATE_BROWSER=""
         log "No browser available"
     fi
@@ -646,14 +924,18 @@ sync_state_with_windows() {
         STATE_UPNOTE_TILED="false"
         log "UpNote closed, untiling"
     fi
+
+    sync_active_utility_state_with_windows
 }
 
 # Get the "other" browser that should be hidden
 get_inactive_browser() {
-    if [[ "$STATE_BROWSER" == "zen" && -n "$SAFARI_WID" ]]; then
-        echo "$SAFARI_WID"
-    elif [[ "$STATE_BROWSER" == "safari" && -n "$ZEN_WID" ]]; then
-        echo "$ZEN_WID"
+    local snapshot=""
+    snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    if [[ "$STATE_BROWSER" == "zen" ]]; then
+        get_on_screen_window_for_bundle "$SAFARI" "$snapshot"
+    elif [[ "$STATE_BROWSER" == "safari" ]]; then
+        get_on_screen_window_for_bundle "$ZEN" "$snapshot"
     fi
 }
 
@@ -886,6 +1168,7 @@ show_app() {
 rebuild_workspace() {
     local ws="$1"
     local force="${2:-}"
+    local requested_force="$force"
 
     log "rebuild_workspace $ws (browser=$STATE_BROWSER, upnote=$STATE_UPNOTE_TILED)"
 
@@ -893,7 +1176,13 @@ rebuild_workspace() {
     get_home_windows
 
     # Sync state with actual window availability (handle closed apps)
+    local prev_active_utility_bundle="$STATE_ACTIVE_UTILITY_BUNDLE"
+    local prev_active_utility_wid="$STATE_ACTIVE_UTILITY_WID"
     sync_state_with_windows
+    if [[ "$requested_force" != "force" && ("$STATE_ACTIVE_UTILITY_BUNDLE" != "$prev_active_utility_bundle" || "$STATE_ACTIVE_UTILITY_WID" != "$prev_active_utility_wid") ]]; then
+        force="force"
+        log "rebuild_workspace: forcing full retile for utility owner repair (${prev_active_utility_bundle}:${prev_active_utility_wid} -> ${STATE_ACTIVE_UTILITY_BUNDLE}:${STATE_ACTIVE_UTILITY_WID})"
+    fi
 
     # w1 defaults UpNote visible (but user can close it)
     # Note: UpNote launch on workspace entry handled in switch_ws.sh
@@ -915,15 +1204,28 @@ rebuild_workspace() {
             active_browser_bundle="$browser_wid_bundle"
         fi
     fi
-    local codex_wid="$CODEX_WID"
-    local terminal_wid="$TERMINAL_WID"
-    local telegram_wid="$TELEGRAM_WID"
+    local active_utility_bundle="$STATE_ACTIVE_UTILITY_BUNDLE"
+    local active_utility_wid="$STATE_ACTIVE_UTILITY_WID"
+    local codex_wid=""
+    local terminal_wid=""
+    local telegram_wid=""
+    case "$active_utility_bundle" in
+        "$CODEX")
+            codex_wid="$active_utility_wid"
+            ;;
+        "$TERMINAL")
+            terminal_wid="$active_utility_wid"
+            ;;
+        "$TELEGRAM")
+            telegram_wid="$active_utility_wid"
+            ;;
+    esac
     local primary_upnote_wid=""
     if [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -gt 0 ]]; then
         primary_upnote_wid="${UPNOTE_WIDS[0]}"
     fi
     local target_order_csv=""
-    target_order_csv="$(build_home_core_order_csv "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid")"
+    target_order_csv="$(build_tiled_slot_order_csv "$primary_upnote_wid" "$VSCODE_WID" "$active_utility_wid" "$browser_wid")"
     local ordered_wids=()
     if [[ -n "$target_order_csv" ]]; then
         IFS=',' read -r -a ordered_wids <<< "$target_order_csv"
@@ -997,11 +1299,11 @@ rebuild_workspace() {
         needs_rebuild="true"
         log "rebuild: VSCode on wrong workspace ($vscode_ws != $ws)"
     fi
-    local codex_ws
-    codex_ws=$(echo "$all_ws_info" | grep "^$codex_wid|" | cut -d'|' -f2 || true)
-    if [[ -n "$codex_wid" && "$codex_ws" != "$ws" ]]; then
+    local active_utility_ws
+    active_utility_ws=$(echo "$all_ws_info" | grep "^$active_utility_wid|" | cut -d'|' -f2 || true)
+    if [[ -n "$active_utility_wid" && "$active_utility_ws" != "$ws" ]]; then
         needs_rebuild="true"
-        log "rebuild: Codex on wrong workspace ($codex_ws != $ws)"
+        log "rebuild: active utility on wrong workspace ($active_utility_ws != $ws)"
     fi
     if [[ -n "$browser_wid" ]]; then
         local browser_ws
@@ -1010,18 +1312,6 @@ rebuild_workspace() {
             needs_rebuild="true"
             log "rebuild: browser on wrong workspace ($browser_ws != $ws)"
         fi
-    fi
-    local terminal_ws
-    terminal_ws=$(echo "$all_ws_info" | grep "^$terminal_wid|" | cut -d'|' -f2 || true)
-    if [[ -n "$terminal_wid" && "$terminal_ws" != "$ws" ]]; then
-        needs_rebuild="true"
-        log "rebuild: Terminal on wrong workspace ($terminal_ws != $ws)"
-    fi
-    local telegram_ws
-    telegram_ws=$(echo "$all_ws_info" | grep "^$telegram_wid|" | cut -d'|' -f2 || true)
-    if [[ -n "$telegram_wid" && "$telegram_ws" != "$ws" ]]; then
-        needs_rebuild="true"
-        log "rebuild: Telegram on wrong workspace ($telegram_ws != $ws)"
     fi
     if [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -gt 0 ]]; then
         for upnote_wid in "${UPNOTE_WIDS[@]}"; do
@@ -1050,8 +1340,7 @@ rebuild_workspace() {
         # Reset the entire workspace before reconstructing the core layout.
         untile_workspace_windows "$ws"
 
-        # Retile one-by-one in strict left-to-right precedence.
-        # Precedence: UpNote -> VSCode -> Codex -> Terminal -> Telegram -> Browser
+        # Retile one-by-one in strict left-to-right slot order.
         for wid in "${ordered_wids[@]-}"; do
             if [[ "$wid" == "$browser_wid" ]]; then
                 log "tiling browser $STATE_BROWSER (wid=$browser_wid)"
@@ -1067,7 +1356,7 @@ rebuild_workspace() {
         aerospace flatten-workspace-tree 2>/dev/null || true
         aerospace balance-sizes 2>/dev/null || true
         # Apply sizing only after actual rebuild (not on focus changes)
-        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid" "$terminal_wid" "$telegram_wid"
+        apply_sizing "$ws" "$master_core_order_csv" "$browser_wid" "$primary_upnote_wid"
         enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid"
 
         # Restore captured floating overlays (excluding inactive browsers).
@@ -1085,7 +1374,7 @@ rebuild_workspace() {
         enforce_single_browser_window_in_workspace "$ws" "$browser_wid" "$active_browser_bundle"
         aerospace flatten-workspace-tree 2>/dev/null || true
         aerospace balance-sizes 2>/dev/null || true
-        apply_sizing "$ws" "$browser_wid" "$primary_upnote_wid" "$codex_wid" "$terminal_wid" "$telegram_wid"
+        apply_sizing "$ws" "$master_core_order_csv" "$browser_wid" "$primary_upnote_wid"
         enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid"
 
         restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv"
@@ -1101,25 +1390,21 @@ rebuild_workspace() {
 # Apply column sizing based on layout
 apply_sizing() {
     local ws="$1"
-    local browser_wid="$2"
-    local primary_upnote_wid="$3"
-    local codex_wid="$4"
-    local terminal_wid="$5"
-    local telegram_wid="$6"
+    local slot_csv="${2:-}"
+    local browser_wid="${3:-}"
+    local primary_upnote_wid="${4:-}"
+    local slots=()
 
-    if [[ -z "$browser_wid" ]]; then
-        log "apply_sizing: no browser, skipping"
+    if [[ -z "$slot_csv" ]]; then
+        log "apply_sizing: no slots, skipping"
         return 0
     fi
 
-    if [[ -n "$terminal_wid" || -n "$telegram_wid" ]]; then
-        log "apply_sizing: auxiliary app tiled, keeping balanced widths"
-        return 0
-    fi
+    IFS=',' read -r -a slots <<< "$slot_csv"
 
     local screen_w
     screen_w=$(get_screen_width)
-    log "apply_sizing: screen_w=$screen_w, upnote=$STATE_UPNOTE_TILED, vscode=$VSCODE_WID, codex=$codex_wid"
+    log "apply_sizing: screen_w=$screen_w, slots=$slot_csv"
 
     resize_width_delta() {
         local wid="$1"
@@ -1134,73 +1419,42 @@ apply_sizing() {
         fi
     }
 
-    # 4-column: UpNote + VSCode + Codex + Browser
-    if [[ -n "$primary_upnote_wid" && -n "$VSCODE_WID" && -n "$codex_wid" ]]; then
-        local upnote_delta=$(( (COL4_UPNOTE_PCT - 25) * screen_w / 100 ))
-        local vscode_delta=$(( (COL4_VSCODE_PCT - 25) * screen_w / 100 ))
-        local codex_delta=$(( (COL4_CODEX_PCT - 25) * screen_w / 100 ))
-        local browser_delta=$(( (COL4_BROWSER_PCT - 25) * screen_w / 100 ))
-        log "apply_sizing: 4-col deltas(upnote=$upnote_delta,vscode=$vscode_delta,codex=$codex_delta,browser=$browser_delta)"
-        resize_width_delta "$primary_upnote_wid" "$upnote_delta"
-        resize_width_delta "$VSCODE_WID" "$vscode_delta"
-        resize_width_delta "$codex_wid" "$codex_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    # 3-column: UpNote + VSCode + Browser
-    if [[ -n "$primary_upnote_wid" && -n "$VSCODE_WID" && -z "$codex_wid" ]]; then
-        local upnote_delta=$(( (COL3_UPNOTE_PCT - 33) * screen_w / 100 ))
-        local vscode_delta=$(( (COL3_VSCODE_PCT - 33) * screen_w / 100 ))
-        local browser_delta=$(( (COL3_BROWSER_PCT - 33) * screen_w / 100 ))
-        log "apply_sizing: 3-col(upnote,vscode,browser) deltas(upnote=$upnote_delta,vscode=$vscode_delta,browser=$browser_delta)"
-        resize_width_delta "$primary_upnote_wid" "$upnote_delta"
-        resize_width_delta "$VSCODE_WID" "$vscode_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    # 3-column: UpNote + Codex + Browser
-    if [[ -n "$primary_upnote_wid" && -z "$VSCODE_WID" && -n "$codex_wid" ]]; then
-        local upnote_delta=$(( (COL3_UPNOTE_PCT - 33) * screen_w / 100 ))
-        local codex_delta=$(( (COL3_CODEX_PCT - 33) * screen_w / 100 ))
-        local browser_delta=$(( (COL3_BROWSER_PCT - 33) * screen_w / 100 ))
-        log "apply_sizing: 3-col(upnote,codex,browser) deltas(upnote=$upnote_delta,codex=$codex_delta,browser=$browser_delta)"
-        resize_width_delta "$primary_upnote_wid" "$upnote_delta"
-        resize_width_delta "$codex_wid" "$codex_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    # 3-column: VSCode + Codex + Browser
-    if [[ -z "$primary_upnote_wid" && -n "$VSCODE_WID" && -n "$codex_wid" ]]; then
-        local vscode_delta=$(( (COL3_VSCODE_CODEX_VSCODE_PCT - 33) * screen_w / 100 ))
-        local codex_delta=$(( (COL3_VSCODE_CODEX_CODEX_PCT - 33) * screen_w / 100 ))
-        local browser_delta=$(( (COL3_VSCODE_CODEX_BROWSER_PCT - 33) * screen_w / 100 ))
-        log "apply_sizing: 3-col(vscode,codex,browser) deltas(vscode=$vscode_delta,codex=$codex_delta,browser=$browser_delta)"
-        resize_width_delta "$VSCODE_WID" "$vscode_delta"
-        resize_width_delta "$codex_wid" "$codex_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    # 2-column: VSCode + Browser
-    if [[ -n "$VSCODE_WID" ]]; then
-        local browser_delta=$(( (COL2_BROWSER_PCT - 50) * screen_w / 100 ))
-        log "apply_sizing: 2-col(vscode,browser) browser_delta=$browser_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    # 2-column fallback: Codex + Browser
-    if [[ -n "$codex_wid" ]]; then
-        local browser_delta=$(( (COL2_BROWSER_PCT - 50) * screen_w / 100 ))
-        log "apply_sizing: 2-col(codex,browser) browser_delta=$browser_delta"
-        resize_width_delta "$browser_wid" "$browser_delta"
-        return 0
-    fi
-
-    log "apply_sizing: no matching layout, skipping"
+    case "${#slots[@]}" in
+        0|1)
+            log "apply_sizing: <=1 tiled slot, skipping explicit widths"
+            return 0
+            ;;
+        2)
+            if [[ -n "$browser_wid" && "${slots[1]}" == "$browser_wid" ]]; then
+                local right_delta=$(( (SLOT2_RIGHT_PCT - 50) * screen_w / 100 ))
+                log "apply_sizing: 2-col browser-right delta=$right_delta"
+                resize_width_delta "${slots[1]}" "$right_delta"
+            else
+                log "apply_sizing: 2-col balanced layout, leaving default balance"
+            fi
+            return 0
+            ;;
+        *)
+            local left_delta
+            local middle_delta
+            local right_delta
+            if [[ -n "$primary_upnote_wid" && "${slots[0]}" == "$primary_upnote_wid" ]]; then
+                left_delta=$(( (SLOT3_UPNOTE_LEFT_PCT - 33) * screen_w / 100 ))
+                middle_delta=$(( (SLOT3_UPNOTE_MIDDLE_PCT - 33) * screen_w / 100 ))
+                right_delta=$(( (SLOT3_UPNOTE_RIGHT_PCT - 33) * screen_w / 100 ))
+                log "apply_sizing: 3-col upnote-led deltas(left=$left_delta,middle=$middle_delta,right=$right_delta)"
+            else
+                left_delta=$(( (SLOT3_STANDARD_LEFT_PCT - 33) * screen_w / 100 ))
+                middle_delta=$(( (SLOT3_STANDARD_MIDDLE_PCT - 33) * screen_w / 100 ))
+                right_delta=$(( (SLOT3_STANDARD_RIGHT_PCT - 33) * screen_w / 100 ))
+                log "apply_sizing: 3-col standard deltas(left=$left_delta,middle=$middle_delta,right=$right_delta)"
+            fi
+            resize_width_delta "${slots[0]}" "$left_delta"
+            resize_width_delta "${slots[1]}" "$middle_delta"
+            resize_width_delta "${slots[2]}" "$right_delta"
+            return 0
+            ;;
+    esac
 }
 
 # === Lock Management ===

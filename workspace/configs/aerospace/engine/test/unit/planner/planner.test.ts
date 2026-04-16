@@ -196,6 +196,8 @@ describe("planner", () => {
     ]);
     expect(actions[0]?.reason).toBe("managed-window-open");
     expect(actions[0]?.details.browser).toBe("zen");
+    expect(actions[0]?.details.activeUtilityBundle).toBe("com.apple.Terminal");
+    expect(actions[0]?.details.activeUtilityWindowId).toBe(12000);
   });
 
   it("treats Telegram on_window as a managed non-browser app", () => {
@@ -262,5 +264,7 @@ describe("planner", () => {
     ]);
     expect(actions[0]?.reason).toBe("managed-window-open");
     expect(actions[0]?.details.browser).toBe("zen");
+    expect(actions[0]?.details.activeUtilityBundle).toBe("com.tdesktop.Telegram");
+    expect(actions[0]?.details.activeUtilityWindowId).toBe(12100);
   });
 });

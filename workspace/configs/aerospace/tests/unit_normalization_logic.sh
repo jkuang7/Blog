@@ -92,13 +92,40 @@ UNTILE_OUT="$(printf '%s' "$UNTILE_LINES" | workspace_untile_ids_from_lines)"
 UNTILE_EXPECTED=$'10\n11\n12'
 assert_eq "$UNTILE_OUT" "$UNTILE_EXPECTED" "workspace untile helper includes all workspace windows exactly once"
 
-ORDER_WITH_TERMINAL="$(build_home_core_order_csv "10" "20" "30" "40" "" "50")"
-assert_eq "$ORDER_WITH_TERMINAL" "10,20,30,40,50" "terminal is inserted immediately before the browser in core order"
+ORDER_WITH_BROWSER_CAP="$(build_tiled_slot_order_csv "10" "20" "30" "50")"
+assert_eq "$ORDER_WITH_BROWSER_CAP" "10,20,50" "browser takes the far-right slot when UpNote and VSCode already occupy the left slots"
 
-ORDER_WITH_TELEGRAM="$(build_home_core_order_csv "10" "20" "30" "40" "45" "50")"
-assert_eq "$ORDER_WITH_TELEGRAM" "10,20,30,40,45,50" "telegram is inserted after terminal and before the browser in core order"
+ORDER_WITHOUT_BROWSER="$(build_tiled_slot_order_csv "10" "20" "30" "")"
+assert_eq "$ORDER_WITHOUT_BROWSER" "10,20,30" "utility uses the right slot when browser is absent"
 
-ORDER_NO_TERMINAL="$(build_home_core_order_csv "" "20" "30" "" "" "50")"
-assert_eq "$ORDER_NO_TERMINAL" "20,30,50" "core order stays compact when terminal is absent"
+ORDER_STANDARD_THREE="$(build_tiled_slot_order_csv "" "20" "30" "50")"
+assert_eq "$ORDER_STANDARD_THREE" "20,30,50" "standard three-slot order keeps VSCode left, utility middle, browser right"
+
+ORIGINAL_WINDOW_IS_ON_SCREEN="$(declare -f window_is_on_screen)"
+window_is_on_screen() {
+    case "$1" in
+        41|42|43) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+STATE_ACTIVE_UTILITY_BUNDLE="com.apple.Terminal"
+STATE_ACTIVE_UTILITY_WID="40"
+SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n40|com.apple.Terminal|h_tiles|Old Terminal\n42|com.apple.Terminal|floating|Visible Terminal\n50|app.zen-browser.zen|h_tiles|Zen\n'
+RESOLVED_UTILITY="$(resolve_active_utility_window "$SNAPSHOT")"
+assert_eq "$RESOLVED_UTILITY" "com.apple.Terminal|42" "latest visible utility overrides stale stored utility owner"
+
+STATE_ACTIVE_UTILITY_BUNDLE="com.apple.Terminal"
+STATE_ACTIVE_UTILITY_WID="999"
+FALLBACK_SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n41|com.openai.codex|floating|Codex\n43|com.tdesktop.Telegram|floating|Telegram\n50|app.zen-browser.zen|h_tiles|Zen\n'
+FALLBACK_UTILITY="$(resolve_active_utility_window "$FALLBACK_SNAPSHOT")"
+assert_eq "$FALLBACK_UTILITY" "com.openai.codex|41" "utility resolution respects utility priority across visible utility apps"
+
+window_is_on_screen() { return 1; }
+LATEST_NONVISIBLE_SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n41|com.openai.codex|floating|Codex\n50|app.zen-browser.zen|h_tiles|Zen\n'
+LATEST_NONVISIBLE_UTILITY="$(resolve_active_utility_window "$LATEST_NONVISIBLE_SNAPSHOT")"
+assert_eq "$LATEST_NONVISIBLE_UTILITY" "com.openai.codex|41" "utility resolution falls back to latest non-popup utility when none are on-screen"
+
+eval "$ORIGINAL_WINDOW_IS_ON_SCREEN"
 
 echo "PASS: unit normalization logic"

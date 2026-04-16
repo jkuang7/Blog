@@ -13,6 +13,8 @@ LOG_FILE="$TEST_STATE_DIR/test.log"
 STATE_BROWSER="safari"
 STATE_UPNOTE_TILED="false"
 STATE_TILED_ORDER="11,22,33"
+STATE_ACTIVE_UTILITY_BUNDLE="com.openai.codex"
+STATE_ACTIVE_UTILITY_WID="22"
 write_state "w1"
 
 [[ -f "$STATE_DIR/w1.state" ]] || { echo "FAIL: missing legacy state"; exit 1; }
@@ -22,6 +24,8 @@ read_state "w1"
 [[ "$STATE_BROWSER" == "safari" ]] || { echo "FAIL: expected safari from dual-read"; exit 1; }
 [[ "$STATE_UPNOTE_TILED" == "false" ]] || { echo "FAIL: expected upnote false from dual-read"; exit 1; }
 [[ "$STATE_TILED_ORDER" == "11,22,33" ]] || { echo "FAIL: expected tiled order from dual-read"; exit 1; }
+[[ "$STATE_ACTIVE_UTILITY_BUNDLE" == "com.openai.codex" ]] || { echo "FAIL: expected active utility bundle from dual-read"; exit 1; }
+[[ "$STATE_ACTIVE_UTILITY_WID" == "22" ]] || { echo "FAIL: expected active utility wid from dual-read"; exit 1; }
 
 # v2-only read should work when legacy file is absent.
 rm -f "$STATE_DIR/w1.state"
@@ -36,11 +40,15 @@ cat > "$STATE_DIR/w1.state" <<'EOF'
 BROWSER=zen
 UPNOTE_TILED=true
 TILED_ORDER=4,5,6
+ACTIVE_UTILITY_BUNDLE=com.apple.Terminal
+ACTIVE_UTILITY_WID=5
 EOF
 read_state "w1"
 [[ "$STATE_BROWSER" == "zen" ]] || { echo "FAIL: expected legacy fallback browser"; exit 1; }
 [[ "$STATE_UPNOTE_TILED" == "true" ]] || { echo "FAIL: expected legacy fallback upnote"; exit 1; }
 [[ "$STATE_TILED_ORDER" == "4,5,6" ]] || { echo "FAIL: expected legacy fallback tiled order"; exit 1; }
+[[ "$STATE_ACTIVE_UTILITY_BUNDLE" == "com.apple.Terminal" ]] || { echo "FAIL: expected legacy fallback active utility bundle"; exit 1; }
+[[ "$STATE_ACTIVE_UTILITY_WID" == "5" ]] || { echo "FAIL: expected legacy fallback active utility wid"; exit 1; }
 
 # write mode controls.
 STATE_BROWSER="safari"

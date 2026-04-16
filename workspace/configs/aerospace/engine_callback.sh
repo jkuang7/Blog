@@ -97,6 +97,8 @@ build_planner_context_json() {
     ENGINE_STATE_BROWSER="$STATE_BROWSER" \
     ENGINE_STATE_UPNOTE_TILED="$STATE_UPNOTE_TILED" \
     ENGINE_STATE_TILED_ORDER="$STATE_TILED_ORDER" \
+    ENGINE_STATE_ACTIVE_UTILITY_BUNDLE="$STATE_ACTIVE_UTILITY_BUNDLE" \
+    ENGINE_STATE_ACTIVE_UTILITY_WID="$STATE_ACTIVE_UTILITY_WID" \
     ENGINE_VSCODE_WID="${VSCODE_WID:-}" \
     ENGINE_CODEX_WID="${CODEX_WID:-}" \
     ENGINE_TERMINAL_WID="${TERMINAL_WID:-}" \
@@ -124,6 +126,7 @@ argv_raw = os.environ.get("ENGINE_CALLBACK_ARGV", "")
 state_browser = os.environ.get("ENGINE_STATE_BROWSER", "")
 state_upnote = os.environ.get("ENGINE_STATE_UPNOTE_TILED", "false") == "true"
 tiled_order_raw = os.environ.get("ENGINE_STATE_TILED_ORDER", "")
+active_utility_bundle = os.environ.get("ENGINE_STATE_ACTIVE_UTILITY_BUNDLE", "")
 guard_home = os.environ.get("ENGINE_GUARD_IS_HOME", "false") == "true"
 guard_managed = os.environ.get("ENGINE_GUARD_IS_MANAGED", "false") == "true"
 guard_popup = os.environ.get("ENGINE_GUARD_IS_POPUP", "false") == "true"
@@ -191,6 +194,12 @@ payload = {
         "browser": state_browser if state_browser in {"zen", "safari", ""} else "",
         "upnoteTiled": state_upnote,
         "tiledOrder": tiled_order,
+        "activeUtilityBundle": (
+            active_utility_bundle
+            if active_utility_bundle in {"com.openai.codex", "com.apple.Terminal", "com.tdesktop.Telegram", ""}
+            else ""
+        ),
+        "activeUtilityWindowId": wid("ENGINE_STATE_ACTIVE_UTILITY_WID"),
     },
     "focusedWindow": focused,
     "windows": windows,

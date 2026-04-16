@@ -18,12 +18,15 @@ export type KnownBundleId = (typeof KNOWN_BUNDLE_IDS)[number];
 export type CanonicalWorkspaceId = "w1";
 
 export type BrowserState = "zen" | "safari" | "";
+export type ActiveUtilityBundle = "com.openai.codex" | "com.apple.Terminal" | "com.tdesktop.Telegram" | "";
 
 export interface WorkspaceState {
   workspace: CanonicalWorkspaceId;
   browser: BrowserState;
   upnoteTiled: boolean;
   tiledOrder: number[];
+  activeUtilityBundle: ActiveUtilityBundle;
+  activeUtilityWindowId: number | null;
 }
 
 export type CallbackKind =

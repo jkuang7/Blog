@@ -19,12 +19,20 @@ export const bundleIdSchema = z.string().trim().min(1);
 export const knownBundleIdSchema = z.enum(KNOWN_BUNDLE_IDS);
 
 export const browserStateSchema = z.enum(["zen", "safari", ""]);
+export const activeUtilityBundleSchema = z.enum([
+  "com.openai.codex",
+  "com.apple.Terminal",
+  "com.tdesktop.Telegram",
+  ""
+]);
 
 export const workspaceStateSchema = z.object({
   workspace: canonicalWorkspaceIdSchema,
   browser: browserStateSchema,
   upnoteTiled: z.boolean(),
-  tiledOrder: z.array(z.number().int().nonnegative())
+  tiledOrder: z.array(z.number().int().nonnegative()),
+  activeUtilityBundle: activeUtilityBundleSchema.default(""),
+  activeUtilityWindowId: z.number().int().nonnegative().nullable().default(null)
 });
 
 export const workspaceStateV2Schema = z.object({
@@ -33,6 +41,8 @@ export const workspaceStateV2Schema = z.object({
   browser: browserStateSchema,
   upnoteTiled: z.boolean(),
   tiledOrder: z.array(z.number().int().nonnegative()),
+  activeUtilityBundle: activeUtilityBundleSchema.default(""),
+  activeUtilityWindowId: z.number().int().nonnegative().nullable().default(null),
   updatedAtMs: z.number().int().nonnegative().optional()
 });
 

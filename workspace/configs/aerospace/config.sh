@@ -15,28 +15,20 @@ export UPNOTE="com.getupnote.desktop"
 export STATE_DIR="/tmp/aerospace_state"
 export LOG_FILE="/tmp/aerospace.log"
 
-# === Column Sizes (percentages) ===
-# 2-column layout (w1 without UpNote)
-export COL2_VSCODE_PCT=45
-export COL2_BROWSER_PCT=55
+# === Slot Sizes (percentages) ===
+# At most 3 tiled columns are allowed. Everything else floats.
+export SLOT2_LEFT_PCT=45
+export SLOT2_RIGHT_PCT=55
 
-# 3-column layout (w1 with UpNote, or w2)
-export COL3_UPNOTE_PCT=22
-export COL3_VSCODE_PCT=33
-export COL3_CODEX_PCT=33
-export COL3_BROWSER_PCT=45
+# 3-column layout when UpNote owns the left anchor.
+export SLOT3_UPNOTE_LEFT_PCT=22
+export SLOT3_UPNOTE_MIDDLE_PCT=33
+export SLOT3_UPNOTE_RIGHT_PCT=45
 
-# 3-column layout (w1 without UpNote, with VSCode + Codex + Browser)
-export COL3_VSCODE_CODEX_VSCODE_PCT=30
-export COL3_VSCODE_CODEX_CODEX_PCT=35
-export COL3_VSCODE_CODEX_BROWSER_PCT=35
-
-# 4-column layout (UpNote + VSCode + Codex + Browser)
-# Calibrated from current live layout.
-export COL4_UPNOTE_PCT=25
-export COL4_VSCODE_PCT=25
-export COL4_CODEX_PCT=24
-export COL4_BROWSER_PCT=26
+# 3-column layout without UpNote in the left slot.
+export SLOT3_STANDARD_LEFT_PCT=30
+export SLOT3_STANDARD_MIDDLE_PCT=35
+export SLOT3_STANDARD_RIGHT_PCT=35
 
 # === Workspace Defaults ===
 # w1: Reference mode - UpNote always visible
