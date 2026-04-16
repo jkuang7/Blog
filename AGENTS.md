@@ -15,6 +15,14 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - Assume repos using `eslint-config-jian` already enforce maintainability limits, promise safety, cycle checks, feature/UI boundaries, and no focused tests.
 - Only keep guidance here for contracts agents should satisfy before burning a full lint/verify pass.
 
+## Commit Requests
+
+- Treat worktrees as the default execution surface for new feature/problem work; `main` is the integration target, not the default place to implement changes.
+- When the user says `commit`, treat that as a request to move the conversation-relevant changes onto `main`, not just to create a commit on the current branch.
+- Prefer cherry-picking or otherwise replaying only the relevant changes onto `main` instead of blindly merging unrelated branch state.
+- Resolve merge or cherry-pick conflicts as needed, using the conversation intent and current `main` behavior to decide the correct integration.
+- Be selective and smart about scope: include the changes that satisfy the user request from the conversation, and leave unrelated branch-only work out of the `main` update.
+
 ## Task Start
 
 - Read the nearest project `AGENTS.md` first if one exists.
@@ -24,6 +32,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - If runner graph artifacts exist, use them as the first structural hint before broad repo scanning.
 - Keep full dependency graphs out of normal execution slices; use compact active-slice graph context for execute and reserve full graph reasoning for planning/reseeding.
 - Reuse an already-running app or browser instance before launching a new one when the existing instance is suitable for the task.
+- For a new feature or problem in a repo, start from a worktree by default instead of working directly in the main checkout.
 
 ## Default Definition Of Done
 
