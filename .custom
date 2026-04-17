@@ -42,6 +42,10 @@ export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH"
 export NODE_OPTIONS=--max-http-header-size=32768
 export PATH="$HOME/.local/bin:$PATH"
 
+_codex_mcp_secrets="$CODEX_HOME/config/mcp-secrets.zsh"
+[[ -r "$_codex_mcp_secrets" ]] && source "$_codex_mcp_secrets"
+unset _codex_mcp_secrets
+
 #=======================================
 # General Aliases
 #=======================================
