@@ -1,19 +1,28 @@
 # Runner Prompt Contract
 
+This contract now assumes a deterministic ORX/Linear control plane:
+
+- ORX selects the active or next runnable Linear issue
+- tmux-codex provisions the issue worktree and seeds local runner state from that issue
+- `run_execute.md` and `run_govern.md` operate on that seeded issue/worktree context
+- local runner files are execution continuity, not the canonical task graph
+
 The runner control plane is fully decoupled into three prompts:
 
-1. `/prompts:run_setup`
-2. `/prompts:run_execute`
-3. `/prompts:run_govern`
+1. `/run_setup`
+2. `/run_execute`
+3. `/run_govern`
 
-`cl -> r=runner` must always start with `/prompts:run_execute`.
-It dispatches `/prompts:run_govern` in the same live session when execute explicitly requests semantic task-state changes or when scripted refresh cannot produce the prepared marker and the current model profile is already compatible. Otherwise it relaunches a fresh session for the required update profile.
+`cl -> r=runner` must always start with the rendered `run_execute` prompt body.
+It dispatches the rendered `run_govern` prompt body in the same live session when execute explicitly requests semantic task-state changes or when scripted refresh cannot produce the prepared marker and the current model profile is already compatible. Otherwise it relaunches a fresh session for the required update profile.
+
+Codex custom command files may still be installed for manual use, but the infinite runner must not depend on Codex exposing those commands in the live TUI.
 
 ## Minimal User Flow
 
 From inside the target repo or active worktree:
 
-1. `/prompts:run_setup`
+1. `/run_setup`
 2. approve enablement if setup returns a token
 3. start the runner from `cl` / TUI with `r=runner`
 
@@ -22,23 +31,23 @@ Runner start is intentionally decoupled:
 - it must not run setup
 - it must not clear state
 - it must not auto-approve enablement
-- if setup is missing or not approved, it must fail fast and tell the user to run `/prompts:run_setup`
+- if setup is missing or not approved, it must fail fast and tell the user to run `/run_setup`
 
 ## Prompt Ownership
 
-- `/prompts:run_setup`
+- `/run_setup`
   - clear-then-setup on normal setup runs
   - setup-only on `--approve-enable <token>` reruns
   - creates fresh runner state and a deliberately narrow backlog
   - human reset/rebuild path
   - tmux-codex runtime must not dispatch this autonomously
   - may return an enable approval token
-- `/prompts:run_execute`
+- `/run_execute`
   - execute-only worker prompt
   - one medium bounded phase iteration
   - validate the active surface
   - terminate the session
-- `/prompts:run_govern`
+- `/run_govern`
   - semantic post-execute governor prompt
   - used when execute reported task-state changes that need modeled rewriting or when scripted refresh could not hand off the next cycle
   - performs in-place backlog repair without wiping runner memory
@@ -74,6 +83,14 @@ Deprecated:
 2. `$DEV/Repos/<project>/.memory/RUNNER_CONTEXT.json`
 3. saved runner state discovery (worktree preferred)
 4. `$DEV/Repos/<project>`
+
+Before `cl loop <project>` launches a runner, tmux-codex also asks ORX for the current Linear issue context for that project.
+If ORX returns an active issue or a next runnable issue, tmux-codex must:
+
+1. ensure the issue worktree exists
+2. write the ORX/Linear issue snapshot into the local runner control plane
+3. seed `KANBAN_STATE.json`, `RUNNER_EXEC_CONTEXT.json`, and `RUNNER_HANDOFF.md` from that issue
+4. start the runner inside that issue worktree
 
 ## Setup / Clear
 
@@ -118,11 +135,11 @@ Clear requirements:
 
 ## Execute Contract
 
-`/prompts:run_execute` is the default prompt `r=runner` should drive each cycle.
-`/prompts:run_govern` is conditional and should run only when semantic refresh is required.
-`/prompts:run_setup` is for human reset/rebuild only.
+`run_execute.md` is the default prompt template `r=runner` should drive each cycle.
+`run_govern.md` is conditional and should run only when semantic refresh is required.
+`/run_setup` is for human reset/rebuild only.
 
-`/prompts:run_execute` must:
+`/run_execute` must:
 - read `.memory/runner/runtime/RUNNER_STATE.json`
 - read `RUNNER_EXEC_CONTEXT.json`
 - read `RUNNER_ACTIVE_BACKLOG.json`
@@ -140,7 +157,7 @@ Clear requirements:
 - avoid setup/clear behavior
 - terminate immediately
 
-`/prompts:run_govern` must:
+`/run_govern` must:
 - repair semantic backlog state in `SEAMS.json` / `GAPS.json` and only touch objective wording when objective-level intent truly changes
 - preserve the objective and completed history while repairing the active open backlog in place
 - keep the backlog sharp: one open frontier, explicit blocked follow-ons, and no umbrella tasks that bundle unrelated families
@@ -154,7 +171,7 @@ Clear requirements:
 
 No-progress recovery rule:
 - if a cycle cannot produce durable progress, do not keep retrying the same broad task
-- run `/prompts:run_govern`
+- run `/run_govern`
 - let `run_govern` tighten, split, or reseed the active backlog in place without clearing full runner memory
 - prefer the smallest truthful recovery: tighten blocker first, split only when families are mixed, and reseed only when the task boundary is genuinely wrong
 - treat coupling as a split trigger: if progress would require crossing into a second family or seam, stop widening and let `run_govern` keep that family separate in the next backlog shape
@@ -162,7 +179,7 @@ No-progress recovery rule:
 Graph support:
 - graph generation is controller/script-owned and opt-in per repo via context-pack metadata
 - `runctl --setup` may generate cached graph artifacts for supported repos, but prompts must never generate graph artifacts themselves
-- full graph reasoning belongs to `/prompts:run_setup` and `/prompts:run_govern`, not normal execute cycles
+- full graph reasoning belongs to `/run_setup` and `/run_govern`, not normal execute cycles
 - when graph support is unavailable or stale, runner behavior must fall back to the current non-graph flow without blocking startup
 
 Fail-closed rules:
@@ -180,10 +197,10 @@ Fail-closed rules:
 - resolve the active seam profile at the start of each cycle
 - route `model_profile=mini` to the cheaper execution model and `model_profile=high` to `gpt-5.4` with `high`
 - launch an internal controller per cycle
-- controller dispatches `/prompts:run_execute ...` first
+- controller dispatches the rendered `run_execute` prompt first
 - after execute, controller scripts deterministic refresh itself with `runctl --setup` and `runctl --prepare-cycle` when no semantic update is needed
-- when execute reports `needs_update=yes`, controller dispatches `/prompts:run_govern ...` in the same Codex session when that session already matches the requested update profile; otherwise it relaunches a fresh session for the required profile
-- when scripted refresh fails to produce the prepared marker, controller likewise prefers same-session `/prompts:run_govern ...` to preserve execute context and only relaunches when the update profile is incompatible with the current session
+- when execute reports `needs_update=yes`, controller dispatches the rendered `run_govern` prompt in the same Codex session when that session already matches the requested update profile; otherwise it relaunches a fresh session for the required profile
+- when scripted refresh fails to produce the prepared marker, controller likewise prefers same-session `run_govern` prompt dispatch to preserve execute context and only relaunches when the update profile is incompatible with the current session
 - after govern, controller again scripts deterministic refresh itself with `runctl --setup` and `runctl --prepare-cycle`
 - after scripted refresh or conditional update, controller exits the current Codex session so a fresh TUI session is launched for the next cycle
 - the tmux-codex supervisor archives completed runner threads itself between cycles; prompts must not rely on `::archive`
@@ -196,11 +213,18 @@ Fail-closed rules:
 
 ## Prompt Install Contract
 
-Installed prompts in `~/.codex/prompts`:
+Installed commands in `~/.codex/commands`:
 - `run_setup.md`
 - `run_execute.md`
 - `run_govern.md`
 - `add.md`
+- optional aliases:
+  - `run-setup.md`
+  - `run-execute.md`
+  - `run-govern.md`
+  - `runner-add.md`
+
+Compatibility links may also exist under `~/.codex/prompts`, but the live infinite runner still treats prompt files as deterministic templates and does not require Codex to surface them as slash commands.
 
 Removed legacy prompt files (cleanup only):
 - `run.md`

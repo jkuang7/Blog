@@ -22,6 +22,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - Prefer cherry-picking or otherwise replaying only the relevant changes onto `main` instead of blindly merging unrelated branch state.
 - Resolve merge or cherry-pick conflicts as needed, using the conversation intent and current `main` behavior to decide the correct integration.
 - Be selective and smart about scope: include the changes that satisfy the user request from the conversation, and leave unrelated branch-only work out of the `main` update.
+- Do not clean up, delete, stash-drop, move, or otherwise disturb unrelated branch changes, preserve branches, stashes, worktrees, or local resource directories during commit-to-`main` work unless the user explicitly asks for that cleanup.
 
 ## Task Start
 
@@ -56,6 +57,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - Keep integration and e2e tests in the repo’s dedicated test roots.
 - When a repo has generated context, harness manifests, or structure checks, update them as required by that repo instead of leaving it for the end.
 - Preserve observable behavior during refactors unless the user explicitly asks for behavior change.
+- Delete dummy resources created during testing once they are no longer needed, unless the user explicitly wants them kept.
 
 ## Verify Before Claiming Fixed
 

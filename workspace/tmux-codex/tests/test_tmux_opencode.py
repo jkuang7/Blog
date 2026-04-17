@@ -5,7 +5,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import sys
@@ -26,6 +25,32 @@ class _Result:
 
 
 class TmuxClientTests(unittest.TestCase):
+    def test_list_sessions_hides_orx_session_when_runner_for_same_project_exists(self):
+        client = TmuxClient()
+        client._run = Mock(
+            return_value=_Result(
+                0,
+                stdout="codex-2\norx-tmux-codex-pro-99-main\nrunner-blog\nmisc\n",
+            )
+        )
+
+        sessions = client.list_sessions(prefix="codex")
+
+        self.assertEqual(sessions, ["codex-2", "orx-tmux-codex-pro-99-main", "runner-blog"])
+
+    def test_list_sessions_prefers_runner_over_matching_orx_session(self):
+        client = TmuxClient()
+        client._run = Mock(
+            return_value=_Result(
+                0,
+                stdout="codex-2\norx-tmux-codex-pro-99-main\nrunner-tmux-codex\nmisc\n",
+            )
+        )
+
+        sessions = client.list_sessions(prefix="codex")
+
+        self.assertEqual(sessions, ["codex-2", "runner-tmux-codex"])
+
     def test_create_session_raises_when_new_session_fails(self):
         client = TmuxClient()
         client._run = Mock(
@@ -66,7 +91,7 @@ class TmuxClientTests(unittest.TestCase):
         client = TmuxClient()
         client._run = Mock(side_effect=[_Result(0), _Result(0), _Result(0)])
 
-        ok = client.send_keys("runner-blog", "/prompts:run_govern DEV=x", enter=True, delay_ms=0, force_buffer=True)
+        ok = client.send_keys("runner-blog", "/run_govern DEV=x", enter=True, delay_ms=0, force_buffer=True)
 
         self.assertTrue(ok)
         self.assertEqual(client._run.call_args_list[0].args[0], "load-buffer")
@@ -104,50 +129,59 @@ class SessionMenuRunTests(unittest.TestCase):
 
         self.assertEqual(wrapper.call_count, 2)
 
-    def test_runner_start_bootstraps_gates_before_session_create(self):
+    def test_runner_start_launches_loop_bg_through_main_module(self):
         menu = self._make_menu()
-        menu.tmux.create_session = Mock(return_value="%1")
         menu.tmux.socket = "/tmp/tmux-codex-test.sock"
+        menu.tmux.list_sessions.side_effect = [[], ["runner-Blog"]]
 
         with patch("src.menu.curses.wrapper", return_value=(["Blog"], "high")), patch(
-            "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), True)
-        ) as ensure_gates, patch(
-            "src.menu.inspect_runner_start_state", return_value={"ok": True}
-        ), patch("src.menu.build_runner_paths", return_value=SimpleNamespace(state=object())), patch(
-            "src.menu.resolve_active_seam_execution_profile",
-            return_value={"model_profile": "mini", "model": "gpt-5.4-mini", "reasoning_effort": "medium", "seam_id": "TT-101"},
-        ), patch(
-            "src.menu.make_codex_exec_loop_script", return_value="echo runner"
-        ), patch("src.menu.print") as print_mock:
+            "src.menu.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["python3", "-m", "src.main", "loop-bg", "Blog"],
+                returncode=0,
+                stdout="Started runner-Blog\n",
+                stderr="",
+            ),
+        ) as run_mock, patch("src.menu.print") as print_mock:
             attach_name = menu._start_runner_session()
 
-        ensure_gates.assert_called_once()
-        kwargs = ensure_gates.call_args.kwargs
-        self.assertEqual(kwargs.get("dev"), "/Users/jian/Dev")
-        self.assertEqual(kwargs.get("project"), "Blog")
-        menu.tmux.create_session.assert_called_once()
+        command = run_mock.call_args.args[0]
+        self.assertIn("-m", command)
+        self.assertIn("src.main", command)
+        self.assertIn("loop-bg", command)
+        self.assertIn("Blog", command)
         self.assertEqual(attach_name, "runner-Blog")
-        print_mock.assert_any_call("  Started runner-Blog (mini, gpt-5.4-mini, effort=medium)")
-        print_mock.assert_any_call("    active seam: TT-101")
+        print_mock.assert_any_call("  Started runner-Blog")
 
     def test_runner_start_attaches_first_when_multiple_projects_selected(self):
         menu = self._make_menu()
-        menu.tmux.create_session = Mock(return_value="%1")
         menu.tmux.socket = "/tmp/tmux-codex-test.sock"
+        menu.tmux.list_sessions.side_effect = [
+            [],
+            ["runner-Blog"],
+            ["runner-Blog"],
+            ["runner-Blog", "runner-Shop"],
+        ]
 
         with patch("src.menu.curses.wrapper", return_value=(["Blog", "Shop"], "high")), patch(
-            "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), True)
-        ), patch(
-            "src.menu.inspect_runner_start_state", return_value={"ok": True}
-        ), patch("src.menu.build_runner_paths", return_value=SimpleNamespace(state=object())), patch(
-            "src.menu.resolve_active_seam_execution_profile",
-            return_value={"model_profile": "high", "model": "gpt-5.4", "reasoning_effort": "high", "seam_id": "TT-001"},
-        ), patch(
-            "src.menu.make_codex_exec_loop_script", return_value="echo runner"
+            "src.menu.subprocess.run",
+            side_effect=[
+                subprocess.CompletedProcess(
+                    args=["python3", "-m", "src.main", "loop-bg", "Blog"],
+                    returncode=0,
+                    stdout="Started runner-Blog\n",
+                    stderr="",
+                ),
+                subprocess.CompletedProcess(
+                    args=["python3", "-m", "src.main", "loop-bg", "Shop"],
+                    returncode=0,
+                    stdout="Started runner-Shop\n",
+                    stderr="",
+                ),
+            ],
         ), patch("src.menu.print"):
             attach_name = menu._start_runner_session()
 
-        self.assertEqual(menu.tmux.create_session.call_count, 2)
         self.assertEqual(attach_name, "runner-Blog")
 
     def test_runner_start_skips_project_when_runner_already_active(self):
@@ -265,49 +299,49 @@ class SessionMenuRunTests(unittest.TestCase):
 
             self.assertEqual(state, "pending")
 
-    def test_get_all_projects_counts_pending_tasks_from_resolved_worktree_root(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            dev = Path(tmp)
-            canonical_memory = dev / "Repos" / "Blog" / ".memory"
-            canonical_memory.mkdir(parents=True, exist_ok=True)
-            worktree_root = dev / "worktrees" / "w1" / "Blog"
-            tasks_file = worktree_root / ".memory" / "runner" / "TASKS.json"
-            tasks_file.parent.mkdir(parents=True, exist_ok=True)
-            tasks_file.write_text(
-                '{"tasks":[{"task_id":"TT-1","status":"done"},{"task_id":"TT-2","status":"open"}]}\n',
-                encoding="utf-8",
-            )
+    def test_get_all_projects_reads_queue_depth_from_orx_dashboard(self):
+        tmux = Mock()
+        tmux.list_sessions.return_value = []
+        tmux.get_pane_title.return_value = None
 
-            tmux = Mock()
-            tmux.list_sessions.return_value = []
-            tmux.get_pane_title.return_value = None
+        with patch(
+            "src.menu.fetch_dashboard",
+            return_value={
+                "projects": [
+                    {
+                        "project": {"project_key": "Blog", "assigned_bot": "AlphaBot"},
+                        "queue_depth": 1,
+                        "active_issue_key": "PRO-101",
+                        "health_state": "busy",
+                    }
+                ]
+            },
+        ):
+            menu = SessionMenu(tmux)
+            projects = menu._get_all_projects()
 
-            with patch.dict(os.environ, {"DEV": str(dev)}), patch(
-                "src.menu.resolve_target_project_root",
-                return_value=worktree_root,
-            ):
-                menu = SessionMenu(tmux)
-                projects = menu._get_all_projects()
+        self.assertEqual(projects, [("Blog", 1)])
+        self.assertEqual(menu._runner_picker_detail_text("Blog"), "active PRO-101 | bot AlphaBot")
 
-            self.assertEqual(projects, [("Blog", 1)])
-
-    def test_runner_start_skips_unprepared_project(self):
+    def test_runner_start_reports_launch_failure(self):
         menu = self._make_menu()
-        menu.tmux.create_session = Mock(return_value="%1")
         menu.tmux.socket = "/tmp/tmux-codex-test.sock"
+        menu.tmux.list_sessions.return_value = []
 
         with patch("src.menu.curses.wrapper", return_value=(["Blog"], "high")), patch(
-            "src.menu.ensure_gates_file", return_value=(Path("/tmp/gates.sh"), False)
-        ), patch(
-            "src.menu.inspect_runner_start_state",
-            return_value={"ok": False, "error": "Runner is not set up. Run /prompts:run_setup first."},
+            "src.menu.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["python3", "-m", "src.main", "loop-bg", "Blog"],
+                returncode=1,
+                stdout="",
+                stderr="runner setup failed",
+            ),
         ), patch("src.menu.print") as print_mock:
             attach_name = menu._start_runner_session()
 
         self.assertIsNone(attach_name)
-        menu.tmux.create_session.assert_not_called()
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
-        self.assertIn("Run /prompts:run_setup first", printed)
+        self.assertIn("runner setup failed", printed)
 
     def test_idle_runner_shell_session_is_not_treated_as_running(self):
         menu = self._make_menu()
@@ -666,8 +700,8 @@ class SessionMenuUiTests(unittest.TestCase):
 
         self.assertIsNone(result)
         rendered = "\n".join(fake.lines)
-        self.assertIn("(0 tasks) [done]", rendered)
-        self.assertNotIn("(0 tasks) [running]", rendered)
+        self.assertIn("(queue 0) [done]", rendered)
+        self.assertNotIn("(queue 0) [running]", rendered)
         self.assertNotIn("locked=running", rendered)
         self.assertNotIn("running projects locked", rendered)
 

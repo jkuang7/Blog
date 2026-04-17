@@ -783,14 +783,12 @@ def _build_execute_only_command(
     phase: str,
 ) -> str:
     phase_name = coerce_runner_phase(phase, default="discover")
-    return (
-        f"/prompts:run_execute "
-        f"DEV={dev} "
-        f"PROJECT={project} "
-        f"RUNNER_ID={runner_id} "
-        f"PWD={project_root} "
-        f"PROJECT_ROOT={project_root} "
-        f"PHASE={phase_name}"
+    return _build_runner_dispatch_prompt(
+        prompt_name="run_execute",
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+        phase=phase_name,
     )
 
 
@@ -801,13 +799,81 @@ def _build_update_command(
     runner_id: str,
     project_root: Path,
 ) -> str:
-    return (
-        f"/prompts:run_govern "
-        f"DEV={dev} "
-        f"PROJECT={project} "
-        f"RUNNER_ID={runner_id} "
-        f"PWD={project_root} "
-        f"PROJECT_ROOT={project_root}"
+    return _build_runner_dispatch_prompt(
+        prompt_name="run_govern",
+        project=project,
+        runner_id=runner_id,
+        project_root=project_root,
+        phase=None,
+    )
+
+
+def _prompt_template_path(prompt_name: str) -> Path:
+    return _repo_home() / "prompts" / f"{prompt_name}.md"
+
+
+def _load_prompt_template(prompt_name: str) -> str:
+    return _prompt_template_path(prompt_name).read_text(encoding="utf-8").strip()
+
+
+def _active_issue_dispatch_context(project_root: Path) -> dict[str, str]:
+    kanban_state = read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json")
+    if not isinstance(kanban_state, dict):
+        return {}
+    active_issue = kanban_state.get("active_issue")
+    if not isinstance(active_issue, dict):
+        return {}
+    fields = {
+        "identifier": str(active_issue.get("identifier") or "").strip(),
+        "title": str(active_issue.get("title") or "").strip(),
+        "external_url": str(active_issue.get("external_url") or "").strip(),
+        "project_key": str(active_issue.get("project_key") or "").strip(),
+        "project_name": str(active_issue.get("project_name") or "").strip(),
+        "worktree": str(active_issue.get("worktree") or "").strip(),
+        "branch": str(active_issue.get("branch") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def _build_runner_dispatch_prompt(
+    *,
+    prompt_name: str,
+    project: str,
+    runner_id: str,
+    project_root: Path,
+    phase: str | None,
+) -> str:
+    issue_context = _active_issue_dispatch_context(project_root)
+    header_lines = [
+        f"RUNNER_DISPATCH mode={prompt_name} project={project} runner_id={runner_id}",
+        f"PROJECT_ROOT={project_root}",
+    ]
+    if phase:
+        header_lines.append(f"PHASE={phase}")
+    if issue_context.get("identifier"):
+        header_lines.append(f"LINEAR_ISSUE={issue_context['identifier']}")
+    if issue_context.get("title"):
+        header_lines.append(f"LINEAR_TITLE={issue_context['title']}")
+    if issue_context.get("external_url"):
+        header_lines.append(f"LINEAR_URL={issue_context['external_url']}")
+    if issue_context.get("project_key"):
+        header_lines.append(f"LINEAR_PROJECT={issue_context['project_key']}")
+    if issue_context.get("project_name"):
+        header_lines.append(f"LINEAR_PROJECT_NAME={issue_context['project_name']}")
+    if issue_context.get("worktree"):
+        header_lines.append(f"LINEAR_WORKTREE={issue_context['worktree']}")
+    if issue_context.get("branch"):
+        header_lines.append(f"LINEAR_BRANCH={issue_context['branch']}")
+
+    template = _load_prompt_template(prompt_name)
+    return "\n".join(
+        [
+            *header_lines,
+            "",
+            "Follow the instruction block below exactly.",
+            "",
+            template,
+        ]
     )
 
 
@@ -817,7 +883,14 @@ def _normalize_prompt_capture(text: str) -> str:
 
 
 def _pane_contains_exact_prompt(pane: str, command: str) -> bool:
-    return _normalize_prompt_capture(command) in _normalize_prompt_capture(pane)
+    normalized_command = _normalize_prompt_capture(command)
+    normalized_pane = _normalize_prompt_capture(pane)
+    if normalized_command and normalized_command in normalized_pane:
+        return True
+    first_line = next((line.strip() for line in command.splitlines() if line.strip()), "")
+    if first_line:
+        return first_line in normalized_pane
+    return False
 
 
 def _pane_contains_empty_prompt_args(pane: str, command_anchor: str) -> bool:
@@ -834,7 +907,9 @@ def _pane_contains_direct_runner_prompt_body(pane: str, command: str) -> bool:
     if not normalized or _pane_contains_exact_prompt(pane, command):
         return False
     direct_markers = (
+        "runner_dispatch mode=",
         "runner context from `/prompts:",
+        "runner context from `/run_",
         "use this command to execute exactly one medium bounded infinite-runner work slice.",
         "use this command to refresh infinite-runner state after one execute slice finishes.",
         "## scope first",
@@ -893,14 +968,13 @@ def _submit_runner_prompt(
     submit_attempts: int = 2,
     visible_hold_seconds: float = 0.0,
 ) -> tuple[bool, str | None]:
-    """Stage and submit a slash prompt only after the full command is visible.
+    """Stage and submit one deterministic runner prompt body only after it is visible.
 
-    The interactive Codex TUI can consume the first Enter while the slash prompt
-    is still expanding. If Enter lands before the full command text is present,
-    Codex may submit an empty/default prompt invocation instead of the intended
-    `KEY=value` argument set.
+    Older Codex builds exposed custom slash commands here. Current builds may not,
+    so tmux-codex now treats the prompt files as deterministic templates and
+    injects the rendered body directly into the live Codex session.
     """
-    command_anchor = command.split(" ", 1)[0]
+    command_anchor = next((line.strip() for line in command.splitlines() if line.strip()), "")
 
     if not _ensure_runner_prompt_active(
         tmux=tmux,
@@ -939,7 +1013,7 @@ def _submit_runner_prompt(
             time.sleep(visible_hold_seconds)
 
         if not tmux.press_enter(session_name):
-            return False, "prompt_expand_enter_failed"
+            return False, "prompt_submit_enter_failed"
 
         expansion_ready = False
         bad_expansion = False
@@ -964,7 +1038,7 @@ def _submit_runner_prompt(
                 continue
             return False, "empty_prompt_args_expansion"
 
-        if direct_submission_ready:
+        if direct_submission_ready or "\n" in command:
             return True, None
 
         if not expansion_ready:
@@ -1154,6 +1228,33 @@ def _extract_open_tasks(tasks_file: Path, max_items: int = 40) -> list[str]:
 
 
 def _extract_open_runner_backlog(project_root: Path) -> tuple[list[str], str]:
+    active_backlog_file = project_root / ".memory" / "runner" / "RUNNER_ACTIVE_BACKLOG.json"
+    active_backlog = read_json(active_backlog_file)
+    if isinstance(active_backlog, dict):
+        active_issue = active_backlog.get("kanban")
+        items: list[str] = []
+        if isinstance(active_issue, dict):
+            identifier = str(active_issue.get("active_issue_identifier") or "").strip()
+            title = str(active_issue.get("active_issue_title") or "").strip()
+            if identifier and title:
+                items.append(f"{identifier}: {title}"[:220])
+        raw_entries = active_backlog.get("active_backlog")
+        if isinstance(raw_entries, list):
+            for raw in raw_entries:
+                if not isinstance(raw, dict):
+                    continue
+                task_id = str(raw.get("task_id") or raw.get("identifier") or "").strip()
+                title = str(raw.get("title") or "").strip()
+                if not task_id or not title:
+                    continue
+                entry = f"{task_id}: {title}"[:220]
+                if entry not in items:
+                    items.append(entry)
+                if len(items) >= 4:
+                    break
+        if items:
+            return items, "RUNNER_ACTIVE_BACKLOG.json"
+
     seams_file = project_root / ".memory" / "runner" / "SEAMS.json"
     open_items = _extract_open_tasks(seams_file)
     if open_items:
@@ -1197,6 +1298,8 @@ def _log_line(paths: RunnerStatePaths, message: str) -> None:
 
 def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
     state = read_json(paths.state_file) or {}
+    kanban_state = read_json(paths.kanban_state_json) or {}
+    active_backlog = read_json(paths.active_backlog_json) or {}
 
     def _compact_list(raw: object, *, limit: int = 3, item_chars: int = 140) -> list[str]:
         if not isinstance(raw, list):
@@ -1231,6 +1334,39 @@ def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
         "done_candidate": bool(state.get("done_candidate", False)),
         "done_gate_status": str(state.get("done_gate_status", "pending")).strip(),
         "status": str(state.get("status", "ready")).strip(),
+        "linear_issue": {
+            "identifier": str(
+                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("identifier"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_identifier"))
+                or ""
+            ).strip(),
+            "title": str(
+                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("title"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_title"))
+                or ""
+            ).strip(),
+            "url": str(
+                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("url"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_url"))
+                or ""
+            ).strip(),
+            "project_key": str(
+                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("project_key"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_project_key"))
+                or project
+            ).strip(),
+            "worktree": str(
+                (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("worktree"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_worktree"))
+                or ""
+            ).strip(),
+            "branch": str(
+                (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("branch"))
+                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_branch"))
+                or ""
+            ).strip(),
+        },
+        "active_backlog_top4": active_backlog.get("active_backlog", [])[:4] if isinstance(active_backlog, dict) else [],
     }
     state_context = json.dumps(snapshot, indent=2)
 
@@ -1238,8 +1374,10 @@ def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
 
 Completion protocol:
 - Runner ID: {runner_id}
-- Run scope: /run {project} --runner-id {runner_id}
+- Execution lane: ORX-selected Linear issue for `{project}`
 - Runner state file: {paths.state_file}
+- Kanban state file: {paths.kanban_state_json}
+- Active backlog file: {paths.active_backlog_json}
 - Done lock path: {paths.done_lock}
 - Stop lock path: {paths.stop_lock}
 - Gates file: {paths.gates_file}
@@ -1249,8 +1387,8 @@ Rules:
 2. Update code and tests as needed.
 3. Do not create the done lock early.
 4. Before creating done lock, source .memory/gates.sh and run run_gates.
-5. Only create done lock if run_gates succeeds and .memory/runner/SEAMS.json has zero seams in open|in_progress|blocked.
-6. Use .memory/runner/OBJECTIVE.json, .memory/runner/SEAMS.json, .memory/runner/GAPS.json, .memory/runner/RUNNER_EXEC_CONTEXT.json, .memory/runner/RUNNER_ACTIVE_BACKLOG.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state to respect the current phase goal and active seam. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
+5. Only create done lock if run_gates succeeds and the active ORX/Linear backlog is actually empty for this runner cycle.
+6. Treat ORX + Linear as the source of truth for what this runner should do. Use KANBAN_STATE.json, RUNNER_ACTIVE_BACKLOG.json, RUNNER_EXEC_CONTEXT.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state as derived execution context. Legacy TASKS.json / SEAMS.json files are compatibility inputs, not the planner of record. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
 7. End your response with this exact machine-parsable block:
 RUNNER_UPDATE_START
 {{"summary":"...","completed":["..."],"completed_seam_ids":["TT-..."],"next_seam":"...","next_seam_reason":"...","blockers":["..."],"remaining_gaps":["..."],"done_candidate":false}}
@@ -1684,7 +1822,7 @@ def run_loop_runner(
                 break
 
             if paths.done_lock.exists():
-                _log_line(paths, "Done lock detected; validating gates + SEAMS.json")
+                _log_line(paths, "Done lock detected; validating gates + active ORX/Linear backlog")
                 gates_ok, gates_output = _run_gates(paths.gates_file, project_root, runner_id)
                 open_tasks, backlog_label = _extract_open_runner_backlog(project_root)
                 tasks_ok = len(open_tasks) == 0
@@ -1871,7 +2009,7 @@ def run_loop_runner(
             )
             completion_action = "none"
             if bool(update_payload.get("done_candidate", False)):
-                _log_line(paths, "Done candidate update detected; validating gates + SEAMS.json before lock creation")
+                _log_line(paths, "Done candidate update detected; validating gates + active ORX/Linear backlog before lock creation")
                 gates_ok, gates_output = _run_gates(paths.gates_file, project_root, runner_id)
                 open_tasks, backlog_label = _extract_open_runner_backlog(project_root)
                 tasks_ok = len(open_tasks) == 0
@@ -2613,7 +2751,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                     )
                     _log_line(
                         state_paths,
-                        f"Dispatching /prompts:run_govern for phase={phase} in {session_name}",
+                        f"Dispatching govern prompt for phase={phase} in {session_name}",
                     )
                 sent, dispatch_failure_reason = _submit_runner_prompt(
                     tmux=tmux,
@@ -2653,7 +2791,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         )
                         _log_line(
                             state_paths,
-                            f"Dispatched /prompts:run_govern for phase={phase}; waiting for prepared marker before fresh restart",
+                            f"Dispatched govern prompt for phase={phase}; waiting for prepared marker before fresh restart",
                         )
                     else:
                         _log_line(
@@ -2684,7 +2822,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         )
                         _log_line(
                             state_paths,
-                            f"Failed to dispatch /prompts:run_govern for phase={phase} in {session_name} reason={dispatch_failure_reason or 'unknown'}",
+                            f"Failed to dispatch govern prompt for phase={phase} in {session_name} reason={dispatch_failure_reason or 'unknown'}",
                         )
                     else:
                         _log_line(

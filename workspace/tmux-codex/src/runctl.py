@@ -64,8 +64,15 @@ def _prompt_source_dir() -> Path:
     return _repo_home() / "prompts"
 
 
+def _codex_home() -> Path:
+    override = os.environ.get("CODEX_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".codex"
+
+
 def _prompt_install_dir() -> Path:
-    return Path.home() / ".codex" / "prompts"
+    return _codex_home() / "commands"
 
 
 def _validate_runner_prompt_install() -> str | None:
@@ -77,28 +84,28 @@ def _validate_runner_prompt_install() -> str | None:
         source = source_dir / f"{prompt_name}.md"
         installed = install_dir / f"{prompt_name}.md"
         if not source.exists():
-            return f"Canonical runner prompt missing: {source}"
+            return f"Canonical runner command missing: {source}"
         if not installed.exists():
             return (
-                f"Installed runner prompt missing: {installed}. "
-                f"Reinstall runner prompts with `{install_cmd}`."
+                f"Installed runner command missing: {installed}. "
+                f"Reinstall runner commands with `{install_cmd}`."
             )
         if not installed.is_symlink():
             return (
-                f"Installed runner prompt is not linked to canonical source: {installed}. "
-                f"Reinstall runner prompts with `{install_cmd}`."
+                f"Installed runner command is not linked to canonical source: {installed}. "
+                f"Reinstall runner commands with `{install_cmd}`."
             )
         try:
             resolved = installed.resolve(strict=True)
         except OSError:
             return (
-                f"Installed runner prompt link is broken: {installed}. "
-                f"Reinstall runner prompts with `{install_cmd}`."
+                f"Installed runner command link is broken: {installed}. "
+                f"Reinstall runner commands with `{install_cmd}`."
             )
         if resolved != source.resolve():
             return (
-                f"Installed runner prompt points at the wrong source: {installed} -> {resolved}. "
-                f"Reinstall runner prompts with `{install_cmd}`."
+                f"Installed runner command points at the wrong source: {installed} -> {resolved}. "
+                f"Reinstall runner commands with `{install_cmd}`."
             )
     return None
 
@@ -115,12 +122,12 @@ def _repair_runner_prompt_install() -> str | None:
             text=True,
         )
     except OSError as exc:
-        return f"Runner prompt auto-install failed while running `{install_cmd}`: {exc}"
+        return f"Runner command auto-install failed while running `{install_cmd}`: {exc}"
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "").strip()
         if detail:
-            return f"Runner prompt auto-install failed while running `{install_cmd}`: {detail}"
-        return f"Runner prompt auto-install failed while running `{install_cmd}` with exit code {exc.returncode}."
+            return f"Runner command auto-install failed while running `{install_cmd}`: {detail}"
+        return f"Runner command auto-install failed while running `{install_cmd}` with exit code {exc.returncode}."
 
     validation_error = _validate_runner_prompt_install()
     if validation_error:
@@ -135,13 +142,13 @@ def _ensure_runner_prompt_install() -> str | None:
     validation_error = _validate_runner_prompt_install()
     if validation_error is None:
         return None
-    if validation_error.startswith("Canonical runner prompt missing:"):
+    if validation_error.startswith("Canonical runner command missing:"):
         return validation_error
     return _repair_runner_prompt_install()
 
 
 def ensure_runner_prompt_install() -> str | None:
-    """Validate installed runner prompts and auto-repair symlink drift when possible."""
+    """Validate installed runner commands and auto-repair symlink drift when possible."""
     return _ensure_runner_prompt_install()
 
 
@@ -181,6 +188,8 @@ def _resolve_project_context(
 ) -> tuple[str, Path]:
     if project_root_override:
         project_root = Path(project_root_override).expanduser().resolve()
+        if explicit and not _is_path_like_explicit(explicit):
+            return explicit, project_root
         return project_root.name, project_root
 
     if explicit:
@@ -665,6 +674,7 @@ def _sync_runner_handoff_file(
     selected_task: dict[str, Any] | None,
     phase_goal: str,
     project_root: Path,
+    kanban_state: dict[str, Any] | None = None,
 ) -> None:
     objective_title = _normalize_objective_title(_as_text(prd_payload.get("title"))) or _as_text(state.get("current_goal"))
     next_task_id = _as_text(state.get("active_seam_id")) or _as_text(state.get("next_task_id"))
@@ -704,6 +714,8 @@ def _sync_runner_handoff_file(
     blockers = [str(item).strip() for item in state.get("blockers", []) if str(item).strip()]
     open_items = _extract_open_tasks_from_payload(tasks_payload, max_items=8)
     selected_title = _as_text(selected_task.get("title")) if isinstance(selected_task, dict) else next_task
+    kanban_state = kanban_state if isinstance(kanban_state, dict) else {}
+    active_issue = kanban_state.get("active_issue") if isinstance(kanban_state.get("active_issue"), dict) else {}
     lines = [
         f"# Runner Handoff ({project_root.name})",
         "",
@@ -721,6 +733,16 @@ def _sync_runner_handoff_file(
         f"- Next task: {' '.join(part for part in (next_task_id, next_task or selected_title) if part).strip() or '(none)'}",
         f"- Why next: {next_task_reason or '(none)'}",
     ]
+    if active_issue:
+        lines.extend(
+            [
+                f"- Linear issue: {' '.join(part for part in (_as_text(active_issue.get('identifier')), _as_text(active_issue.get('title'))) if part).strip() or '(none)'}",
+                f"- Linear link: {_as_text(active_issue.get('external_url')) or _as_text(active_issue.get('url')) or '(none)'}",
+                f"- Project key: {_as_text(active_issue.get('project_key')) or _as_text(active_issue.get('repo')) or '(none)'}",
+                f"- Worktree: {_as_text(active_issue.get('worktree')) or '(none)'}",
+                f"- Branch: {_as_text(active_issue.get('branch')) or '(none)'}",
+            ]
+        )
     if model_profile:
         lines.append(f"- Model profile: {model_profile}")
     if profile_reason:
@@ -878,8 +900,15 @@ def _write_active_backlog_view(
         "kanban": {
             "mode": _as_text(kanban_state.get("mode")) or None,
             "phase": _as_text(kanban_state.get("phase")) or None,
+            "active_issue_identifier": _as_text(active_issue.get("identifier")) or None,
+            "active_issue_title": _as_text(active_issue.get("title")) or None,
             "active_issue_url": _as_text(active_issue.get("url")) or None,
+            "active_issue_external_url": _as_text(active_issue.get("external_url")) or None,
             "active_issue_repo": _as_text(active_issue.get("repo")) or None,
+            "active_issue_project_key": _as_text(active_issue.get("project_key")) or None,
+            "active_issue_project_name": _as_text(active_issue.get("project_name")) or None,
+            "active_issue_branch": _as_text(active_issue.get("branch")) or None,
+            "active_issue_worktree": _as_text(active_issue.get("worktree")) or None,
             "continue_until": _as_text(loop_state.get("continue_until")) or None,
         },
         "active_backlog": _build_active_backlog_entries(
@@ -916,6 +945,41 @@ def _normalize_objective_title(raw: str) -> str:
             title = _normalize_line(suffix)
             break
     return title
+
+
+def _active_issue_seed_context(kanban_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(kanban_state, dict):
+        return None
+    active_issue = kanban_state.get("active_issue")
+    if not isinstance(active_issue, dict):
+        return None
+    identifier = _as_text(active_issue.get("identifier"))
+    title = _normalize_objective_title(_as_text(active_issue.get("title")))
+    if not identifier and not title:
+        return None
+    issue_label = " ".join(part for part in (identifier, title) if part).strip()
+    description_lines = _compact_lines(_as_text(active_issue.get("description")), limit=3, line_chars=180)
+    project_key = _as_text(active_issue.get("project_key")) or _as_text(active_issue.get("repo"))
+    worktree = _as_text(active_issue.get("worktree"))
+    branch = _as_text(active_issue.get("branch"))
+    constraints = []
+    if project_key:
+        constraints.append(f"Linear project context must remain in `{project_key}`.")
+    if worktree:
+        constraints.append(f"Execute in worktree `{worktree}`.")
+    if branch:
+        constraints.append(f"Stay on branch `{branch}`.")
+    scope_in = [f"Execute Linear issue {issue_label or identifier or title}."]
+    scope_in.extend(description_lines[:2])
+    success_criteria = [f"Advance {issue_label or identifier or title} with code and validation evidence."]
+    if description_lines:
+        success_criteria.append(f"Honor the current ticket context: {description_lines[0]}")
+    return {
+        "objective_title": issue_label or title or identifier,
+        "scope_in": scope_in,
+        "success_criteria": success_criteria,
+        "constraints": constraints,
+    }
 
 
 def _task_priority_rank(priority: str) -> int:
@@ -1382,15 +1446,23 @@ def _harden_task_completion_contract(
 
 
 def _default_prd(state: dict[str, Any], *, project: str, project_root: Path) -> dict[str, Any]:
-    title = _normalize_objective_title(_as_text(state.get("current_goal"))) or f"{project} runner objective"
+    issue_context = _active_issue_seed_context(read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json"))
+    title = issue_context["objective_title"] if issue_context else (
+        _normalize_objective_title(_as_text(state.get("current_goal"))) or f"{project} runner objective"
+    )
     objective_id = _as_text(state.get("objective_id")) or _new_objective_id()
+    scope_in = issue_context["scope_in"] if issue_context else [f"Seed concrete TT-001.. tasks from the active objective: {title}"]
+    success_criteria = issue_context["success_criteria"] if issue_context else [f"TT-001 names the first concrete slice for {title}"]
+    constraints = ["Single runner_id=main", "Worktree/root scope must remain fixed"]
+    if issue_context:
+        constraints.extend(issue_context["constraints"])
     return {
         "objective_id": objective_id,
         "title": title,
-        "scope_in": [f"Seed concrete TT-001.. tasks from the active objective: {title}"],
+        "scope_in": scope_in,
         "scope_out": ["Unscoped feature work not represented in TASKS.json"],
-        "success_criteria": [f"TT-001 names the first concrete slice for {title}"],
-        "constraints": ["Single runner_id=main", "Worktree/root scope must remain fixed"],
+        "success_criteria": success_criteria,
+        "constraints": constraints,
         "project_root": str(project_root.resolve()),
         "updated_at": utc_now(),
     }
@@ -1402,14 +1474,21 @@ def _default_objective_payload(
     project: str,
     project_root: Path,
 ) -> dict[str, Any]:
-    title = _normalize_objective_title(_as_text(state.get("current_goal"))) or f"{project} runner objective"
+    issue_context = _active_issue_seed_context(read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json"))
+    title = issue_context["objective_title"] if issue_context else (
+        _normalize_objective_title(_as_text(state.get("current_goal"))) or f"{project} runner objective"
+    )
     objective_id = _as_text(state.get("objective_id")) or _new_objective_id()
+    success_criteria = issue_context["success_criteria"] if issue_context else [f"Complete the prepared seams for {title} and pass final closeout gates."]
+    constraints = ["Single runner_id=main", "Worktree/root scope must remain fixed"]
+    if issue_context:
+        constraints.extend(issue_context["constraints"])
     return {
         "objective_id": objective_id,
         "title": title,
         "goal_summary": title,
-        "success_criteria": [f"Complete the prepared seams for {title} and pass final closeout gates."],
-        "constraints": ["Single runner_id=main", "Worktree/root scope must remain fixed"],
+        "success_criteria": success_criteria,
+        "constraints": constraints,
         "non_goals": ["Unscoped feature work outside the prepared seam backlog"],
         "completion_gate": "Final done-closeout `run_gates` passes after required seams complete.",
         "project_root": str(project_root.resolve()),
@@ -2684,9 +2763,20 @@ def _write_exec_context(
         "kanban_mode": _as_text(kanban_state.get("mode")) or None,
         "kanban_phase": _as_text(kanban_state.get("phase")) or None,
         "kanban_continue_until": _as_text(kanban_loop.get("continue_until")) or None,
+        "kanban_active_issue_identifier": _as_text(active_issue.get("identifier")) or None,
+        "kanban_active_issue_title": _as_text(active_issue.get("title")) or None,
         "kanban_active_issue_url": _as_text(active_issue.get("url")) or None,
+        "kanban_active_issue_external_url": _as_text(active_issue.get("external_url")) or None,
         "kanban_active_issue_repo": _as_text(active_issue.get("repo")) or None,
+        "kanban_active_issue_project_key": _as_text(active_issue.get("project_key")) or None,
+        "kanban_active_issue_project_name": _as_text(active_issue.get("project_name")) or None,
+        "kanban_active_issue_linear_id": _as_text(active_issue.get("linear_id")) or None,
+        "kanban_active_issue_state_name": _as_text(active_issue.get("state_name")) or None,
+        "kanban_active_issue_state_type": _as_text(active_issue.get("state_type")) or None,
+        "kanban_active_issue_description": _as_text(active_issue.get("description")) or None,
         "kanban_checkout_root": _as_text(active_checkout.get("repo_root")) or None,
+        "kanban_checkout_worktree": _as_text(active_checkout.get("worktree")) or None,
+        "kanban_checkout_branch": _as_text(active_checkout.get("branch")) or None,
         "kanban_session_key": _as_text(telegram_state.get("session_key")) or None,
         "project_root": str(project_root.resolve()),
         "target_branch": target_branch or None,
@@ -3062,10 +3152,11 @@ def create_runner_state(
     active_checkout = kanban_state.get("active_checkout")
     if not isinstance(active_checkout, dict):
         active_checkout = {}
+    active_issue = kanban_state.get("active_issue") if isinstance(kanban_state.get("active_issue"), dict) else {}
     active_checkout = {
-        "repo_root": str(project_root),
+        "repo_root": _as_text(active_issue.get("repo_root")) or str(project_root),
         "worktree": str(project_root),
-        "branch": _as_text(git_context.get("git_branch")) or active_checkout.get("branch"),
+        "branch": _as_text(active_issue.get("branch")) or _as_text(git_context.get("git_branch")) or active_checkout.get("branch"),
     }
     if kanban_state.get("active_checkout") != active_checkout:
         kanban_state["active_checkout"] = active_checkout
@@ -3527,6 +3618,7 @@ def create_runner_state(
         selected_task=selected_task if isinstance(selected_task, dict) else None,
         phase_goal=phase_goal,
         project_root=project_root,
+        kanban_state=kanban_state,
     )
     _write_active_backlog_view(
         paths=paths,
@@ -3625,7 +3717,7 @@ def create_runner_state(
             runtime_policy={
                 "runner_mode": "exec",
                 "session_strategy": "fresh_session",
-                "task_source": "github_mcp_project_issues",
+                "task_source": "orx_linear_project_issues",
                 "kanban_enabled": True,
                 "completion_policy": "tasks_done_and_gates_green",
             },
@@ -3744,7 +3836,7 @@ def _inspect_runner_start_state(
     if not isinstance(state, dict):
         return {
             "ok": False,
-            "error": "Runner is not prepared. Run /prompts:run_setup first to compile the objective bundle.",
+            "error": "Runner is not prepared. Run /run_setup first to compile the objective bundle.",
             "project": project,
             "runner_id": runner_id,
             "project_root": str(resolved_root),
@@ -3758,7 +3850,7 @@ def _inspect_runner_start_state(
             "ok": False,
             "error": (
                 "Runner objective bundle is missing or invalid. "
-                "Run /prompts:run_setup first to prepare OBJECTIVE.json, SEAMS.json, and GAPS.json."
+                "Run /run_setup first to prepare OBJECTIVE.json, SEAMS.json, and GAPS.json."
             ),
             "project": project,
             "runner_id": runner_id,
@@ -3794,7 +3886,7 @@ def _inspect_runner_start_state(
         return {
             "ok": False,
             "error": (
-                "Runner is not enabled. Run /prompts:run_setup and approve enablement before starting."
+                "Runner is not enabled. Run /run_setup and approve enablement before starting."
                 f"{token_hint}"
             ),
             "project": project,
@@ -3833,11 +3925,11 @@ def _inspect_runner_start_state(
         if source == "runner_no_progress":
             error_text = (
                 "Runner is paused because the last cycle made no durable progress. "
-                "Run /prompts:run_setup again after narrowing the blocker before starting."
+                "Run /run_setup again after narrowing the blocker before starting."
             )
         else:
             error_text = (
-                "Runner stop lock is present. Clear the stop condition with /prompts:run_setup before starting."
+                "Runner stop lock is present. Clear the stop condition with /run_setup before starting."
             )
         reason = _as_text(stop_meta.get("reason"))
         if reason:
@@ -3880,7 +3972,7 @@ def _inspect_runner_start_state(
             )
         return {
             "ok": False,
-            "error": "Runner state is missing next-task info. Run /prompts:run_setup again.",
+            "error": "Runner state is missing next-task info. Run /run_setup again.",
             "project": project,
             "runner_id": runner_id,
             "project_root": str(resolved_root),
@@ -3913,7 +4005,7 @@ def _inspect_runner_start_state(
             )
         return {
             "ok": False,
-            "error": f"Runner seam {next_task_id} is missing from SEAMS.json. Run /prompts:run_setup again.",
+            "error": f"Runner seam {next_task_id} is missing from SEAMS.json. Run /run_setup again.",
             "project": project,
             "runner_id": runner_id,
             "project_root": str(resolved_root),
@@ -4572,10 +4664,6 @@ def run(argv: list[str]) -> int:
 
     if args.project and args.project_arg:
         _err("ERROR: provide either --project or positional project, not both")
-        return 1
-
-    if args.project_root and (args.project or args.project_arg):
-        _err("ERROR: provide either --project/positional project or --project-root, not both")
         return 1
 
     if args.task and (args.setup or args.clear or args.prepare_cycle or args.approve_enable or args.confirm):

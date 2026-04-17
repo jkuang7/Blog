@@ -419,11 +419,7 @@ class LoopScriptTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 1)
             first_command = submit_prompt.call_args.kwargs["command"]
-            self.assertIn("/prompts:run_execute", first_command)
-            self.assertIn(f"DEV={dev}", first_command)
-            self.assertIn("PROJECT=blog", first_command)
-            self.assertIn(f"PROJECT_ROOT={project_root}", first_command)
-            self.assertIn("RUNNER_ID=main", first_command)
+            self.assertTrue(first_command.startswith("RUNNER_DISPATCH mode=run_execute"))
             self.assertIn("PHASE=implement", first_command)
             self.assertTrue(tmux_instance.send_eof.called)
             state = read_json(paths.state_file)
@@ -521,8 +517,8 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 2)
-            self.assertIn("/prompts:run_execute", submit_prompt.call_args_list[0].kwargs["command"])
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args_list[1].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_execute", submit_prompt.call_args_list[0].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args_list[1].kwargs["command"])
             self.assertTrue(tmux_instance.send_eof.called)
             state = read_json(paths.state_file)
             self.assertEqual(state.get("status"), "ready")
@@ -606,8 +602,8 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 2)
-            self.assertIn("/prompts:run_execute", submit_prompt.call_args_list[0].kwargs["command"])
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args_list[1].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_execute", submit_prompt.call_args_list[0].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args_list[1].kwargs["command"])
             self.assertTrue(tmux_instance.send_eof.called)
             scripted_refresh.assert_called_once()
             state = read_json(paths.state_file)
@@ -695,8 +691,8 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 2)
-            self.assertIn("/prompts:run_execute", submit_prompt.call_args_list[0].kwargs["command"])
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args_list[1].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_execute", submit_prompt.call_args_list[0].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args_list[1].kwargs["command"])
             scripted_refresh.assert_called_once()
             ledger_events = [
                 json.loads(line)
@@ -777,8 +773,8 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 2)
-            self.assertIn("/prompts:run_execute", submit_prompt.call_args_list[0].kwargs["command"])
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args_list[1].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_execute", submit_prompt.call_args_list[0].kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args_list[1].kwargs["command"])
             self.assertTrue(tmux_instance.send_eof.called)
             scripted_refresh.assert_called_once()
             state = read_json(paths.state_file)
@@ -842,7 +838,7 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 1)
-            self.assertIn("/prompts:run_execute", submit_prompt.call_args.kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_execute", submit_prompt.call_args.kwargs["command"])
             self.assertTrue(tmux_instance.send_eof.called)
             scripted_refresh.assert_not_called()
             state = read_json(paths.state_file)
@@ -926,7 +922,7 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 1)
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args.kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args.kwargs["command"])
             scripted_refresh.assert_called_once()
             self.assertTrue(tmux_instance.send_eof.called)
             state = read_json(paths.state_file)
@@ -1001,7 +997,7 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 1)
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args.kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args.kwargs["command"])
             scripted_refresh.assert_called_once()
             self.assertTrue(tmux_instance.send_eof.called)
             state = read_json(paths.state_file)
@@ -1077,7 +1073,7 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             self.assertEqual(submit_prompt.call_count, 1)
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args.kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args.kwargs["command"])
             self.assertEqual(scripted_refresh.call_count, 2)
             self.assertTrue(tmux_instance.send_eof.called)
             self.assertFalse(paths.stop_lock.exists())
@@ -1154,7 +1150,7 @@ class LoopScriptTests(unittest.TestCase):
 
             self.assertEqual(rc, 1)
             self.assertEqual(submit_prompt.call_count, 1)
-            self.assertIn("/prompts:run_govern", submit_prompt.call_args.kwargs["command"])
+            self.assertIn("RUNNER_DISPATCH mode=run_govern", submit_prompt.call_args.kwargs["command"])
             scripted_refresh.assert_called_once()
             self.assertTrue(tmux_instance.send_eof.called)
             state = read_json(paths.state_file)
@@ -1176,32 +1172,26 @@ class LoopScriptTests(unittest.TestCase):
 
     def test_submit_runner_prompt_retries_after_empty_placeholder_expansion(self):
         tmux_instance = unittest.mock.Mock()
-        command = (
-            "/prompts:run_govern "
-            "DEV=/tmp/dev "
-            "PROJECT=blog "
-            "RUNNER_ID=main "
-            "PWD=/tmp/dev/Repos/blog "
-            "PROJECT_ROOT=/tmp/dev/Repos/blog"
-        )
+        command = "/run_govern"
         tmux_instance.clear_prompt_line.return_value = True
         tmux_instance.send_keys.return_value = True
         tmux_instance.press_enter.side_effect = [True, True, True]
         tmux_instance.send_escape.return_value = True
         tmux_instance.capture_pane.side_effect = [
             f"OpenAI Codex\n› {command}\n",
-            'OpenAI Codex\n/prompts:run_govern DEV="" PROJECT="" RUNNER_ID="" PWD="" PROJECT_ROOT="" send saved prompt\n',
+            'OpenAI Codex\n/run_govern DEV="" PROJECT="" RUNNER_ID="" PWD="" PROJECT_ROOT="" send saved prompt\n',
             f"OpenAI Codex\n› {command}\n",
-            "OpenAI Codex\n/prompts:run_govern send saved prompt\n",
+            "OpenAI Codex\n/run_govern send saved prompt\n",
         ]
 
-        ok, reason = _submit_runner_prompt(
-            tmux=tmux_instance,
-            session_name="runner-blog",
-            command=command,
-            settle_attempts=1,
-            settle_delay_seconds=0,
-        )
+        with patch("src.runner_loop._ensure_runner_prompt_active", return_value=True):
+            ok, reason = _submit_runner_prompt(
+                tmux=tmux_instance,
+                session_name="runner-blog",
+                command=command,
+                settle_attempts=1,
+                settle_delay_seconds=0,
+            )
 
         self.assertTrue(ok)
         self.assertIsNone(reason)
@@ -1210,12 +1200,12 @@ class LoopScriptTests(unittest.TestCase):
         second_kwargs = tmux_instance.send_keys.call_args_list[1].kwargs
         self.assertTrue(first_kwargs["force_buffer"])
         self.assertTrue(second_kwargs["force_buffer"])
-        self.assertEqual(tmux_instance.press_enter.call_count, 2)
+        self.assertEqual(tmux_instance.press_enter.call_count, 3)
         self.assertEqual(tmux_instance.send_escape.call_count, 2)
 
     def test_submit_runner_prompt_activates_prompt_before_typing(self):
         tmux_instance = unittest.mock.Mock()
-        command = "/prompts:run_execute DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog PHASE=implement"
+        command = "/run_execute PHASE=implement"
         tmux_instance.clear_prompt_line.return_value = True
         tmux_instance.send_keys.return_value = True
         tmux_instance.press_enter.side_effect = [True, True]
@@ -1224,7 +1214,7 @@ class LoopScriptTests(unittest.TestCase):
             "OpenAI Codex\nNotes panel still focused\n",
             "OpenAI Codex\n› Run /review on my current changes\n",
             f"OpenAI Codex\n› {command}\n",
-            "OpenAI Codex\n/prompts:run_execute send saved prompt\n",
+            "OpenAI Codex\n/run_execute send saved prompt\n",
         ]
 
         ok, reason = _submit_runner_prompt(
@@ -1242,7 +1232,7 @@ class LoopScriptTests(unittest.TestCase):
 
     def test_submit_runner_prompt_fails_closed_when_prompt_never_activates(self):
         tmux_instance = unittest.mock.Mock()
-        command = "/prompts:run_govern DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog"
+        command = "/run_govern"
         tmux_instance.send_escape.return_value = True
         tmux_instance.capture_pane.side_effect = [
             "OpenAI Codex\nSide panel active\n",
@@ -1269,7 +1259,7 @@ class LoopScriptTests(unittest.TestCase):
 
     def test_submit_runner_prompt_reports_saved_prompt_expansion_failure_reason(self):
         tmux_instance = unittest.mock.Mock()
-        command = "/prompts:run_govern DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog"
+        command = "/run_govern"
         tmux_instance.clear_prompt_line.return_value = True
         tmux_instance.send_keys.return_value = True
         tmux_instance.press_enter.return_value = True
@@ -1295,7 +1285,7 @@ class LoopScriptTests(unittest.TestCase):
 
     def test_submit_runner_prompt_accepts_direct_runner_prompt_submission_without_saved_prompt_banner(self):
         tmux_instance = unittest.mock.Mock()
-        command = "/prompts:run_execute DEV=/tmp/dev PROJECT=blog RUNNER_ID=main PWD=/tmp/dev/Repos/blog PROJECT_ROOT=/tmp/dev/Repos/blog PHASE=implement"
+        command = "/run_execute PHASE=implement"
         tmux_instance.clear_prompt_line.return_value = True
         tmux_instance.send_keys.return_value = True
         tmux_instance.press_enter.return_value = True
@@ -1394,9 +1384,10 @@ class LoopPromptTests(unittest.TestCase):
 
         self.assertIn(f"Runner state file: {paths.state_file}", prompt)
         self.assertIn(
-            "Use .memory/runner/OBJECTIVE.json, .memory/runner/SEAMS.json, .memory/runner/GAPS.json, .memory/runner/RUNNER_EXEC_CONTEXT.json, .memory/runner/RUNNER_ACTIVE_BACKLOG.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state to respect the current phase goal and active seam.",
+            "Treat ORX + Linear as the source of truth for what this runner should do.",
             prompt,
         )
+        self.assertIn(f"Active backlog file: {paths.active_backlog_json}", prompt)
         self.assertIn("Treat RUNNER_HANDOFF.md as human/manual recovery context", prompt)
 
 

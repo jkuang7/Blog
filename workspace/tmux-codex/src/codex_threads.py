@@ -11,6 +11,10 @@ from typing import Any
 RUNNER_THREAD_PREVIEW_MARKERS = (
     "Use this command to execute exactly one medium bounded infinite-runner work slice.",
     "Use this command to govern infinite-runner state after one execute slice finishes.",
+    "RUNNER_DISPATCH mode=run_execute",
+    "RUNNER_DISPATCH mode=run_govern",
+    "/run_execute",
+    "/run_govern",
     "/prompts:run_execute",
     "/prompts:run_govern",
 )

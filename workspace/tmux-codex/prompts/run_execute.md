@@ -1,20 +1,22 @@
+# /run_execute - Execute one deterministic ORX/Linear runner slice
+
 Use this command to execute exactly one medium bounded infinite-runner work slice.
 
-Runner context from `/prompts:run_execute` args:
-- `DEV=$DEV`
-- `PROJECT=$PROJECT`
-- `RUNNER_ID=$RUNNER_ID`
-- `PWD=$PWD`
+tmux-codex may render and inject this prompt body directly when Codex custom slash commands are unavailable in the live TUI. The instruction contract is the same either way.
+
+Optional runner context from `/run_execute` args:
 - optional `PROJECT_ROOT=$PROJECT_ROOT`
 - optional `PHASE=$PHASE` (`discover|implement|verify|closeout`)
+
+In normal runner dispatch, the command is intentionally compact:
+- `/run_execute PHASE=<phase>`
+- the active session cwd and runner state are the primary source of truth
 
 ## Scope First
 
 Resolve target root in this order:
-1. explicit `PWD`
+1. current working directory
 2. explicit `PROJECT_ROOT`
-3. explicit `PROJECT` via `$DEV/Repos/$PROJECT`
-4. current working directory
 
 `cd` to that root before doing anything else.
 
@@ -154,7 +156,7 @@ When the bounded work slice is done:
 - report compact operational output
 - terminate this Codex chat session immediately
 
-The runner controller will script deterministic refresh itself after this prompt completes. It will invoke `/prompts:run_govern` in the same Codex session when your output explicitly says semantic backlog changes are needed or when scripted refresh cannot produce the prepared marker, unless the required update profile is incompatible with the current session.
+The runner controller will script deterministic refresh itself after this prompt completes. It will invoke `/run_govern` in the same Codex session when your output explicitly says semantic backlog changes are needed or when scripted refresh cannot produce the prepared marker, unless the required update profile is incompatible with the current session.
 
 ## Output
 

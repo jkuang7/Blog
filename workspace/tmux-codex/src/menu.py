@@ -45,6 +45,7 @@ from .runner_loop import (
     resolve_active_seam_execution_profile,
     resolve_runner_profile,
 )
+from .orx_control import OrxControlError, fetch_dashboard
 from .runner_status import detect_runner_state
 from .runctl import inspect_runner_start_state, resolve_target_project_root
 from .runner_state import read_json
@@ -189,24 +190,44 @@ class SessionMenu:
         self._tags_cache = tags  # Update cache
 
     def _get_all_projects(self) -> list[tuple[str, int]]:
-        """Get all project folders with their todo task counts.
+        """Get ORX-registered projects with ORX queue depth.
 
-        Returns list of (project_name, todo_count) tuples, sorted by name.
-        Scans Repos/ for projects that have .memory/ directories.
+        Returns list of (project_name, queue_depth) tuples, sorted by name.
+        The runner picker is Linear/ORX-native and does not infer projects from
+        local repo scans or runner memory files.
         """
-        repos_dir = self._dev_path / "Repos"
-        projects = []
+        try:
+            payload = fetch_dashboard()
+        except OrxControlError:
+            self._orx_project_rows = {}
+            return []
 
-        if repos_dir.exists():
-            for folder in sorted(repos_dir.iterdir()):
-                if folder.is_dir() and not folder.name.startswith('.'):
-                    project_root = self._runner_project_root_for_project(folder.name)
-                    memory_dir = project_root / ".memory"
-                    if memory_dir.exists() or (folder / ".memory").exists():
-                        todo_count = self._count_pending_tasks_for_memory_dir(memory_dir)
-                        projects.append((folder.name, todo_count))
+        rows = payload.get("projects")
+        if not isinstance(rows, list):
+            self._orx_project_rows = {}
+            return []
 
-        return projects
+        projects: list[tuple[str, int]] = []
+        project_rows: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            project = row.get("project")
+            if not isinstance(project, dict):
+                continue
+            project_key = str(project.get("project_key") or "").strip()
+            if not project_key:
+                continue
+            queue_depth = row.get("queue_depth")
+            try:
+                normalized_queue_depth = max(0, int(queue_depth))
+            except (TypeError, ValueError):
+                normalized_queue_depth = 0
+            projects.append((project_key, normalized_queue_depth))
+            project_rows[project_key] = row
+
+        self._orx_project_rows = project_rows
+        return sorted(projects, key=lambda item: item[0].lower())
 
     def _runner_project_root_for_project(self, project: str) -> Path:
         try:
@@ -256,7 +277,14 @@ class SessionMenu:
 
         pending_count = todo_count
         if pending_count is None:
-            pending_count = self._count_pending_tasks_for_memory_dir(self._runner_memory_dir_for_project(project))
+            row = getattr(self, "_orx_project_rows", {}).get(project, {})
+            if isinstance(row, dict):
+                try:
+                    pending_count = max(0, int(row.get("queue_depth") or 0))
+                except (TypeError, ValueError):
+                    pending_count = 0
+            else:
+                pending_count = 0
         if pending_count > 0:
             return "pending"
 
@@ -274,12 +302,31 @@ class SessionMenu:
         return base
 
     def _runner_picker_count_text(self, *, todo_count: int, state: RunnerProjectState) -> str:
-        count_text = f"({todo_count} tasks)" if todo_count > 0 else "(0 tasks)"
+        count_text = f"(queue {todo_count})" if todo_count > 0 else "(queue 0)"
         if state == "running":
             return f"{count_text} [running]"
         if state == "done":
             return f"{count_text} [done]"
         return count_text
+
+    def _runner_picker_detail_text(self, project: str) -> str:
+        row = getattr(self, "_orx_project_rows", {}).get(project, {})
+        if not isinstance(row, dict):
+            return ""
+        active_issue = str(row.get("active_issue_key") or "").strip()
+        project_payload = row.get("project")
+        assigned_bot = ""
+        if isinstance(project_payload, dict):
+            assigned_bot = str(project_payload.get("assigned_bot") or "").strip()
+        health_state = str(row.get("health_state") or "").strip()
+        parts: list[str] = []
+        if active_issue:
+            parts.append(f"active {active_issue}")
+        if assigned_bot:
+            parts.append(f"bot {assigned_bot}")
+        elif health_state and health_state not in {"idle", "busy"}:
+            parts.append(health_state)
+        return " | ".join(parts[:2])
 
     def _project_has_running_runner(self, project: str, existing_sessions: set[str] | None = None) -> bool:
         return self._project_runner_display_state(project, existing_sessions=existing_sessions) == "running"
@@ -504,7 +551,7 @@ class SessionMenu:
         return title
 
     def _count_todo_tasks(self) -> int:
-        """Count pending runner seams across all projects."""
+        """Count queued ORX/Linear issues across all registered projects."""
         return sum(todo_count for _, todo_count in self._get_all_projects())
 
     def _count_pending_tasks_for_memory_dir(self, memory_dir: Path) -> int:
@@ -723,7 +770,7 @@ class SessionMenu:
         elapsed_info = self._get_runner_elapsed()
 
         if todo_count > 0:
-            self._safe_addstr(stdscr, row, 2, f"{todo_count} tasks queued", curses.A_DIM)
+            self._safe_addstr(stdscr, row, 2, f"{todo_count} Linear issues queued", curses.A_DIM)
             row += 1
         if elapsed_info:
             self._safe_addstr(stdscr, row, 2, elapsed_info, curses.A_DIM)
@@ -842,10 +889,13 @@ class SessionMenu:
                     attr |= curses.A_DIM
                 # Task count suffix
                 count_str = self._runner_picker_count_text(todo_count=todo_count, state=state)
+                detail_str = self._runner_picker_detail_text(name)
                 # Number prefix (1-9)
                 num = str(idx + 1) if idx < 9 else " "
 
                 line = f"  {num}) {checkbox} {name:<20} {count_str}"
+                if detail_str:
+                    line = f"{line}  {detail_str}"
                 self._safe_addstr(stdscr, row, 2, line, attr)
                 row += 1
 
@@ -917,7 +967,7 @@ class SessionMenu:
         """Text-based fallback project selector when curses fails."""
         projects = self._get_all_projects()
         if not projects:
-            print("\n  No projects found in Repos/")
+            print("\n  No ORX projects are currently registered or ORX is unavailable.")
             return None
 
         saved_prefs, has_saved_selection = self._load_runner_pref_selection()
@@ -948,8 +998,12 @@ class SessionMenu:
                 is_active = state == "running"
                 checkbox = "[~]" if is_active else ("[x]" if name in enabled else "[ ]")
                 count_str = self._runner_picker_count_text(todo_count=todo_count, state=state)
+                detail_str = self._runner_picker_detail_text(name)
                 marker = ">" if idx == cursor else " "
-                print(f"{marker} {idx + 1}) {checkbox} {name:<20} {count_str}")
+                line = f"{marker} {idx + 1}) {checkbox} {name:<20} {count_str}"
+                if detail_str:
+                    line = f"{line}  {detail_str}"
+                print(line)
 
             print(
                 "\n  "
@@ -1077,81 +1131,57 @@ class SessionMenu:
                 print(f"  Skipping {project}: runner already in progress")
                 continue
 
-            runner_id = "main"
-            project_root = resolve_target_project_root(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-            )
-            gates_path, created_now = ensure_gates_file(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-                project_root=project_root,
-            )
-            _ = gates_path
-            _ = created_now
-
-            ready_result = inspect_runner_start_state(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-                project_root=project_root,
-            )
-            if not ready_result.get("ok"):
-                print(
-                    f"  Skipping {project}: {ready_result.get('error', 'runner not prepared')}"
-                )
-                continue
-
             sess_name = self._runner_session_name_for_project(project)
             if sess_name in existing_sessions:
                 # Stale idle runner session; replace it with a fresh loop.
                 self.tmux.kill_session(sess_name)
                 existing_sessions.discard(sess_name)
-            paths = build_runner_paths(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-                project_root=project_root,
-            )
-            active_profile = resolve_active_seam_execution_profile(
-                paths=paths.state,
-                fallback_model=model,
-                fallback_reasoning_effort=reasoning_effort,
-            )
-            cmd = make_codex_exec_loop_script(
-                dev=dev,
-                project=project,
-                runner_id=runner_id,
-                model=model,
-                reasoning_effort=reasoning_effort,
-                paths=paths,
-            )
 
-            try:
-                self.tmux.create_session(sess_name, cmd)
-            except RuntimeError as e:
-                print(f"  Failed to create runner {sess_name}: {e}")
+            repo_home = Path(__file__).resolve().parents[1]
+            env = os.environ.copy()
+            existing_pythonpath = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{repo_home}:{existing_pythonpath}" if existing_pythonpath else str(repo_home)
+            )
+            command = [
+                sys.executable,
+                "-m",
+                "src.main",
+                "loop-bg",
+                project,
+                "--complexity",
+                complexity,
+            ]
+            launched = subprocess.run(
+                command,
+                cwd=str(repo_home),
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if launched.returncode != 0:
+                detail = (launched.stderr or launched.stdout or "").strip()
+                print(f"  Failed to create runner {sess_name}: {detail or launched.returncode}")
                 continue
 
-            display_profile = str(active_profile.get("model_profile") or complexity)
-            display_model = str(active_profile.get("model") or model)
-            display_effort = str(active_profile.get("reasoning_effort") or reasoning_effort)
-            display_seam_id = str(active_profile.get("seam_id") or active_profile.get("task_id") or "").strip()
-            print(f"  Started {sess_name} ({display_profile}, {display_model}, effort={display_effort})")
-            if display_seam_id:
-                print(f"    active seam: {display_seam_id}")
-            state_paths = getattr(paths, "state", None)
-            state_file_path = getattr(state_paths, "state_file", None)
-            state_data = read_json(state_file_path) if state_file_path is not None else {}
-            print("    mode: interactive-cli")
-            if isinstance(state_data, dict):
-                print(f"    phase: {state_data.get('current_phase', 'discover')}")
+            existing_sessions = set(self.tmux.list_sessions())
+            if sess_name not in existing_sessions:
+                detail = (launched.stdout or launched.stderr or "").strip()
+                print(
+                    f"  Failed to detect started runner {sess_name}: {detail or 'session missing after launch'}"
+                )
+                continue
+
+            detail = (launched.stdout or "").strip()
+            if detail:
+                for line in detail.splitlines():
+                    print(f"  {line}")
+            else:
+                print(f"  Started {sess_name} ({complexity}, {model}, effort={reasoning_effort})")
             self.sessions.append(sess_name)
             self.pane_titles.append(None)
             started_sessions.append(sess_name)
-            existing_sessions.add(sess_name)
 
         if not started_sessions:
             return None
@@ -1297,7 +1327,7 @@ class SessionMenu:
         todo_count = self._count_todo_tasks()
         elapsed_info = self._get_runner_elapsed()
         if todo_count > 0:
-            print(f"  {todo_count} tasks queued")
+            print(f"  {todo_count} Linear issues queued")
         if elapsed_info:
             print(f"  {elapsed_info}")
         if todo_count > 0 or elapsed_info:

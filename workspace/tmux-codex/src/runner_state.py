@@ -20,7 +20,7 @@ DEFAULT_IMPLEMENTATION_PLAN = [
 DONE_NEXT_TASK_TEXT = "No open seams remain in SEAMS.json."
 RUNNER_PHASES = ("discover", "implement", "verify", "closeout")
 DEFAULT_PHASE_BUDGET_MINUTES = 45
-DEFAULT_TASK_SOURCE = "github_mcp_project_issues"
+DEFAULT_TASK_SOURCE = "orx_linear_project_issues"
 KANBAN_CONDITION_KEYS = (
     "ready_for_execution",
     "planning_satisfied",
@@ -231,9 +231,9 @@ def default_kanban_state(project: str) -> dict[str, Any]:
         "mode": "ticket_native",
         "phase": "selecting",
         "selection_scope": {
-            "owner": "jkuang7",
-            "project_number": 5,
-            "workspace_mode": True,
+            "source": "orx",
+            "project_key": project,
+            "task_graph": "linear",
         },
         "active_issue": None,
         "intake": {
@@ -416,7 +416,7 @@ def write_runner_status_snapshot(
             "completion_policy": str(runtime_policy.get("completion_policy") or "").strip() or None,
         },
         "architecture": {
-            "work_definition": "github_mcp_projects_issues",
+            "work_definition": "orx_linear_project_issues",
             "execution_engine": "tmux-codex",
             "operator_shell": "telecodex",
             "durable_state": "sqlite_control_plane",
@@ -429,6 +429,10 @@ def write_runner_status_snapshot(
             "continue_until": str(loop_state.get("continue_until") or "").strip() or None,
             "active_issue_url": str(active_issue.get("url") or "").strip() or None,
             "active_issue_repo": str(active_issue.get("repo") or "").strip() or None,
+            "active_issue_identifier": str(active_issue.get("identifier") or "").strip() or None,
+            "active_issue_title": str(active_issue.get("title") or "").strip() or None,
+            "active_issue_project_key": str(active_issue.get("project_key") or "").strip() or None,
+            "active_issue_project_name": str(active_issue.get("project_name") or "").strip() or None,
             "issue_class": str(intake.get("issue_class") or "").strip() or None,
             "complexity": str(intake.get("complexity") or "").strip() or None,
             "routing": str(intake.get("routing") or "").strip() or None,
@@ -860,11 +864,22 @@ def normalize_kanban_state(state: dict[str, Any], project: str) -> tuple[dict[st
     elif not str(active_issue.get("url", "")).strip():
         active_issue = None
     else:
+        metadata = active_issue.get("metadata") if isinstance(active_issue.get("metadata"), dict) else {}
         active_issue = {
             "url": str(active_issue.get("url", "")).strip(),
+            "external_url": _coerce_optional_text(active_issue.get("external_url")),
             "repo": _coerce_optional_text(active_issue.get("repo")),
             "number": active_issue.get("number"),
+            "identifier": _coerce_optional_text(active_issue.get("identifier")),
+            "linear_id": _coerce_optional_text(active_issue.get("linear_id")),
             "title": _coerce_optional_text(active_issue.get("title")),
+            "description": _coerce_optional_text(active_issue.get("description")),
+            "project_key": _coerce_optional_text(active_issue.get("project_key")),
+            "project_name": _coerce_optional_text(active_issue.get("project_name")),
+            "repo_root": _coerce_optional_text(active_issue.get("repo_root")),
+            "team_name": _coerce_optional_text(active_issue.get("team_name")),
+            "state_name": _coerce_optional_text(active_issue.get("state_name")),
+            "state_type": _coerce_optional_text(active_issue.get("state_type")),
             "issue_class": _coerce_optional_text(active_issue.get("issue_class")),
             "complexity": _coerce_optional_text(active_issue.get("complexity")),
             "routing": _coerce_optional_text(active_issue.get("routing")),
@@ -876,6 +891,7 @@ def normalize_kanban_state(state: dict[str, Any], project: str) -> tuple[dict[st
             "depends_on": _coerce_optional_text(active_issue.get("depends_on")),
             "merge_into": _coerce_optional_text(active_issue.get("merge_into")),
             "resume_from": _coerce_optional_text(active_issue.get("resume_from")),
+            "metadata": metadata,
         }
     normalized["active_issue"] = active_issue
 

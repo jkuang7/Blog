@@ -1,4 +1,10 @@
+# /add - Queue local follow-up work for a runner-managed Linear issue
+
 Use this command to queue extra runner work quickly for the current conversation scope.
+
+This is not the canonical issue-creation path anymore.
+Canonical `/add` intake is Telegram -> telecodex -> ORX -> Linear.
+Use this local prompt only to queue follow-up runner work against the current ORX/Linear-backed worktree when you are already inside an active runner-managed repo.
 
 Intent:
 - fast backlog intake while a runner is already active or while you are working in a runner-managed repo
@@ -29,7 +35,7 @@ Infer the target runner root in this order:
    - if that works, use the resolved project context for `<project>`
 3. Otherwise, if exactly one runner under `$DEV/Repos/*/.memory/runner/runtime/RUNNER_STATE.json` is currently enabled or has a live heartbeat, use that project root.
 4. If more than one plausible runner root exists, ask the human which project to queue against.
-5. If no runner state exists for the inferred project, tell the human to run `/prompts:run_setup` first for that project and stop.
+5. If no runner state exists for the inferred project, tell the human to run `/run_setup` first for that project and stop.
 
 Rules:
 - Prefer the current conversation/worktree root over canonical repo fallback.

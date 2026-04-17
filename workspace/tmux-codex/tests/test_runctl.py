@@ -129,7 +129,7 @@ class RunctlTests(unittest.TestCase):
         self.assertEqual(active_backlog["next_task_id"], state["next_task_id"])
         self.assertIsNone(active_backlog["selected_task"]["graph_cluster_label"])
         self.assertFalse(active_backlog["selected_task"]["parity_enabled"])
-        self.assertEqual(active_backlog["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(active_backlog["runtime_policy"]["task_source"], "orx_linear_project_issues")
         self.assertEqual(active_backlog["kanban"]["mode"], "ticket_native")
         self.assertEqual(active_backlog["kanban"]["continue_until"], "board_complete_or_all_blocked")
         kanban_state = read_json(paths.kanban_state_json)
@@ -141,7 +141,7 @@ class RunctlTests(unittest.TestCase):
             Path(kanban_state["active_checkout"]["repo_root"]).resolve(),
             (self.dev / "Repos" / "blog").resolve(),
         )
-        self.assertEqual(exec_context["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(exec_context["runtime_policy"]["task_source"], "orx_linear_project_issues")
         self.assertEqual(exec_context["kanban_mode"], "ticket_native")
         self.assertEqual(exec_context["kanban_phase"], "selecting")
         self.assertEqual(exec_context["kanban_continue_until"], "board_complete_or_all_blocked")
@@ -149,11 +149,11 @@ class RunctlTests(unittest.TestCase):
         runner_status = read_json(paths.runner_status_json)
         self.assertIsNotNone(runner_status)
         assert runner_status is not None
-        self.assertEqual(runner_status["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(runner_status["runtime_policy"]["task_source"], "orx_linear_project_issues")
         self.assertEqual(runner_status["kanban"]["phase"], "selecting")
         self.assertEqual(runner_status["kanban"]["continue_until"], "board_complete_or_all_blocked")
         self.assertEqual(Path(runner_status["kanban"]["checkout_root"]).resolve(), (self.dev / "Repos" / "blog").resolve())
-        self.assertEqual(runner_status["architecture"]["work_definition"], "github_mcp_projects_issues")
+        self.assertEqual(runner_status["architecture"]["work_definition"], "orx_linear_project_issues")
         self.assertEqual(runner_status["architecture"]["execution_engine"], "tmux-codex")
         self.assertEqual(runner_status["architecture"]["operator_shell"], "telecodex")
         self.assertIn("unmet_conditions", runner_status)
@@ -172,7 +172,7 @@ class RunctlTests(unittest.TestCase):
     def test_inspect_runner_start_state_requires_setup(self):
         result = inspect_runner_start_state(str(self.dev), "blog", "main")
         self.assertFalse(result["ok"])
-        self.assertIn("Run /prompts:run_setup first", result["error"])
+        self.assertIn("Run /run_setup first", result["error"])
 
     def test_inspect_runner_start_state_passes_after_enable_approval(self):
         initial = create_runner_state(str(self.dev), "blog", "main", approve_enable=None)
@@ -227,10 +227,10 @@ class RunctlTests(unittest.TestCase):
 
         with patch(
             "src.runctl._validate_runner_prompt_install",
-            return_value="Installed runner prompt is not linked to canonical source.",
+            return_value="Installed runner command is not linked to canonical source.",
         ), patch(
             "src.runctl._repair_runner_prompt_install",
-            return_value="Installed runner prompt is not linked to canonical source.",
+            return_value="Installed runner command is not linked to canonical source.",
         ):
             result = inspect_runner_start_state(str(self.dev), "blog", "main")
 
@@ -245,12 +245,12 @@ class RunctlTests(unittest.TestCase):
 
         with patch(
             "src.runctl._validate_runner_prompt_install",
-            return_value="Canonical runner prompt missing: /tmp/run_execute.md",
+            return_value="Canonical runner command missing: /tmp/run_execute.md",
         ), patch("src.runctl._repair_runner_prompt_install") as repair_prompt_install:
             result = inspect_runner_start_state(str(self.dev), "blog", "main")
 
         self.assertFalse(result["ok"])
-        self.assertIn("Canonical runner prompt missing", result["error"])
+        self.assertIn("Canonical runner command missing", result["error"])
         repair_prompt_install.assert_not_called()
 
     def test_runner_prompt_validation_covers_all_canonical_runner_prompts(self):
@@ -1601,6 +1601,27 @@ class RunctlTests(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         self.assertTrue((custom_root / ".memory" / "runner" / "runtime" / "RUNNER_STATE.json").exists())
+
+    def test_run_setup_accepts_project_and_project_root_together(self):
+        worktree_root = self.dev / "worktrees" / "blog" / "pro-12"
+        worktree_root.mkdir(parents=True)
+        code = run(
+            [
+                "--setup",
+                "--project",
+                "blog",
+                "--project-root",
+                str(worktree_root),
+                "--runner-id",
+                "main",
+                "--dev",
+                str(self.dev),
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue((worktree_root / ".memory" / "runner" / "runtime" / "RUNNER_STATE.json").exists())
+        context = read_json(self.dev / "Repos" / "blog" / ".memory" / "RUNNER_CONTEXT.json")
+        self.assertEqual(context["runners"]["main"]["project_root"], str(worktree_root.resolve()))
 
     def test_run_setup_quiet_prints_minimal_output(self):
         with patch("sys.stdout", new=io.StringIO()) as mocked_stdout:

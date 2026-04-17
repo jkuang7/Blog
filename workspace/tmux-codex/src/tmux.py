@@ -14,6 +14,12 @@ LINES_HEALTH = 50
 LINES_FULL = 500
 
 
+_ORX_SESSION_PROJECT_RE = re.compile(
+    r"^orx-(?P<project>[a-z0-9][a-z0-9-]*)-(?P<issue>[a-z0-9][a-z0-9-]*-\d+)-(?P<runner>[a-z0-9][a-z0-9-]*)$",
+    re.IGNORECASE,
+)
+
+
 class TmuxClient:
     """Wrapper for tmux operations using dedicated socket."""
 
@@ -55,7 +61,26 @@ class TmuxClient:
 
         # Filter by prefix if provided
         if prefix:
-            sessions = [s for s in sessions if s.startswith(f"{prefix}-") or s.startswith(f"runner-")]
+            # ORX-driven Linear runs live on the same tmux socket but use `orx-...`
+            # session names instead of the legacy `codex-...` prefix.
+            allowed_prefixes = [f"{prefix}-", "runner-"]
+            if prefix == "codex":
+                allowed_prefixes.append("orx-")
+            sessions = [s for s in sessions if any(s.startswith(allowed) for allowed in allowed_prefixes)]
+            if prefix == "codex":
+                runner_projects = {
+                    session.removeprefix("runner-")
+                    for session in sessions
+                    if session.startswith("runner-")
+                }
+                if runner_projects:
+                    filtered: list[str] = []
+                    for session in sessions:
+                        project = _orx_session_project(session)
+                        if project is not None and project in runner_projects:
+                            continue
+                        filtered.append(session)
+                    sessions = filtered
 
         # Sort: prefix-N numerically first, then others alphabetically
         sort_prefix = prefix or "codex"
@@ -267,3 +292,10 @@ class TmuxClient:
         if result.returncode != 0:
             return None
         return result.stdout.strip()
+
+
+def _orx_session_project(session_name: str) -> str | None:
+    match = _ORX_SESSION_PROJECT_RE.match(session_name.strip())
+    if match is None:
+        return None
+    return match.group("project")

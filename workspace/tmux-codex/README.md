@@ -1,19 +1,27 @@
 # tmux-codex (`cl` / `clls`)
 
 Standalone tmux wrapper for Codex sessions and lock-gated runner loops.
+It is the execution/session layer in a Linear-native stack:
+
+- Telegram command surface -> `telecodex`
+- deterministic orchestration -> `ORX`
+- durable task graph / issue context -> Linear
+- live worktree + Codex session residency -> `tmux-codex`
 
 ## Minimal User Flow
 
-From inside the target repo or active worktree, users should only need to know:
+From inside the target repo or active worktree, local operators should only need to know:
 
-- `/prompts:run_setup`
-- `/prompts:run_execute` and `/prompts:run_update` are internal only
+- `/run_setup`
 - `cl` -> `r=runner`
+- `clls` to inspect the live ORX-backed runner/session view
+- the Start Runners picker now reads ORX `/dashboard` queue state instead of local `.memory` task counts
+- `tmux-codex` renders `run_execute` / `run_govern` prompt templates internally, so the infinite runner does not depend on Codex surfacing custom slash commands
 
 Important:
 - `r=runner` only launches from existing runner state.
 - It does not run setup, clear, auto-approve enablement, or rewrite `.memory/runner/*`.
-- If setup is missing or not approved, runner start should fail fast and tell you to run `/prompts:run_setup`.
+- If setup is missing or not approved, runner start should fail fast and tell you to run `/run_setup`.
 
 Everything else in this README is implementation detail for recovery, automation, or debugging.
 
@@ -25,8 +33,8 @@ Everything else in this README is implementation detail for recovery, automation
 - `cl runner <project>` / `cl run <project>` / `cl r <project>` - loop aliases
 - `cl stop <project>` / `cl k <project>` / `cl ka <project>` / `cl kb <project>` - immediate runner stop (writes stop lock + kills runner session)
 - `cl k*` - stop all active runner sessions
-- `python3 bin/runctl --setup ...` - advanced/internal equivalent of `/prompts:run_setup`
-- `python3 bin/runctl --clear ...` - advanced/internal teardown primitive used by `/prompts:run_setup`
+- `python3 bin/runctl --setup ...` - advanced/internal equivalent of `/run_setup`
+- `python3 bin/runctl --clear ...` - advanced/internal teardown primitive used by `/run_setup`
 
 Single-runner policy:
 - one loop runner per project
@@ -44,7 +52,7 @@ Single-runner policy:
 
 ## Runner State Contract
 
-Runner-scoped files under `Repos/<project>/.memory/runner/`:
+Runner-scoped files under the active issue worktree `/.memory/runner/`:
 
 - `runtime/RUNNER_STATE.json` (`runner_id` is stored in JSON metadata)
 - `runtime/RUNNER_LEDGER.ndjson`
@@ -68,32 +76,34 @@ Project-level top-level files stay in `Repos/<project>/.memory/`:
 - `PRD.md` (runner-managed objective snapshot)
 - `gates.sh` (must define `run_gates`)
 
-## Deprecation Direction
+## Deterministic Linear-Native Direction
 
-- The legacy infinite runner remains operational today, but its file-managed planning layer is being deprecated.
-- `PRD.json` and `TASKS.json` should be treated as legacy compatibility artifacts during the migration, not the long-term source of truth for infinite execution.
-- The target model is ticket-native kanban execution:
-  - GitHub issues and the shared project board own task selection, blockers, dependencies, review, and completion.
-  - Local runner state owns continuity, active issue identity, recovery, and session metadata only.
-  - `KANBAN_STATE.json` is the first additive step in that migration.
-- Keep the current shell ergonomics (`cl`, tmux loops, stop locks, fresh-session relaunch) while moving runtime authority away from local planning files.
+- The legacy file-managed planner is now compatibility-only.
+- `PRD.json` and `TASKS.json` still exist so the runner can execute deterministically, but they are no longer the canonical work ledger.
+- The canonical model is:
+  - Linear owns task identity, dependencies, blockers, and acceptance context
+  - ORX owns issue selection, queueing, continuity, and worktree/session routing
+  - `tmux-codex` owns the live Codex/tmux session and bounded execution slices
+- Linear issues and ORX now own task selection; legacy GitHub issue / shared-board assumptions are deprecated in this runner path.
+- `KANBAN_STATE.json`, `RUNNER_EXEC_CONTEXT.json`, and `RUNNER_HANDOFF.md` should be treated as local execution state derived from ORX/Linear, not as a competing planner.
 
 ## Runner Prompts
 
 Canonical command spec lives at [`run.md`](/Users/jian/Dev/workspace/tmux-codex/run.md).
 
 Normal usage from inside the repo/worktree:
-- `/prompts:run_setup`
+- `/run_setup`
 - approve enablement if prompted
 - then `cl` -> `r=runner`
 
-`/prompts:run_setup` now performs a two-phase clear before rebuilding runner state on non-approval runs. Manual teardown still exists at the CLI level via `python3 bin/runctl --clear ...`, but it is no longer a default installed prompt.
+`/run_setup` now performs a two-phase clear before rebuilding runner state on non-approval runs. Manual teardown still exists at the CLI level via `python3 bin/runctl --clear ...`, but it is no longer a default installed prompt.
 
 Internal runner dispatch:
 - `r=runner` runs a two-step cycle:
-  - `/prompts:run_execute`
-  - `/prompts:run_update`
+  - rendered `run_execute` prompt body
+  - rendered `run_govern` prompt body when semantic repair is needed
 - setup/clear are decoupled and must never be injected into the runner pane
+- before the runner starts, `tmux-codex` asks ORX for the current Linear issue context, provisions the issue worktree if needed, and seeds the runner state from that issue
 
 Fast task intake from a project conversation:
 - `/add <task>` resolves the current runner root from the conversation cwd or active runner state, then queues the task via `runctl --task add`
@@ -109,17 +119,22 @@ While a runner is already active, queue extra work safely with:
 - Keyboard fallback: `PageUp` (or `Shift+PageUp`) enters copy-mode and scrolls back.
 - Manual fallback: `Ctrl+Shift+Up` enters copy-mode.
 
-Install prompt into Codex:
+Install runner commands into Codex:
 
 ```bash
 bash /Users/jian/Dev/workspace/tmux-codex/scripts/install-codex-run-prompt.sh
 ```
 
-This validates `~/.codex/prompts/run_setup.md`, `run_execute.md`, `run_update.md`, and `add.md` in the global Codex home.
+This validates the canonical prompt templates and refreshes optional Codex command links under `~/.codex/commands/` and compatibility links under `~/.codex/prompts/`. The live infinite runner still submits rendered prompt bodies directly, so it does not depend on custom slash-command discovery.
 
 ## Runner Runtime
 
 - Public runner entrypoints launch an interactive Codex CLI pane with the infinite runner controller.
+- `cl loop <project>` and `cl -> r=runner` are ORX/Linear-native:
+  - they ask ORX for the current active or next runnable Linear issue
+  - they ensure the issue worktree exists
+  - they seed runner state from the Linear issue snapshot and issue metadata
+  - they do not enumerate projects or task counts from local `.memory` files
 - `cl -> r=runner` and `cl loop <project>` should run work directly from existing runner state; they should not re-run setup as part of normal execution.
 - `cl -> r=runner` and `cl loop <project>` are start-only paths. They must not bootstrap setup or approve enablement implicitly.
 - setup builds phase-scoped exec context from compact repo context sources plus runner delta for better context carry-over
@@ -131,6 +146,7 @@ This validates `~/.codex/prompts/run_setup.md`, `run_execute.md`, `run_update.md
 - Fast manual stop:
   - `cl stop <project>` or `cl k <project>`
 - Existing tmux runner sessions must be restarted to pick up wrapper changes (tmux keeps the original startup command per session).
+- `clls` should show the live ORX-managed runner/session state and the worktree it is actually attached to; if it does not, treat that as a bug in session truth, not as expected behavior.
 
 ## Done Enforcement
 

@@ -10,7 +10,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .github_sync import normalize_github_issue_import
 from .runner_state import RunnerStatePaths, derive_kanban_runtime_view, detect_git_context, utc_now
 
 LEASE_TTL_SECONDS = 15 * 60
@@ -145,11 +144,22 @@ class RunnerControlPlane:
         issue: dict[str, Any] | None = None,
         issue_thread: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from .github_sync import normalize_github_issue_import
+
         snapshot, phase = normalize_github_issue_import(
             item=item,
             issue=issue,
             issue_thread=issue_thread,
         )
+        self._upsert_issue_snapshot(snapshot, phase=phase)
+        return snapshot
+
+    def import_issue_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        phase: str | None = None,
+    ) -> dict[str, Any]:
         self._upsert_issue_snapshot(snapshot, phase=phase)
         return snapshot
 

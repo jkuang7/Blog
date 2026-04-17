@@ -67,7 +67,7 @@ class RunnerStatusTests(unittest.TestCase):
         out = "\n".join(
             [
                 "OpenAI Codex",
-                "› /prompts:run_execute DEV=/Users/jian/Dev PROJECT=Blog",
+                "› /run_execute PHASE=implement",
                 "mcp startup: initializing servers: playwright, panda, context7",
             ]
         )

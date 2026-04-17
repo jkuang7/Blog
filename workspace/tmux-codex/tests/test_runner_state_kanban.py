@@ -29,7 +29,7 @@ class KanbanRunnerStateTests(unittest.TestCase):
         state = default_runner_state("blog", "main")
 
         self.assertEqual(state["runtime_policy"]["runner_mode"], "exec")
-        self.assertEqual(state["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(state["runtime_policy"]["task_source"], "orx_linear_project_issues")
         self.assertEqual(state["runtime_policy"]["completion_policy"], "tasks_done_and_gates_green")
         self.assertEqual(state["runtime_policy"]["kanban_enabled"], True)
 
@@ -52,7 +52,7 @@ class KanbanRunnerStateTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertEqual(normalized["runtime_policy"]["runner_mode"], "kanban")
-        self.assertEqual(normalized["runtime_policy"]["task_source"], "github_mcp_project_issues")
+        self.assertEqual(normalized["runtime_policy"]["task_source"], "orx_linear_project_issues")
         self.assertEqual(normalized["runtime_policy"]["completion_policy"], "tasks_done_and_gates_green")
         self.assertEqual(normalized["runtime_policy"]["kanban_enabled"], True)
 

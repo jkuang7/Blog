@@ -26,6 +26,27 @@ def _make_runner_paths(base: Path, project: str) -> SimpleNamespace:
     )
 
 
+def _fake_issue_snapshot(project_root: Path, *, identifier: str, title: str, state_name: str = "In Progress") -> dict[str, object]:
+    return {
+        "url": f"https://linear.app/jkprojects/issue/{identifier}",
+        "external_url": f"https://linear.app/jkprojects/issue/{identifier}",
+        "repo": "blog",
+        "number": None,
+        "identifier": identifier,
+        "linear_id": f"lin-{identifier.lower()}",
+        "title": title,
+        "description": f"{title} description",
+        "project_key": "blog",
+        "project_name": "Blog",
+        "repo_root": str(project_root),
+        "worktree": str(project_root),
+        "branch": f"linear/{identifier.lower()}",
+        "state_name": state_name,
+        "state_type": "started",
+        "metadata": {},
+    }
+
+
 class StopRunnerControlsTests(unittest.TestCase):
     def test_stop_loop_session_clears_transient_locks_after_hard_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,8 +130,10 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             with (
                 patch("src.main.get_tmux_config", return_value=None),
+                patch("src.main.ensure_runner_prompt_install", return_value=None),
                 patch("src.main.TmuxClient", return_value=tmux_instance),
                 patch("src.main.resolve_target_project_root", return_value=project_root),
+                patch("src.main._seed_kanban_state_for_background_runner", return_value=None),
                 patch("src.main.ensure_gates_file", return_value=(project_root / ".memory" / "gates.sh", False)),
                 patch("src.main._ensure_runner_ready_for_start", return_value=True),
                 patch("src.main._prepare_loop_runner", return_value=("runner-blog", fake_paths, "echo run")),
@@ -136,8 +159,10 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             with (
                 patch("src.main.get_tmux_config", return_value=None),
+                patch("src.main.ensure_runner_prompt_install", return_value=None),
                 patch("src.main.TmuxClient", return_value=tmux_instance),
                 patch("src.main.resolve_target_project_root", return_value=project_root),
+                patch("src.main._seed_kanban_state_for_background_runner", return_value=None),
                 patch("src.main.ensure_gates_file", return_value=(project_root / ".memory" / "gates.sh", False)),
                 patch("src.main._ensure_runner_ready_for_start", return_value=False),
                 patch("src.main._prepare_loop_runner") as prepare_mock,
@@ -169,8 +194,10 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             with (
                 patch("src.main.get_tmux_config", return_value=None),
+                patch("src.main.ensure_runner_prompt_install", return_value=None),
                 patch("src.main.TmuxClient", return_value=tmux_instance),
                 patch("src.main.resolve_target_project_root", return_value=project_root),
+                patch("src.main._seed_kanban_state_for_background_runner", return_value=None),
                 patch("src.main.ensure_gates_file", return_value=(project_root / ".memory" / "gates.sh", False)),
                 patch("src.main._ensure_runner_ready_for_start", return_value=True),
                 patch("src.main._prepare_loop_runner", return_value=("runner-blog", fake_paths, "echo run")),
@@ -203,8 +230,10 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             with (
                 patch("src.main.get_tmux_config", return_value=None),
+                patch("src.main.ensure_runner_prompt_install", return_value=None),
                 patch("src.main.TmuxClient", return_value=tmux_instance),
                 patch("src.main.resolve_target_project_root", return_value=project_root),
+                patch("src.main._seed_kanban_state_for_background_runner", return_value=None),
                 patch("src.main.ensure_gates_file", return_value=(project_root / ".memory" / "gates.sh", False)),
                 patch("src.main.create_runner_state", side_effect=[
                     {"ok": True, "enable_token": "token-123", "enable_pending_file": "pending.json"},
@@ -233,28 +262,17 @@ class StopRunnerControlsTests(unittest.TestCase):
             dev = Path(tmp)
             project_root = dev / "Repos" / "blog"
             project_root.mkdir(parents=True, exist_ok=True)
+            snapshot = _fake_issue_snapshot(
+                project_root,
+                identifier="PRO-12",
+                title="Fix status sync",
+            )
+            prepared = SimpleNamespace(snapshot=snapshot, phase="executing", worktree_path=project_root)
 
-            def fake_run(args, cwd, check, capture_output, text):  # noqa: ARG001
-                command = " ".join(args)
-                if "git config --get remote.origin.url" in command:
-                    return SimpleNamespace(stdout="git@github.com:jkuang7/blog.git\n")
-                if "git rev-parse --abbrev-ref HEAD" in command:
-                    return SimpleNamespace(stdout="main\n")
-                if "github_project_issue_flow.py list" in command:
-                    return SimpleNamespace(
-                        stdout='[{"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "In Progress"}}]\n'
-                    )
-                if "github_project_issue_flow.py active" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "In Progress"}}}\n'
-                    )
-                if "gh issue view 12 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "body": "## Ticket Relations\\n- Parent: https://github.com/jkuang7/blog/issues/11\\n", "comments": []}\n'
-                    )
-                raise AssertionError(f"unexpected subprocess call: {command}")
-
-            with patch("src.main.subprocess.run", side_effect=fake_run):
+            with (
+                patch("src.main.fetch_project_context", return_value={"issue": {"identifier": "PRO-12"}}),
+                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+            ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
                     project="blog",
@@ -271,9 +289,10 @@ class StopRunnerControlsTests(unittest.TestCase):
             )
             kanban_state = read_json(paths.kanban_state_json)
             self.assertEqual(kanban_state["phase"], "executing")
-            self.assertEqual(kanban_state["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
             self.assertEqual(kanban_state["board"]["last_known_status"], "In Progress")
             self.assertEqual(kanban_state["board"]["snapshot_count"], 1)
+            self.assertEqual(kanban_state["loop"]["resume_source"], "orx_linear_context")
 
     def test_seed_kanban_state_preserves_existing_active_issue(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,35 +314,25 @@ class StopRunnerControlsTests(unittest.TestCase):
                     "version": 1,
                     "phase": "executing",
                     "active_issue": {
-                        "url": "https://github.com/jkuang7/blog/issues/99",
-                        "repo": "jkuang7/blog",
-                        "number": 99,
+                        "url": "https://linear.app/jkprojects/issue/PRO-99",
+                        "repo": "blog",
+                        "number": None,
+                        "identifier": "PRO-99",
                         "title": "Keep current frontier",
                     },
                 },
             )
+            snapshot = _fake_issue_snapshot(
+                project_root,
+                identifier="PRO-12",
+                title="Fix status sync",
+            )
+            prepared = SimpleNamespace(snapshot=snapshot, phase="executing", worktree_path=project_root)
 
-            def fake_run(args, cwd, check, capture_output, text):  # noqa: ARG001
-                command = " ".join(args)
-                if "git config --get remote.origin.url" in command:
-                    return SimpleNamespace(stdout="git@github.com:jkuang7/blog.git\n")
-                if "git rev-parse --abbrev-ref HEAD" in command:
-                    return SimpleNamespace(stdout="main\n")
-                if "github_project_issue_flow.py list" in command:
-                    return SimpleNamespace(
-                        stdout='[{"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "In Progress"}}]\n'
-                    )
-                if "github_project_issue_flow.py active" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "In Progress"}}}\n'
-                    )
-                if "gh issue view 12 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "body": "", "comments": []}\n'
-                    )
-                raise AssertionError(f"unexpected subprocess call: {command}")
-
-            with patch("src.main.subprocess.run", side_effect=fake_run):
+            with (
+                patch("src.main.fetch_project_context", return_value={"issue": {"identifier": "PRO-12"}}),
+                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+            ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
                     project="blog",
@@ -333,7 +342,7 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             self.assertIsNotNone(issue)
             kanban_state = read_json(paths.kanban_state_json)
-            self.assertEqual(kanban_state["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/99")
+            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-99")
             self.assertEqual(kanban_state["board"]["last_known_status"], "In Progress")
 
     def test_seed_kanban_state_replaces_stale_existing_active_issue_with_board_candidate(self):
@@ -356,43 +365,27 @@ class StopRunnerControlsTests(unittest.TestCase):
                     "version": 1,
                     "phase": "executing",
                     "active_issue": {
-                        "url": "https://github.com/jkuang7/blog/issues/99",
-                        "repo": "jkuang7/blog",
-                        "number": 99,
+                        "url": "https://linear.app/jkprojects/issue/PRO-99",
+                        "repo": "blog",
+                        "number": None,
+                        "identifier": "PRO-99",
                         "title": "Stale current frontier",
                     },
                 },
             )
+            snapshot = _fake_issue_snapshot(
+                project_root,
+                identifier="PRO-12",
+                title="Fix status sync",
+                state_name="Inbox",
+            )
+            prepared = SimpleNamespace(snapshot=snapshot, phase="selecting", worktree_path=project_root)
 
-            def fake_run(args, cwd, check, capture_output, text):  # noqa: ARG001
-                command = " ".join(args)
-                if "git config --get remote.origin.url" in command:
-                    return SimpleNamespace(stdout="git@github.com:jkuang7/blog.git\n")
-                if "git rev-parse --abbrev-ref HEAD" in command:
-                    return SimpleNamespace(stdout="main\n")
-                if "github_project_issue_flow.py list" in command:
-                    return SimpleNamespace(
-                        stdout='[{"repo": "jkuang7/blog", "number": 99, "title": "Stale current frontier", "url": "https://github.com/jkuang7/blog/issues/99", "fields": {"Status": "Review"}}, {"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "Inbox"}}]\n'
-                    )
-                if "github_project_issue_flow.py active" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 99, "title": "Stale current frontier", "url": "https://github.com/jkuang7/blog/issues/99", "workflowState": "in_progress"}}\n'
-                    )
-                if "github_project_issue_flow.py next" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "Inbox"}}}\n'
-                    )
-                if "gh issue view 99 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 99, "title": "Stale current frontier", "url": "https://github.com/jkuang7/blog/issues/99", "body": "", "comments": []}\n'
-                    )
-                if "gh issue view 12 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 12, "title": "Fix status sync", "url": "https://github.com/jkuang7/blog/issues/12", "body": "", "comments": []}\n'
-                    )
-                raise AssertionError(f"unexpected subprocess call: {command}")
-
-            with patch("src.main.subprocess.run", side_effect=fake_run):
+            with (
+                patch("src.main.fetch_project_context", return_value={"next_candidate": {"identifier": "PRO-12"}}),
+                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+                patch("src.main._active_issue_requires_runtime_reset", return_value=True),
+            ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
                     project="blog",
@@ -402,8 +395,9 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             self.assertIsNotNone(issue)
             kanban_state = read_json(paths.kanban_state_json)
-            self.assertEqual(kanban_state["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
             self.assertEqual(kanban_state["board"]["last_known_status"], "Inbox")
+            self.assertEqual(kanban_state["loop"]["resume_source"], "runtime_recovery_reset")
 
     def test_seed_kanban_state_clears_closeout_issue_that_still_needs_refine(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -425,9 +419,10 @@ class StopRunnerControlsTests(unittest.TestCase):
                     "version": 1,
                     "phase": "executing",
                     "active_issue": {
-                        "url": "https://github.com/jkuang7/blog/issues/99",
-                        "repo": "jkuang7/blog",
-                        "number": 99,
+                        "url": "https://linear.app/jkprojects/issue/PRO-99",
+                        "repo": "blog",
+                        "number": None,
+                        "identifier": "PRO-99",
                         "title": "Stale closeout frontier",
                     },
                 },
@@ -453,7 +448,7 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             control = RunnerControlPlane(paths)
             control._sync_conditions(
-                "https://github.com/jkuang7/blog/issues/99",
+                "https://linear.app/jkprojects/issue/PRO-99",
                 {
                     "ready_for_execution": {
                         "status": False,
@@ -467,36 +462,19 @@ class StopRunnerControlsTests(unittest.TestCase):
                     },
                 },
             )
+            snapshot = _fake_issue_snapshot(
+                project_root,
+                identifier="PRO-12",
+                title="Next board candidate",
+                state_name="Inbox",
+            )
+            prepared = SimpleNamespace(snapshot=snapshot, phase="selecting", worktree_path=project_root)
 
-            def fake_run(args, cwd, check, capture_output, text):  # noqa: ARG001
-                command = " ".join(args)
-                if "git config --get remote.origin.url" in command:
-                    return SimpleNamespace(stdout="git@github.com:jkuang7/blog.git\n")
-                if "git rev-parse --abbrev-ref HEAD" in command:
-                    return SimpleNamespace(stdout="main\n")
-                if "github_project_issue_flow.py list" in command:
-                    return SimpleNamespace(
-                        stdout='[{"repo": "jkuang7/blog", "number": 99, "title": "Stale closeout frontier", "url": "https://github.com/jkuang7/blog/issues/99", "fields": {"Status": "Inbox"}}, {"repo": "jkuang7/blog", "number": 12, "title": "Next board candidate", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "Inbox"}}]\n'
-                    )
-                if "github_project_issue_flow.py active" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 99, "title": "Stale closeout frontier", "url": "https://github.com/jkuang7/blog/issues/99", "fields": {"Status": "Inbox"}}}\n'
-                    )
-                if "github_project_issue_flow.py next" in command:
-                    return SimpleNamespace(
-                        stdout='{"found": true, "item": {"repo": "jkuang7/blog", "number": 12, "title": "Next board candidate", "url": "https://github.com/jkuang7/blog/issues/12", "fields": {"Status": "Inbox"}}}\n'
-                    )
-                if "gh issue view 99 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 99, "title": "Stale closeout frontier", "url": "https://github.com/jkuang7/blog/issues/99", "body": "", "comments": []}\n'
-                    )
-                if "gh issue view 12 --repo jkuang7/blog --json body,comments,number,title,url" in command:
-                    return SimpleNamespace(
-                        stdout='{"number": 12, "title": "Next board candidate", "url": "https://github.com/jkuang7/blog/issues/12", "body": "", "comments": []}\n'
-                    )
-                raise AssertionError(f"unexpected subprocess call: {command}")
-
-            with patch("src.main.subprocess.run", side_effect=fake_run):
+            with (
+                patch("src.main.fetch_project_context", return_value={"next_candidate": {"identifier": "PRO-12"}}),
+                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+                patch("src.main._active_issue_requires_runtime_reset", return_value=True),
+            ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
                     project="blog",
@@ -506,8 +484,8 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             self.assertIsNotNone(issue)
             kanban_state = read_json(paths.kanban_state_json)
-            self.assertEqual(kanban_state["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
-            self.assertEqual(kanban_state["loop"]["resume_source"], "github_project_issue_flow")
+            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
+            self.assertEqual(kanban_state["loop"]["resume_source"], "runtime_recovery_reset")
             refreshed_state = read_json(paths.state_file)
             refreshed_status = read_json(paths.runner_status_json)
             refreshed_exec = read_json(paths.exec_context_json)

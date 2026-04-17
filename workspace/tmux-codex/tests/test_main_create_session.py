@@ -96,7 +96,7 @@ class CreateSessionTests(unittest.TestCase):
         tmux_instance.create_session.assert_not_called()
         tmux_instance.attach.assert_not_called()
         output = stdout.getvalue()
-        self.assertIn("Prompt install check failed", output)
+        self.assertIn("Command install check failed", output)
         self.assertIn("not linked to canonical source", output)
 
 

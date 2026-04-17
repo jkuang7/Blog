@@ -10,9 +10,9 @@ class RunDocsContractTests(unittest.TestCase):
     def test_run_spec_mentions_dynamic_gate_expansion(self):
         text = (ROOT / "run.md").read_text(encoding="utf-8")
         self.assertIn("RUNNER_DONE.lock", text)
-        self.assertIn("/prompts:run_execute", text)
-        self.assertIn("/prompts:run_govern", text)
-        self.assertIn("/prompts:run_setup", text)
+        self.assertIn("/run_execute", text)
+        self.assertIn("/run_govern", text)
+        self.assertIn("/run_setup", text)
         self.assertIn("OBJECTIVE.json", text)
         self.assertIn("SEAMS.json", text)
         self.assertIn("GAPS.json", text)
@@ -23,16 +23,16 @@ class RunDocsContractTests(unittest.TestCase):
         self.assertIn("RUNNER_GRAPH_ACTIVE_SLICE.json", text)
         self.assertIn("RUNNER_DEP_GRAPH.json", text)
         self.assertIn(".memory/PRD.md", text)
-        self.assertIn("controller dispatches `/prompts:run_execute ...` first", text)
+        self.assertIn("controller dispatches the rendered `run_execute` prompt first", text)
         self.assertIn("controller scripts deterministic refresh itself with `runctl --setup` and `runctl --prepare-cycle`", text)
-        self.assertIn("when execute reports `needs_update=yes`, controller dispatches `/prompts:run_govern ...` in the same Codex session when that session already matches the requested update profile; otherwise it relaunches a fresh session for the required profile", text)
-        self.assertIn("when scripted refresh fails to produce the prepared marker, controller likewise prefers same-session `/prompts:run_govern ...` to preserve execute context and only relaunches when the update profile is incompatible with the current session", text)
+        self.assertIn("when execute reports `needs_update=yes`, controller dispatches the rendered `run_govern` prompt in the same Codex session when that session already matches the requested update profile; otherwise it relaunches a fresh session for the required profile", text)
+        self.assertIn("when scripted refresh fails to produce the prepared marker, controller likewise prefers same-session `run_govern` prompt dispatch to preserve execute context and only relaunches when the update profile is incompatible with the current session", text)
         self.assertIn("after govern, controller again scripts deterministic refresh itself with `runctl --setup` and `runctl --prepare-cycle`", text)
         self.assertIn("supervisor archives completed runner threads itself between cycles", text)
         self.assertIn("resolve the active seam profile at the start of each cycle", text)
         self.assertIn("model_profile=mini", text)
-        self.assertIn("`/prompts:run_setup` is for human reset/rebuild only.", text)
-        self.assertIn("run `/prompts:run_govern`", text)
+        self.assertIn("`/run_setup` is for human reset/rebuild only.", text)
+        self.assertIn("run `/run_govern`", text)
         self.assertIn("prefer the smallest truthful recovery", text)
         self.assertIn("treat coupling as a split trigger", text)
         self.assertIn("synthesize or reopen one final done-closeout seam instead of inferring completion", text)
@@ -114,8 +114,8 @@ class RunDocsContractTests(unittest.TestCase):
 
     def test_readme_marks_file_managed_planning_as_deprecated(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("file-managed planning layer is being deprecated", text)
-        self.assertIn("GitHub issues and the shared project board own task selection", text)
+        self.assertIn("legacy file-managed planner is now compatibility-only", text)
+        self.assertIn("Linear issues and ORX now own task selection", text)
         self.assertIn("KANBAN_STATE.json", text)
 
     def test_run_execute_prompt_exists_and_is_execute_only(self):
@@ -128,7 +128,8 @@ class RunDocsContractTests(unittest.TestCase):
         self.assertIn("RUNNER_GRAPH_ACTIVE_SLICE.json", text)
         self.assertIn("medium bounded infinite-runner work slice", text)
         self.assertIn("The runner controller will script deterministic refresh itself after this prompt completes.", text)
-        self.assertIn("It will invoke `/prompts:run_govern` in the same Codex session", text)
+        self.assertIn("It will invoke `/run_govern` in the same Codex session", text)
+        self.assertIn("tmux-codex may render and inject this prompt body directly", text)
         self.assertIn("treat the current active seam as the stable unit of ownership", text)
         self.assertIn("Use the active seam metadata in `RUNNER_EXEC_CONTEXT.json` as hard scope", text)
         self.assertIn("Treat `RUNNER_HANDOFF.md` as human/manual recovery context", text)
@@ -196,7 +197,7 @@ class RunDocsContractTests(unittest.TestCase):
         self.assertIn("Do not create or refresh runner setup from `/add`.", text)
         self.assertIn("`--allow-preempt` only if the human explicitly asks", text)
         self.assertIn("If more than one plausible runner root exists, ask the human", text)
-        self.assertIn("/prompts:run_setup", text)
+        self.assertIn("/run_setup", text)
 
     def test_legacy_phase_prompts_are_not_required_in_default_install(self):
         for prompt_name in ("run.md", "run_clear.md", "runner-cycle.md", "runner-discover.md", "runner-implement.md", "runner-verify.md", "runner-closeout.md"):
@@ -205,8 +206,13 @@ class RunDocsContractTests(unittest.TestCase):
     def test_install_script_links_add_prompt(self):
         text = (ROOT / "scripts" / "install-codex-run-prompt.sh").read_text(encoding="utf-8")
         self.assertIn('SOURCE_DIR="$REPO_HOME/prompts"', text)
-        self.assertIn("for prompt_name in run_setup run_execute run_govern add", text)
-        self.assertIn("for legacy_prompt in run run_clear runner-cycle runner-discover runner-implement runner-verify runner-closeout", text)
+        self.assertIn("for command_name in run_setup run_execute run_govern add", text)
+        self.assertIn("runner-cycle", text)
+        self.assertIn("runner-closeout", text)
+        self.assertIn("runner_cycle", text)
+        self.assertIn("runner_closeout", text)
+        self.assertIn("run-execute:run_execute", text)
+        self.assertIn("run-govern:run_govern", text)
         self.assertIn("ln -s", text)
 
 

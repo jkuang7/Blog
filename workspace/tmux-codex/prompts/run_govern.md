@@ -1,21 +1,23 @@
+# /run_govern - Govern deterministic ORX/Linear runner state
+
 Use this command to govern infinite-runner state after one execute slice finishes.
+
+tmux-codex may render and inject this prompt body directly when Codex custom slash commands are unavailable in the live TUI. The instruction contract is the same either way.
 
 This is the autonomous seam-governor prompt. It keeps the loop moving without wiping runner memory or rebuilding from scratch.
 
-Runner context from `/prompts:run_govern` args:
-- `DEV=$DEV`
-- `PROJECT=$PROJECT`
-- `RUNNER_ID=$RUNNER_ID`
-- `PWD=$PWD`
+Optional runner context from `/run_govern` args:
 - optional `PROJECT_ROOT=$PROJECT_ROOT`
+
+In normal runner dispatch, the command is intentionally compact:
+- `/run_govern`
+- the active session cwd and runner state are the primary source of truth
 
 ## Scope First
 
 Resolve target root in this order:
-1. explicit `PWD`
+1. current working directory
 2. explicit `PROJECT_ROOT`
-3. explicit `PROJECT` via `$DEV/Repos/$PROJECT`
-4. current working directory
 
 `cd` to that root before doing anything else.
 

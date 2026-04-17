@@ -1,9 +1,11 @@
+# /run_setup - Reset and seed deterministic ORX/Linear runner state
+
 Use this command to prepare Codex infinite-runner state for the current repo/worktree.
 
 This is the human reset/rebuild path. On normal runs it clears runner memory, then regenerates runner state from repo evidence plus the current conversation context.
-This prompt is for the user/human setup flow only. tmux-codex runtime must not dispatch `/prompts:run_setup` autonomously.
+This prompt is for the user/human setup flow only. tmux-codex runtime must not dispatch `/run_setup` autonomously.
 
-Runner context from `/prompts:run_setup` args:
+Runner context from `/run_setup` args:
 - `DEV=$DEV`
 - `PROJECT=$PROJECT`
 - `RUNNER_ID=$RUNNER_ID`
@@ -194,7 +196,7 @@ Instead, name the first concrete slice, for example:
 Do not preserve generic boilerplate when the user has already provided a specific plan.
 Do not preserve broad umbrella tasks when the user has already provided enough detail to split them.
 Do not preserve weak acceptance criteria when the user has described a strict parity target.
-Do not use this prompt as the infinite runner's automatic recovery step; that belongs to `/prompts:run_govern`.
+Do not use this prompt as the infinite runner's automatic recovery step; that belongs to `/run_govern`.
 
 ## Command
 
