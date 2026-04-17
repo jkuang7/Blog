@@ -38,6 +38,8 @@ assert_false() {
 # --- popup detection ---
 assert_true "sign-in title should be popup" is_popup_title "Sign in required"
 assert_true "oauth title should be popup" is_popup_title "OAuth permission"
+assert_true "settings title should be popup" is_popup_title "Settings"
+assert_true "preferences title should be popup" is_popup_title "Preferences"
 assert_false "normal browsing title should not be popup" is_popup_title "Start Page"
 
 # --- contender/main-intent rebuild decision ---

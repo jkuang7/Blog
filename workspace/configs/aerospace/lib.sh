@@ -20,7 +20,7 @@ STATE_UPNOTE_TILED="false"
 STATE_TILED_ORDER=""
 STATE_ACTIVE_UTILITY_BUNDLE=""
 STATE_ACTIVE_UTILITY_WID=""
-POPUP_TITLE_AWK_REGEX='oauth|auth|sign[[:space:]]in|log[[:space:]]in|login|permission|extension|download|save|open[[:space:]]file|alert|dialog|sheet|confirm|prompt'
+POPUP_TITLE_AWK_REGEX='oauth|auth|sign[[:space:]]in|log[[:space:]]in|login|permission|extension|download|save|open[[:space:]]file|alert|dialog|sheet|confirm|prompt|settings|preferences|prefs'
 
 now_ms() {
     python3 - <<'PY' 2>/dev/null
