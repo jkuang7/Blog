@@ -45,43 +45,16 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 
 ## Stitch-First Visual Work
 
-- For UI-affecting work, do not freestyle visual changes in code first.
-- UI-affecting means styling, layout, spacing, hierarchy, theme, responsiveness, redesigns, or visual component refreshes.
-- Required order:
-  - inspect the current screen and constraints
-  - capture current screenshots
-  - generate or edit through Stitch first
-  - persist artifacts and review links locally
-  - surface the review link in Codex when Stitch provides one
-  - stop for approval in Codex
-  - let `/ui` extract `STYLE.md` from the approved `DESIGN.md`
-  - let `/ui` derive `PLAN.md` from approved `STYLE.md`
-  - only then adapt the design into production code
-- Persist runs under `/Users/jian/Dev/.codex/stitch-runs/<repo>/<timestamp>-<slug>/`.
-- Initialize with:
-  - `request.md`
-  - `before/`
-  - `status/run.md`
-  - `status/approval.md`
-  - `stitch/exports/`
-- Create these only when true:
-  - review links in `status/approval.md`
-  - `stitch/raw.json`
-  - `stitch/DESIGN.md`
-  - `decision.md`
-  - `STYLE.md`
-  - `PLAN.md`
-  - `failure.md`
-- After implementation and verification:
-  - archive generated screenshots or design images into the run folder if they still live elsewhere
-  - clean up stray generated image files that were only needed for the design loop
+- For UI-affecting work, use the `stitch-first-ui` skill instead of freehanding visual changes in code first.
+- Treat this section as policy only; keep the detailed Stitch workflow, artifacts, prompting, and budget rules in the skill.
+- Required policy:
+  - gather context and inspect the current UI first
+  - use Stitch before production visual code changes
+  - get human approval in Codex before extracting `STYLE.md` or implementing
+  - use approved `STYLE.md` to drive `PLAN.md` and implementation
+  - archive generated design images into the run folder and clean up stray design-loop image files after verification
 - Never paste generated Stitch HTML directly into production.
-- This workflow does not enforce project-level design tokens here; `create-t3-jian` remains the scaffold-level opinion source.
-- Treat Stitch credits as scarce:
-  - default to one generate, then small edits
-  - prefer `edit` over regenerate once a screen exists
-  - default variant count is `2`; do not exceed `3` unless the user explicitly asks
-  - refine the prompt before spending another design call
+- This does not enforce project-level design tokens here; `create-t3-jian` remains the scaffold-level opinion source.
 
 ## ORX / Linear / Runner
 
