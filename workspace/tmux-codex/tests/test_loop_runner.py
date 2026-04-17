@@ -6,7 +6,7 @@ import unittest
 from itertools import repeat
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import sys
 
@@ -18,8 +18,10 @@ from src.codex_engine import CodexRunResult
 from src.codex_threads import archive_runner_threads_for_cwd, is_runner_thread
 from src.main import parse_loop_args
 from src.runner_loop import (
+    _extract_open_runner_backlog,
     _build_prompt,
     _log_line,
+    _parse_orx_runner_result,
     _runner_idle_grace_seconds,
     _submit_runner_prompt,
     build_runner_paths,
@@ -153,6 +155,84 @@ class LoopScriptTests(unittest.TestCase):
             self.assertEqual(profile["model"], "gpt-5.4-mini")
             self.assertEqual(profile["reasoning_effort"], "medium")
             self.assertEqual(profile["seam_id"], "TT-101")
+
+    def test_resolve_active_seam_execution_profile_prefers_orx_execution_packet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(
+                paths.kanban_state_json,
+                {
+                    "active_issue": {
+                        "identifier": "PRO-108",
+                        "title": "Fix runner contamination",
+                        "project_key": "blog",
+                        "execution_packet": {
+                            "active_slice_id": "slice-108",
+                            "issue_key": "PRO-108",
+                            "issue_title": "Fix runner contamination",
+                            "execution_model": "gpt-5.4-mini",
+                            "execution_reasoning_effort": "medium",
+                        },
+                    }
+                },
+            )
+            write_json(paths.exec_context_json, {"task_id": "TT-101", "model_profile": "high"})
+
+            profile = resolve_active_seam_execution_profile(
+                paths=paths,
+                fallback_model="gpt-5.4",
+                fallback_reasoning_effort="high",
+            )
+
+            self.assertEqual(profile["source"], "orx_execution_packet")
+            self.assertEqual(profile["model"], "gpt-5.4-mini")
+            self.assertEqual(profile["reasoning_effort"], "medium")
+            self.assertEqual(profile["seam_id"], "PRO-108")
+
+    def test_parse_orx_runner_result_accepts_structured_result_block(self):
+        payload, error = _parse_orx_runner_result(
+            "\n".join(
+                [
+                    "working",
+                    "RUNNER_RESULT_START",
+                    json.dumps(
+                        {
+                            "status": "success",
+                            "summary": "Implemented the slice.",
+                            "verified": True,
+                            "next_slice": None,
+                            "artifacts": ["tests/test_loop_runner.py"],
+                            "metrics": {"source": "test"},
+                            "blockers": [],
+                            "risks": [],
+                            "lessons": ["Keep the runner packet authoritative."],
+                            "verification_ran": ["pytest tests/test_loop_runner.py -q"],
+                            "verification_failed": [],
+                            "touched_paths": ["src/runner_loop.py"],
+                            "next_step_hint": "Continue with the next bounded slice only if ORX requests it.",
+                            "owner_mismatch": False,
+                            "scope_mismatch": False,
+                            "needs_human_help": False,
+                        }
+                    ),
+                    "RUNNER_RESULT_END",
+                ]
+            )
+        )
+
+        self.assertIsNone(error)
+        assert payload is not None
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["artifacts"], ["tests/test_loop_runner.py"])
 
     def test_run_loop_runner_switches_model_between_iterations_from_active_task_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -293,10 +373,124 @@ class LoopScriptTests(unittest.TestCase):
                 )
 
             self.assertEqual(rc, 0)
+
+    def test_interactive_runner_controller_submits_orx_slice_result_and_restarts_fresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(
+                paths.kanban_state_json,
+                {
+                    "active_issue": {
+                        "identifier": "PRO-108",
+                        "title": "Fix runner contamination",
+                        "project_key": "blog",
+                        "execution_packet": {
+                            "active_slice_id": "slice-108",
+                            "issue_key": "PRO-108",
+                            "issue_title": "Fix runner contamination",
+                            "execution_model": "gpt-5.4-mini",
+                            "execution_reasoning_effort": "medium",
+                        },
+                    }
+                },
+            )
+            result_output = "\n".join(
+                [
+                    "working",
+                    "RUNNER_RESULT_START",
+                    json.dumps(
+                        {
+                            "status": "success",
+                            "summary": "Implemented the ORX-managed slice.",
+                            "verified": True,
+                            "next_slice": None,
+                            "artifacts": ["src/runner_loop.py"],
+                            "metrics": {"source": "test"},
+                            "blockers": [],
+                            "risks": [],
+                            "lessons": [],
+                            "verification_ran": ["pytest tests/test_loop_runner.py -q"],
+                            "verification_failed": [],
+                            "touched_paths": ["src/runner_loop.py"],
+                            "next_step_hint": "",
+                            "owner_mismatch": False,
+                            "scope_mismatch": False,
+                            "needs_human_help": False,
+                        }
+                    ),
+                    "RUNNER_RESULT_END",
+                ]
+            )
+            tmux = SimpleNamespace(
+                has_session=lambda _name: True,
+                capture_pane=MagicMock(side_effect=["", result_output]),
+                get_pane_process=MagicMock(return_value="codex"),
+                send_eof=MagicMock(return_value=True),
+            )
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux),
+                patch(
+                    "src.runner_loop._orx_execution_packet",
+                    return_value={
+                        "active_slice_id": "slice-108",
+                        "issue_key": "PRO-108",
+                        "issue_title": "Fix runner contamination",
+                        "packet_key": "packet-108",
+                        "packet_revision": "packet-rev-108",
+                        "latest_handoff_revision": "handoff-rev-108",
+                        "continuity_revision": "continuity-rev-108",
+                        "decision_epoch": "slice-108",
+                        "execution_model": "gpt-5.4-mini",
+                        "execution_reasoning_effort": "medium",
+                    },
+                ),
+                patch("src.runner_loop.detect_runner_state", side_effect=["idle", "idle"]),
+                patch("src.runner_loop._submit_runner_prompt", return_value=(True, None)),
+                patch("src.runner_loop._has_completion_directive_for_step", return_value=True),
+                patch("src.runner_loop.submit_slice_result", return_value={"ok": True}) as submit_result,
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 0)
+            submit_result.assert_called_once()
+            self.assertEqual(submit_result.call_args.kwargs["project_key"], "blog")
+            self.assertEqual(submit_result.call_args.kwargs["slice_id"], "slice-108")
+            submitted_payload = submit_result.call_args.kwargs["payload"]
+            self.assertEqual(submitted_payload["issue_key"], "PRO-108")
+            self.assertEqual(submitted_payload["packet_key"], "packet-108")
+            self.assertEqual(submitted_payload["packet_revision"], "packet-rev-108")
+            self.assertEqual(submitted_payload["latest_handoff_revision"], "handoff-rev-108")
+            self.assertEqual(submitted_payload["continuity_revision"], "continuity-rev-108")
+            self.assertEqual(submitted_payload["decision_epoch"], "slice-108")
             runner_status = read_json(paths.runner_status_json)
             self.assertEqual(runner_status.get("project"), "blog")
-            self.assertEqual(runner_status.get("status"), "stopped")
-            self.assertEqual(runner_status.get("project_root"), str(project_root))
+            self.assertEqual(runner_status.get("status"), "running")
 
     def test_archive_runner_threads_for_cwd_archives_only_runner_threads(self):
         threads = [
@@ -1389,6 +1583,79 @@ class LoopPromptTests(unittest.TestCase):
         )
         self.assertIn(f"Active backlog file: {paths.active_backlog_json}", prompt)
         self.assertIn("Treat RUNNER_HANDOFF.md as human/manual recovery context", prompt)
+
+    def test_prompt_prefers_orx_execution_packet_over_stale_local_backlog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = build_runner_state_paths(tmp, "blog", "main")
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(
+                paths.kanban_state_json,
+                {
+                    "active_issue": {
+                        "identifier": "PRO-OLD",
+                        "title": "Stale local issue",
+                        "url": "https://linear.example/PRO-OLD",
+                    }
+                },
+            )
+            write_json(
+                paths.active_backlog_json,
+                {
+                    "kanban": {
+                        "active_issue_identifier": "PRO-OLD",
+                        "active_issue_title": "Stale local issue",
+                    },
+                    "active_backlog": [{"identifier": "PRO-OLD", "title": "Stale local issue"}],
+                },
+            )
+            with patch(
+                "src.runner_loop.fetch_execution_packet",
+                return_value={
+                    "issue_key": "PRO-NEW",
+                    "issue_title": "Fresh ORX issue",
+                    "issue_url": "https://linear.example/PRO-NEW",
+                    "project_key": "blog",
+                    "project_display_name": "Blog",
+                    "worktree_path": "/tmp/worktree",
+                    "branch": "linear/pro-new",
+                    "active_slice_id": "slice-1",
+                },
+            ):
+                prompt = _build_prompt(project="blog", runner_id="main", paths=paths)
+
+        self.assertIn("PRO-NEW", prompt)
+        self.assertIn("Fresh ORX issue", prompt)
+        self.assertNotIn("Stale local issue", prompt)
+        self.assertIn('"active_backlog_top4": []', prompt)
+
+    def test_open_runner_backlog_prefers_orx_execution_packet_over_stale_local_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "blog"
+            runner_dir = project_root / ".memory" / "runner"
+            runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(
+                runner_dir / "RUNNER_ACTIVE_BACKLOG.json",
+                {
+                    "kanban": {
+                        "active_issue_identifier": "PRO-OLD",
+                        "active_issue_title": "Stale local issue",
+                    },
+                    "active_backlog": [{"identifier": "PRO-OLD", "title": "Stale local issue"}],
+                },
+            )
+            with patch(
+                "src.runner_loop.fetch_execution_packet",
+                return_value={
+                    "issue_key": "PRO-NEW",
+                    "issue_title": "Fresh ORX issue",
+                    "project_key": "blog",
+                    "active_slice_id": "slice-1",
+                },
+            ):
+                items, label = _extract_open_runner_backlog(project_root, project="blog")
+
+        self.assertEqual(label, "ORX execution packet")
+        self.assertEqual(items, ["PRO-NEW: Fresh ORX issue"])
 
 
 class LoopLoggingTests(unittest.TestCase):

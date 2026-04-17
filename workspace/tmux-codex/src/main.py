@@ -11,7 +11,11 @@ import time
 from pathlib import Path
 
 from .menu import SessionMenu
-from .orx_control import OrxControlError, fetch_project_context, prepare_linear_issue_context
+from .orx_control import (
+    OrxControlError,
+    fetch_project_context,
+    prepare_linear_issue_context,
+)
 from .runner_graph import run_runner_build_graph_command
 from .runctl import (
     create_runner_state,
@@ -94,10 +98,6 @@ def session_profile_overrides(args: list[str]) -> list[str]:
         "continue kanban",
         "run kanban",
         "/run_setup",
-        "/run_execute",
-        "/run_govern",
-        "/run",
-        "/prompts:run_",
         "/integrate",
         "/spec",
         "/refactor",
@@ -411,6 +411,24 @@ def _seed_kanban_state_for_background_runner(
             effective_root = prepared.worktree_path
             selected_issue = dict(prepared.snapshot)
             selected_phase = prepared.phase
+            execution_packet = (
+                project_context.get("execution_packet")
+                if isinstance(project_context.get("execution_packet"), dict)
+                else None
+            )
+            if execution_packet:
+                selected_issue["execution_packet"] = execution_packet
+                selected_issue["execution_model"] = str(
+                    execution_packet.get("execution_model") or selected_issue.get("execution_model") or ""
+                ).strip() or None
+                selected_issue["execution_reasoning_effort"] = str(
+                    execution_packet.get("execution_reasoning_effort")
+                    or selected_issue.get("execution_reasoning_effort")
+                    or ""
+                ).strip() or None
+                selected_issue["latest_handoff"] = str(
+                    execution_packet.get("latest_handoff") or selected_issue.get("latest_handoff") or ""
+                ).strip() or None
 
     paths = build_runner_state_paths_for_root(
         project_root=effective_root,
@@ -656,6 +674,13 @@ def start_loop_session(
         runner_id=runner_id,
         project_root=project_root,
     )
+    if selected_issue:
+        packet_model = str(selected_issue.get("execution_model") or "").strip()
+        packet_effort = str(selected_issue.get("execution_reasoning_effort") or "").strip()
+        if packet_model:
+            model = packet_model
+        if packet_effort:
+            reasoning_effort = packet_effort
     selected_worktree = str((selected_issue or {}).get("worktree") or "").strip()
     if selected_worktree:
         project_root = Path(selected_worktree).expanduser().resolve()

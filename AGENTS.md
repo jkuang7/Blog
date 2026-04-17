@@ -1,122 +1,177 @@
 # Global Agent Standards (`~/Dev`)
 
-Applies to everything under `/Users/jian/Dev` unless overridden by a deeper `AGENTS.md`.
+Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overrides it.
 
-## Keep This File Token-Efficient
+## Keep This File Lean
 
-- Keep only guidance that must be satisfied before a full lint/verify pass.
-- Do not restate rules already enforced by repo lint/build hooks.
+- Keep only guidance that materially changes behavior before lint, verify, or review.
+- Do not restate rules already enforced by repo tooling.
 
-## Commit Requests
+## Default Posture
 
-- Use worktrees by default for new feature/problem work; `main` is the integration target, not the default execution surface.
-- When the user says `commit`, promote the conversation-relevant changes onto `main`.
-- Prefer cherry-picking or otherwise replaying only relevant changes onto `main`; do not blindly merge unrelated branch state.
-- Resolve merge/cherry-pick conflicts using conversation intent and current `main` behavior.
-- Keep scope selective: include only changes needed for the user request.
-- After promotion, restore a clean ownership state: canonical checkout on `main`, feature worktree on its branch.
-- Do not disturb unrelated branches, stashes, worktrees, or local resource directories unless explicitly asked.
+- Be context-driven, not optimistic.
+- Before implementing, gather context on the actual situation:
+  - load the repo's required agent or harness context in the required order
+  - inspect the relevant code, ownership boundaries, and current constraints
+  - reuse a running app or browser when useful
+  - reproduce the bug or inspect the live surface when behavior or layout is in question
+- Do not jump into code just because a likely fix seems obvious. Understand what owns the behavior first.
+- Once the situation is clear, execute end-to-end without pausing for obvious next steps.
 
 ## Task Start
 
 - If the repo defines an LLM or harness contract, follow its loading order exactly.
-- Reuse an already-running app or browser when suitable.
-- Start new feature/problem work from a worktree by default, not the main checkout.
+- Start new feature or problem work from a worktree by default; `main` is the integration target, not the default execution surface.
+- Reuse an already-running app, browser, or local service when suitable.
 
-## ORX / Linear Flow
+## Response Style
+
+- Prefer a conversational engineer-to-engineer tone.
+- Use structure only when it improves comprehension.
+- Put the short summary at the bottom for substantive responses, including plans.
+- Keep the bottom summary brief and high signal:
+  - what changed, decided, or was found
+  - what matters next
+  - real blockers only
+- For reviews, keep findings first and end with a short bottom-line summary.
+
+## Commit Requests
+
+- When the user says `commit`, promote only the conversation-relevant changes onto `main`.
+- Prefer cherry-picking or replaying the intended changes; do not blindly merge unrelated branch state.
+- Resolve merge or cherry-pick conflicts using conversation intent and current `main` behavior.
+- After promotion, restore a clean ownership state: canonical checkout on `main`, feature worktree on its branch.
+- Do not disturb unrelated branches, stashes, worktrees, or local resource directories unless explicitly asked.
+
+## Stitch-First Visual Work
+
+- For UI-affecting work, do not freestyle visual changes in code first.
+- UI-affecting means styling, layout, spacing, hierarchy, theme, responsiveness, redesigns, or visual component refreshes.
+- Required order:
+  - inspect the current screen and constraints
+  - capture current screenshots
+  - generate or edit through Stitch first
+  - persist artifacts and review links locally
+  - surface the review link in Codex when Stitch provides one
+  - stop for approval in Codex
+  - let `/ui` extract `STYLE.md` from the approved `DESIGN.md`
+  - let `/ui` derive `PLAN.md` from approved `STYLE.md`
+  - only then adapt the design into production code
+- Persist runs under `/Users/jian/Dev/.codex/stitch-runs/<repo>/<timestamp>-<slug>/`.
+- Initialize with:
+  - `request.md`
+  - `before/`
+  - `status/run.md`
+  - `status/approval.md`
+  - `stitch/exports/`
+- Create these only when true:
+  - review links in `status/approval.md`
+  - `stitch/raw.json`
+  - `stitch/DESIGN.md`
+  - `decision.md`
+  - `STYLE.md`
+  - `PLAN.md`
+  - `failure.md`
+- After implementation and verification:
+  - archive generated screenshots or design images into the run folder if they still live elsewhere
+  - clean up stray generated image files that were only needed for the design loop
+- Never paste generated Stitch HTML directly into production.
+- This workflow does not enforce project-level design tokens here; `create-t3-jian` remains the scaffold-level opinion source.
+- Treat Stitch credits as scarce:
+  - default to one generate, then small edits
+  - prefer `edit` over regenerate once a screen exists
+  - default variant count is `2`; do not exceed `3` unless the user explicitly asks
+  - refine the prompt before spending another design call
+
+## ORX / Linear / Runner
 
 - Treat `Telegram -> telecodex -> ORX -> Linear -> tmux-codex runner` as the canonical control flow.
-- telecodex is transport and presentation, not the source of truth for project selection or execution state.
-- ORX owns deterministic orchestration:
-  - intake
-  - decomposition
-  - project routing
-  - bot assignment
-  - dependency checks
-  - queueing
-  - recovery
-- Linear is the durable task graph and the reviewable execution brief.
-- tmux-codex `runner-<project>` sessions are the only canonical execution sessions for ORX-managed work.
-- Do not reintroduce raw `orx-*` executor sessions or local task-file selection into the active runtime path.
+- telecodex is transport, not the source of truth.
+- ORX owns orchestration:
+  - intake, decomposition, routing, dependency checks, queueing, recovery, and execution-tier choice
+- Linear is the durable task graph and reviewable execution brief.
+- tmux-codex `runner-<project>` sessions are the canonical execution sessions for ORX-managed work.
+- Do not reintroduce raw `orx-*` executor sessions or local task-file selection into the runtime path.
 
 ## Linear Ticket Contract
 
-- Runnable Linear leaf tickets should be stateless enough for medium-tier Codex execution.
-- Prefer ticket bodies that stand on their own:
-  - problem
-  - goal
-  - scope
-  - requirements
-  - acceptance criteria
-  - execution context
-  - verification expectations
-- Keep execution context in the ticket itself when it is stable and reviewable:
-  - project key
-  - repo root
-  - worktree or packet context
-  - branch intent
-  - relevant dependencies and risks
-- Do not assume prior Codex chat memory when drafting or refining runnable tickets.
+- Runnable leaf tickets should be stateless enough for medium-tier Codex execution.
+- Prefer ticket bodies that stand alone:
+  - objective, why, goal, scope, constraints, ordered steps, verification, stopping conditions, escalation guidance
+- Keep stable execution context in the ticket when it is reviewable:
+  - project key, repo root, worktree or packet context, branch intent, dependencies, risks
+- Keep one mutable `Latest Handoff` section with:
+  - current status
+  - what changed
+  - blockers, risks, lessons
+  - next direction
+  - selected execution tier and why
+- Do not assume prior chat memory when refining runnable tickets.
 
 ## Execution Ownership
 
-- Keep the control plane low-coupling and high-cohesion:
-  - ORX decides what should run
-  - Linear records what the work is
-  - tmux-codex runner executes it
-  - telecodex reports it
+- ORX decides what runs next.
+- Linear records what the work is.
+- tmux-codex runner executes it.
+- telecodex reports it.
+- Executor slices should report facts:
+  - what changed
+  - what was verified
+  - blockers, risks, lessons
+- ORX interprets those facts, updates the active Linear ticket, and decides continue, block, split, reroute, or follow-up.
 - Prefer one runner session per project.
-- When work spans multiple tightly related tickets, prefer one shared packet execution context until the packet is complete.
-- Keep final integration explicit under HIL:
-  - merge to `main`
-  - or cherry-pick from the packet branch to `main`
-- Avoid silent auto-merge behavior for multi-ticket packets.
+- Prefer one shared packet context when tightly related tickets should stay together.
+- Keep final integration explicit under HIL: merge or cherry-pick to `main`; do not silently auto-merge multi-ticket packets.
 
-## Early Non-Lint Contracts
+## Tier Routing
 
+- Default to `medium` for runnable leaves.
+- Escalate to `high` when execution uncovers owner mismatch, concrete blockers, verification failure, or multiple live risks.
+- Escalate to `xhigh` when execution uncovers scope mismatch, resequencing need, or ambiguity large enough that ORX must replan before redispatch.
+- Do not put model-tier authority back into local runner prompts or local runner state.
+
+## Verify, Then Claim
+
+- Use the loop: analyze context -> form a hypothesis -> make the smallest correct change -> verify on the right surface -> repeat until resolved.
+- Verification should come from the relevant surface:
+  - app or runtime behavior
+  - browser automation
+  - repo-specific harnesses or tools
+  - tests or logs
+- After a non-trivial fix, add a targeted regression when the behavior is worth protecting.
 - Delete dummy resources created during testing once no longer needed, unless the user wants them kept.
-
-## Bug Fix Loop
-
-Loop: analyze context -> hypothesis -> smallest fix -> reproduce and verify with the appropriate execution surface -> repeat until fixed
-
-Verification must include post-fix execution evidence from the relevant surface, such as:
-
-- app/runtime behavior
-- browser automation (for example Playwright or browser MCP flows)
-- repo-specific harnesses/tools
-- tests/logs
-
-After the fix is confirmed, add targeted regressions when the behavior is worth protecting.
 
 ## `.memory/lessons.md`
 
-Use only for non-testable knowledge:
-
-- constraints
-- failure signatures
-- rationale and tradeoffs
-- safe-change playbooks
-- tooling quirks
-
-Rules:
-
-- Not a changelog, bug diary, or test index.
+- Use it only for non-testable knowledge:
+  - constraints
+  - failure signatures
+  - rationale and tradeoffs
+  - safe-change playbooks
+  - tooling quirks
+- It is not a changelog, bug diary, or test index.
 - Keep it DRY and current.
 - Do not create new `.memory/lessons.md` files outside `/Users/jian/Dev/Repos/<project>*`.
 - If something becomes testable, move it to tests.
 
-## Refactors
+## Runner Memory
 
-- No behavior change unless requested.
+- Treat `.memory/runner` files as cache or recovery breadcrumbs, not truth, for ORX-managed work.
+- Allowed local runner memory:
+  - active issue or worktree snapshot
+  - runner status
+  - append-only ledger
+  - cached last ORX execution packet
+- If ORX selects a new issue or packet, stale local runner files must not override that selection.
+- The durable execution brief belongs in Linear; hot orchestration state belongs in ORX.
+
+## Refactors and UI Code
+
+- Refactors should not change behavior unless requested.
 - Use git history when needed to avoid known failure modes.
-
-## React Design
-
-- Prefer: Reusability, Maintainable, Scalable
-- Your changes should not conflict with the styling of the system or the design structure
-- Prefer small, cohesive feature components over god components.
-- Separate pure render pieces from stateful orchestration when it improves clarity.
-- Preserve stable naming, file ordering, and grep-friendly exports/test IDs.
-- Before UI/UX changes, trace the owner chain far enough to understand props, composition, and shared styles.
-- For CSS/layout/visual system changes, assess cascade and reuse impact before editing so fixes happen at the right layer.
+- Prefer reusable, maintainable, scalable React structures.
+- Prefer small cohesive feature components over god components.
+- Separate pure render pieces from orchestration when it improves clarity.
+- Preserve stable naming, file ordering, and grep-friendly exports or test IDs.
+- Before UI or UX changes, trace the owner chain far enough to understand props, composition, and shared styles.
+- For CSS, layout, or visual system changes, fix the owning layer instead of patching leaves blindly.

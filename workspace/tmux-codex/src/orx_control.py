@@ -49,6 +49,16 @@ def fetch_project_context(*, project_key: str) -> dict[str, Any]:
     return context
 
 
+def fetch_execution_packet(*, project_key: str) -> dict[str, Any] | None:
+    context = fetch_project_context(project_key=project_key)
+    packet = context.get("execution_packet")
+    if packet is None:
+        return None
+    if not isinstance(packet, dict):
+        raise OrxControlError(f"ORX returned invalid execution packet for {project_key}.")
+    return packet
+
+
 def fetch_dashboard() -> dict[str, Any]:
     payload = _request_json("GET", "/dashboard")
     projects = payload.get("projects")
@@ -88,6 +98,27 @@ def update_linear_issue(
     if not isinstance(issue, dict):
         raise OrxControlError(f"ORX returned invalid updated issue payload for {issue_ref}.")
     return issue
+
+
+def submit_slice_result(
+    *,
+    project_key: str,
+    slice_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    response = _request_json(
+        "POST",
+        "/slice-results",
+        {
+            "project_key": project_key,
+            "slice_id": slice_id,
+            "payload": payload,
+        },
+    )
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise OrxControlError(f"ORX returned invalid slice result response for {project_key}.")
+    return result
 
 
 def prepare_linear_issue_context(
@@ -155,6 +186,11 @@ def prepare_linear_issue_context(
     issue["description"] = updated_description
     issue["metadata"] = merged_metadata
     execution_brief = build_issue_execution_brief(issue)
+    execution_packet = (
+        project_context.get("execution_packet")
+        if isinstance(project_context.get("execution_packet"), dict)
+        else None
+    )
 
     snapshot = {
         "url": linear_url or f"linear://issue/{identifier}",
@@ -190,6 +226,12 @@ def prepare_linear_issue_context(
         "priority": issue.get("priority"),
         "metadata": merged_metadata,
         "execution_brief": execution_brief,
+        "execution_model": _as_text(merged_metadata.get("codex_execution_model"))
+        or _as_text((execution_packet or {}).get("execution_model")),
+        "execution_reasoning_effort": _as_text(merged_metadata.get("codex_execution_reasoning_effort"))
+        or _as_text((execution_packet or {}).get("execution_reasoning_effort")),
+        "latest_handoff": _as_text((execution_packet or {}).get("latest_handoff")),
+        "execution_packet": execution_packet,
     }
     return PreparedIssueContext(
         issue=issue,
@@ -348,6 +390,10 @@ def _normalize_compact_execution_brief(raw: Any) -> dict[str, Any] | None:
             or [f"Complete {objective_title} with recorded verification evidence."]
         ),
         "constraints": _coalesce_text_list(raw.get("constraints"), None),
+        "ordered_steps": _coalesce_text_list(raw.get("ordered_steps"), None),
+        "verification": _coalesce_text_list(raw.get("verification"), None),
+        "stopping_conditions": _coalesce_text_list(raw.get("stopping_conditions"), None),
+        "blocked_escalation": _coalesce_text_list(raw.get("blocked_escalation"), None),
     }
 
 

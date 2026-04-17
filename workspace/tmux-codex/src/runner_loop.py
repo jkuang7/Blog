@@ -18,6 +18,7 @@ from typing import Literal
 from .codex_threads import archive_runner_threads_for_cwd
 from .codex_engine import CodexRunResult, run_codex_iteration
 from .hooks import HookAdapter, LocalHooks, load_agents_bridge
+from .orx_control import OrxControlError, fetch_execution_packet, submit_slice_result
 from .runctl import create_runner_state, resolve_target_project_root
 from .runner_status import detect_runner_state, has_explicit_codex_prompt
 from .runner_state import (
@@ -51,6 +52,8 @@ TASK_MODEL_PROFILE_MAP = {
 ProjectStack = Literal["pnpm", "npm", "python_pyproject", "python_requirements", "go", "cargo", "unknown"]
 RUNNER_UPDATE_START_MARKER = "RUNNER_UPDATE_START"
 RUNNER_UPDATE_END_MARKER = "RUNNER_UPDATE_END"
+RUNNER_RESULT_START_MARKER = "RUNNER_RESULT_START"
+RUNNER_RESULT_END_MARKER = "RUNNER_RESULT_END"
 REQUIRED_UPDATE_KEYS = (
     "summary",
     "completed",
@@ -311,6 +314,33 @@ def resolve_active_seam_execution_profile(
     fallback_reasoning_effort: str,
 ) -> dict[str, str | None]:
     """Resolve the current seam routing profile from exec-context/state with safe fallback."""
+    active_issue = _active_issue_snapshot(paths.memory_dir.parent)
+    project_key = (
+        str(active_issue.get("project_key") or "").strip()
+        if isinstance(active_issue, dict)
+        else ""
+    ) or paths.memory_dir.parent.name
+    execution_packet = _orx_execution_packet(paths.memory_dir.parent, project=project_key)
+    if _is_orx_execution_packet(execution_packet):
+        model = str(execution_packet.get("execution_model") or fallback_model).strip() or fallback_model
+        reasoning_effort = (
+            str(execution_packet.get("execution_reasoning_effort") or fallback_reasoning_effort).strip()
+            or fallback_reasoning_effort
+        )
+        issue_key = str(execution_packet.get("issue_key") or "").strip() or None
+        issue_title = str(execution_packet.get("issue_title") or "").strip() or None
+        return {
+            "model_profile": "orx",
+            "model": model,
+            "reasoning_effort": reasoning_effort,
+            "seam_id": issue_key,
+            "seam_title": issue_title,
+            "task_id": issue_key,
+            "task_title": issue_title,
+            "profile_reason": "ORX execution packet is authoritative for the active slice.",
+            "source": "orx_execution_packet",
+        }
+
     exec_context = read_json(paths.exec_context_json)
     state = read_json(paths.state_file)
     if not isinstance(exec_context, dict):
@@ -816,7 +846,27 @@ def _load_prompt_template(prompt_name: str) -> str:
     return _prompt_template_path(prompt_name).read_text(encoding="utf-8").strip()
 
 
-def _active_issue_dispatch_context(project_root: Path) -> dict[str, str]:
+def _issue_context_from_execution_packet(packet: dict[str, object] | None) -> dict[str, str]:
+    if not _is_orx_execution_packet(packet):
+        return {}
+    fields = {
+        "identifier": str((packet or {}).get("issue_key") or "").strip(),
+        "title": str((packet or {}).get("issue_title") or "").strip(),
+        "external_url": str((packet or {}).get("issue_url") or "").strip(),
+        "project_key": str((packet or {}).get("project_key") or "").strip(),
+        "project_name": str((packet or {}).get("project_display_name") or "").strip(),
+        "worktree": str((packet or {}).get("worktree_path") or "").strip(),
+        "branch": str((packet or {}).get("branch") or "").strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def _active_issue_dispatch_context(project_root: Path, *, project: str) -> dict[str, str]:
+    execution_packet = _orx_execution_packet(project_root, project=project)
+    packet_issue = _issue_context_from_execution_packet(execution_packet)
+    if packet_issue:
+        return packet_issue
+
     kanban_state = read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json")
     if not isinstance(kanban_state, dict):
         return {}
@@ -835,6 +885,112 @@ def _active_issue_dispatch_context(project_root: Path) -> dict[str, str]:
     return {key: value for key, value in fields.items() if value}
 
 
+def _active_issue_snapshot(project_root: Path) -> dict[str, object] | None:
+    kanban_state = read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json")
+    if not isinstance(kanban_state, dict):
+        return None
+    active_issue = kanban_state.get("active_issue")
+    if not isinstance(active_issue, dict):
+        return None
+    return active_issue
+
+
+def _orx_execution_packet(project_root: Path, *, project: str) -> dict[str, object] | None:
+    active_issue = _active_issue_snapshot(project_root)
+    existing = active_issue.get("execution_packet") if isinstance(active_issue, dict) else None
+    if isinstance(existing, dict) and existing.get("active_slice_id"):
+        return existing
+    try:
+        return fetch_execution_packet(project_key=project)
+    except OrxControlError:
+        return existing if isinstance(existing, dict) else None
+
+
+def _is_orx_execution_packet(packet: dict[str, object] | None) -> bool:
+    if not isinstance(packet, dict):
+        return False
+    active_slice_id = str(packet.get("active_slice_id") or "").strip()
+    issue_key = str(packet.get("issue_key") or "").strip()
+    return bool(active_slice_id and issue_key)
+
+
+def _parse_orx_runner_result(text: str) -> tuple[dict[str, object] | None, str | None]:
+    raw_lines = text.splitlines()
+    start_idx = -1
+    end_idx = -1
+    for idx, raw in enumerate(raw_lines):
+        line = raw.strip()
+        if line == RUNNER_RESULT_START_MARKER:
+            start_idx = idx
+            end_idx = -1
+            continue
+        if line == RUNNER_RESULT_END_MARKER and start_idx != -1:
+            end_idx = idx
+
+    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx + 1:
+        return None, "missing RUNNER_RESULT_START/END block"
+
+    payload_text = "\n".join(raw_lines[start_idx + 1 : end_idx]).strip()
+    if not payload_text:
+        return None, "empty runner result payload"
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        return None, f"invalid runner result json: {exc}"
+    if not isinstance(payload, dict):
+        return None, "runner result payload must be a JSON object"
+
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"success", "blocked", "failed"}:
+        return None, "runner result status must be success, blocked, or failed"
+    summary = str(payload.get("summary") or "").strip()
+    if not summary:
+        return None, "runner result summary must be a non-empty string"
+    if not isinstance(payload.get("verified"), bool):
+        return None, "runner result verified must be boolean"
+
+    next_slice = payload.get("next_slice")
+    if next_slice is not None and not isinstance(next_slice, str):
+        return None, "runner result next_slice must be a string when present"
+
+    if "artifacts" not in payload:
+        payload["artifacts"] = []
+    if not isinstance(payload.get("artifacts"), list):
+        return None, "runner result artifacts must be a list"
+    payload["artifacts"] = [str(item).strip() for item in payload["artifacts"] if str(item).strip()]
+
+    for field in (
+        "blockers",
+        "risks",
+        "lessons",
+        "verification_ran",
+        "verification_failed",
+        "touched_paths",
+    ):
+        if field not in payload:
+            continue
+        if not isinstance(payload[field], list):
+            return None, f"runner result {field} must be a list"
+        payload[field] = [str(item).strip() for item in payload[field] if str(item).strip()]
+
+    metrics = payload.get("metrics")
+    if metrics is None:
+        payload["metrics"] = {}
+    elif not isinstance(metrics, dict):
+        return None, "runner result metrics must be an object"
+
+    for field in ("owner_mismatch", "scope_mismatch", "needs_human_help"):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], bool):
+            return None, f"runner result {field} must be boolean when present"
+    for field in ("next_step_hint",):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], str):
+            return None, f"runner result {field} must be a string when present"
+
+    if "next_slice" not in payload:
+        payload["next_slice"] = None
+    return payload, None
+
+
 def _build_runner_dispatch_prompt(
     *,
     prompt_name: str,
@@ -843,7 +999,8 @@ def _build_runner_dispatch_prompt(
     project_root: Path,
     phase: str | None,
 ) -> str:
-    issue_context = _active_issue_dispatch_context(project_root)
+    issue_context = _active_issue_dispatch_context(project_root, project=project)
+    execution_packet = _orx_execution_packet(project_root, project=project)
     header_lines = [
         f"RUNNER_DISPATCH mode={prompt_name} project={project} runner_id={runner_id}",
         f"PROJECT_ROOT={project_root}",
@@ -866,10 +1023,23 @@ def _build_runner_dispatch_prompt(
         header_lines.append(f"LINEAR_BRANCH={issue_context['branch']}")
 
     template = _load_prompt_template(prompt_name)
+    packet_block = ""
+    if isinstance(execution_packet, dict):
+        packet_block = "\n".join(
+            [
+                "## ORX Execution Packet",
+                "Use this packet as the live source of truth for the current slice.",
+                "```json",
+                json.dumps(execution_packet, indent=2, sort_keys=True),
+                "```",
+                "",
+            ]
+        )
     return "\n".join(
         [
             *header_lines,
             "",
+            *(packet_block.splitlines() if packet_block else []),
             "Follow the instruction block below exactly.",
             "",
             template,
@@ -1227,7 +1397,16 @@ def _extract_open_tasks(tasks_file: Path, max_items: int = 40) -> list[str]:
     return items
 
 
-def _extract_open_runner_backlog(project_root: Path) -> tuple[list[str], str]:
+def _extract_open_runner_backlog(project_root: Path, *, project: str | None = None) -> tuple[list[str], str]:
+    project_key = (project or project_root.name).strip() or project_root.name
+    execution_packet = _orx_execution_packet(project_root, project=project_key)
+    packet_issue = _issue_context_from_execution_packet(execution_packet)
+    if packet_issue:
+        identifier = str(packet_issue.get("identifier") or "").strip()
+        title = str(packet_issue.get("title") or "").strip()
+        if identifier and title:
+            return [f"{identifier}: {title}"[:220]], "ORX execution packet"
+
     active_backlog_file = project_root / ".memory" / "runner" / "RUNNER_ACTIVE_BACKLOG.json"
     active_backlog = read_json(active_backlog_file)
     if isinstance(active_backlog, dict):
@@ -1298,8 +1477,11 @@ def _log_line(paths: RunnerStatePaths, message: str) -> None:
 
 def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
     state = read_json(paths.state_file) or {}
-    kanban_state = read_json(paths.kanban_state_json) or {}
-    active_backlog = read_json(paths.active_backlog_json) or {}
+    project_root = paths.memory_dir.parent
+    execution_packet = _orx_execution_packet(project_root, project=project)
+    packet_issue = _issue_context_from_execution_packet(execution_packet)
+    kanban_state = {} if packet_issue else (read_json(paths.kanban_state_json) or {})
+    active_backlog = {} if packet_issue else (read_json(paths.active_backlog_json) or {})
 
     def _compact_list(raw: object, *, limit: int = 3, item_chars: int = 140) -> list[str]:
         if not isinstance(raw, list):
@@ -1336,37 +1518,46 @@ def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
         "status": str(state.get("status", "ready")).strip(),
         "linear_issue": {
             "identifier": str(
-                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("identifier"))
+                packet_issue.get("identifier")
+                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("identifier"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_identifier"))
                 or ""
             ).strip(),
             "title": str(
-                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("title"))
+                packet_issue.get("title")
+                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("title"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_title"))
                 or ""
             ).strip(),
             "url": str(
-                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("url"))
+                packet_issue.get("external_url")
+                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("url"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_url"))
                 or ""
             ).strip(),
             "project_key": str(
-                (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("project_key"))
+                packet_issue.get("project_key")
+                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("project_key"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_project_key"))
                 or project
             ).strip(),
             "worktree": str(
-                (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("worktree"))
+                packet_issue.get("worktree")
+                or (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("worktree"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_worktree"))
                 or ""
             ).strip(),
             "branch": str(
-                (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("branch"))
+                packet_issue.get("branch")
+                or (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("branch"))
                 or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_branch"))
                 or ""
             ).strip(),
         },
-        "active_backlog_top4": active_backlog.get("active_backlog", [])[:4] if isinstance(active_backlog, dict) else [],
+        "active_backlog_top4": []
+        if packet_issue
+        else (active_backlog.get("active_backlog", [])[:4] if isinstance(active_backlog, dict) else []),
+        "execution_packet": execution_packet if isinstance(execution_packet, dict) else None,
     }
     state_context = json.dumps(snapshot, indent=2)
 
@@ -1388,7 +1579,7 @@ Rules:
 3. Do not create the done lock early.
 4. Before creating done lock, source .memory/gates.sh and run run_gates.
 5. Only create done lock if run_gates succeeds and the active ORX/Linear backlog is actually empty for this runner cycle.
-6. Treat ORX + Linear as the source of truth for what this runner should do. Use KANBAN_STATE.json, RUNNER_ACTIVE_BACKLOG.json, RUNNER_EXEC_CONTEXT.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state as derived execution context. Legacy TASKS.json / SEAMS.json files are compatibility inputs, not the planner of record. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
+6. Treat ORX + Linear as the source of truth for what this runner should do. If an ORX execution packet is present, treat it as the only live objective source for this cycle. KANBAN_STATE.json, RUNNER_ACTIVE_BACKLOG.json, RUNNER_EXEC_CONTEXT.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state are cache/recovery context only. Legacy TASKS.json / SEAMS.json files are compatibility inputs, not the planner of record. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
 7. End your response with this exact machine-parsable block:
 RUNNER_UPDATE_START
 {{"summary":"...","completed":["..."],"completed_seam_ids":["TT-..."],"next_seam":"...","next_seam_reason":"...","blockers":["..."],"remaining_gaps":["..."],"done_candidate":false}}
@@ -1824,7 +2015,7 @@ def run_loop_runner(
             if paths.done_lock.exists():
                 _log_line(paths, "Done lock detected; validating gates + active ORX/Linear backlog")
                 gates_ok, gates_output = _run_gates(paths.gates_file, project_root, runner_id)
-                open_tasks, backlog_label = _extract_open_runner_backlog(project_root)
+                open_tasks, backlog_label = _extract_open_runner_backlog(project_root, project=project)
                 tasks_ok = len(open_tasks) == 0
                 _append_ledger(
                     paths,
@@ -2011,7 +2202,7 @@ def run_loop_runner(
             if bool(update_payload.get("done_candidate", False)):
                 _log_line(paths, "Done candidate update detected; validating gates + active ORX/Linear backlog before lock creation")
                 gates_ok, gates_output = _run_gates(paths.gates_file, project_root, runner_id)
-                open_tasks, backlog_label = _extract_open_runner_backlog(project_root)
+                open_tasks, backlog_label = _extract_open_runner_backlog(project_root, project=project)
                 tasks_ok = len(open_tasks) == 0
                 _append_ledger(
                     paths,
@@ -2244,7 +2435,11 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
 
     ensure_memory_dir(state_paths)
     state = read_json(state_paths.state_file) or {}
+    execution_packet = _orx_execution_packet(project_root, project=project)
+    orx_managed = _is_orx_execution_packet(execution_packet)
     pending_update_profile = _pending_update_profile_from_state(state)
+    if orx_managed:
+        pending_update_profile = None
     active_step: Literal["execute", "update"] = "update" if pending_update_profile else "execute"
     next_current_step = f"{RUNNER_UPDATE_PENDING_PREFIX}:{pending_update_profile}" if pending_update_profile else "interactive_runner"
     state = update_state(state_paths.state_file, state, status="running", current_step=next_current_step)
@@ -2292,6 +2487,18 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
             if output != last_output:
                 last_output = output
                 last_output_change_at = time.time()
+            execution_packet = _orx_execution_packet(project_root, project=project)
+            orx_managed = _is_orx_execution_packet(execution_packet)
+            if orx_managed and active_step != "execute":
+                pending_update_profile = None
+                active_step = "execute"
+                state = update_state(
+                    state_paths.state_file,
+                    state,
+                    status="running",
+                    current_step="interactive_runner",
+                )
+                _sync_runner_status_snapshot(state_paths, state)
 
             process_name = tmux.get_pane_process(session_name)
             pane_state = detect_runner_state(output, process_name, last_output_change_at)
@@ -2353,6 +2560,102 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         prompt_completed = True
 
                 if prompt_completed and active_step == "execute":
+                    if orx_managed and isinstance(execution_packet, dict):
+                        result_payload, parse_error = _parse_orx_runner_result(output)
+                        if parse_error:
+                            _append_ledger(
+                                state_paths,
+                                "runner.orx_result_parse_failed",
+                                phase=injected_phase,
+                                error=parse_error,
+                            )
+                            _log_line(
+                                state_paths,
+                                f"ORX execute slice did not return a valid result block for phase={injected_phase}: {parse_error}",
+                            )
+                            state = update_state(state_paths.state_file, state, status="error", current_step="")
+                            _sync_runner_status_snapshot(state_paths, state)
+                            return 1
+                        try:
+                            result_payload["issue_key"] = str(
+                                execution_packet.get("issue_key") or ""
+                            ).strip()
+                            result_payload["packet_key"] = str(
+                                execution_packet.get("packet_key") or ""
+                            ).strip()
+                            result_payload["packet_revision"] = str(
+                                execution_packet.get("packet_revision") or ""
+                            ).strip()
+                            result_payload["latest_handoff_revision"] = str(
+                                execution_packet.get("latest_handoff_revision") or ""
+                            ).strip()
+                            result_payload["continuity_revision"] = str(
+                                execution_packet.get("continuity_revision") or ""
+                            ).strip()
+                            result_payload["decision_epoch"] = str(
+                                execution_packet.get("decision_epoch") or ""
+                            ).strip()
+                            submit_slice_result(
+                                project_key=project,
+                                slice_id=str(execution_packet.get("active_slice_id")),
+                                payload=result_payload,
+                            )
+                        except OrxControlError as exc:
+                            _append_ledger(
+                                state_paths,
+                                "runner.orx_result_submit_failed",
+                                phase=injected_phase,
+                                error=str(exc),
+                            )
+                            _log_line(
+                                state_paths,
+                                f"Failed to submit ORX slice result for phase={injected_phase}: {exc}",
+                            )
+                            state = update_state(state_paths.state_file, state, status="error", current_step="")
+                            _sync_runner_status_snapshot(state_paths, state)
+                            return 1
+                        _append_ledger(
+                            state_paths,
+                            "runner.orx_result_submitted",
+                            phase=injected_phase,
+                            issue_key=execution_packet.get("issue_key"),
+                            slice_id=execution_packet.get("active_slice_id"),
+                            status=result_payload.get("status"),
+                            verified=result_payload.get("verified"),
+                        )
+                        _log_line(
+                            state_paths,
+                            (
+                                f"Submitted ORX slice result for {execution_packet.get('issue_key')} "
+                                f"(status={result_payload.get('status')}, verified={result_payload.get('verified')})"
+                            ),
+                        )
+                        eof_sent = tmux.send_eof(session_name)
+                        if not eof_sent:
+                            _append_ledger(
+                                state_paths,
+                                "runner.chat_exit_failed",
+                                phase=injected_phase,
+                                session_name=session_name,
+                            )
+                            _log_line(
+                                state_paths,
+                                f"ORX slice result submitted for phase={injected_phase}, but failed to exit Codex chat cleanly",
+                            )
+                            state = update_state(state_paths.state_file, state, status="error", current_step="")
+                            _sync_runner_status_snapshot(state_paths, state)
+                            return 1
+                        _append_ledger(
+                            state_paths,
+                            "runner.chat_exit_requested",
+                            phase=injected_phase,
+                            session_name=session_name,
+                        )
+                        _log_line(
+                            state_paths,
+                            f"Requested Codex chat exit after ORX execute slice for phase={injected_phase}; next loop will relaunch fresh",
+                        )
+                        return 0
                     _append_ledger(
                         state_paths,
                         "runner.execute_complete",
