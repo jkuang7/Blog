@@ -42,6 +42,7 @@ from .runner_state import (
     write_runner_status_snapshot,
     write_json,
 )
+from .orx_control import build_issue_execution_brief
 
 TASK_STATUS_VALUES = {"open", "in_progress", "blocked", "done"}
 TASK_PRIORITY_ORDER = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
@@ -953,6 +954,13 @@ def _active_issue_seed_context(kanban_state: dict[str, Any] | None) -> dict[str,
     active_issue = kanban_state.get("active_issue")
     if not isinstance(active_issue, dict):
         return None
+    execution_brief = (
+        active_issue.get("execution_brief")
+        if isinstance(active_issue.get("execution_brief"), dict)
+        else build_issue_execution_brief(active_issue)
+    )
+    if isinstance(execution_brief, dict):
+        return execution_brief
     identifier = _as_text(active_issue.get("identifier"))
     title = _normalize_objective_title(_as_text(active_issue.get("title")))
     if not identifier and not title:

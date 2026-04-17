@@ -154,6 +154,7 @@ def prepare_linear_issue_context(
     issue = dict(issue)
     issue["description"] = updated_description
     issue["metadata"] = merged_metadata
+    execution_brief = build_issue_execution_brief(issue)
 
     snapshot = {
         "url": linear_url or f"linear://issue/{identifier}",
@@ -188,6 +189,7 @@ def prepare_linear_issue_context(
         "team_name": _as_text(issue.get("team_name")),
         "priority": issue.get("priority"),
         "metadata": merged_metadata,
+        "execution_brief": execution_brief,
     }
     return PreparedIssueContext(
         issue=issue,
@@ -225,6 +227,130 @@ def merge_issue_metadata(description: str, metadata: dict[str, Any]) -> str:
     return block + "\n"
 
 
+def parse_ticket_sections(description: str) -> dict[str, dict[str, Any]]:
+    sections: dict[str, dict[str, Any]] = {}
+    current_section: str | None = None
+    current_subsection: str | None = None
+    in_metadata_block = False
+    for raw_line in str(description or "").splitlines():
+        stripped = raw_line.strip()
+        if stripped == METADATA_START:
+            in_metadata_block = True
+            continue
+        if stripped == METADATA_END:
+            in_metadata_block = False
+            continue
+        if in_metadata_block:
+            continue
+        if stripped.startswith("## "):
+            current_section = _normalize_heading(stripped[3:])
+            current_subsection = None
+            sections.setdefault(current_section, {"lines": [], "subsections": {}})
+            continue
+        if stripped.startswith("### "):
+            if current_section is None:
+                continue
+            current_subsection = _normalize_heading(stripped[4:])
+            sections[current_section]["subsections"].setdefault(current_subsection, [])
+            continue
+        if current_section is None:
+            continue
+        target = (
+            sections[current_section]["subsections"].setdefault(current_subsection, [])
+            if current_subsection is not None
+            else sections[current_section]["lines"]
+        )
+        target.append(raw_line.rstrip())
+    return sections
+
+
+def build_issue_execution_brief(issue: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(issue, dict):
+        return None
+    description = _as_text(issue.get("description"))
+    metadata = issue.get("metadata") if isinstance(issue.get("metadata"), dict) else parse_issue_metadata(description)
+    compact_brief = _normalize_compact_execution_brief(metadata.get("codex_execution_brief"))
+    if compact_brief is not None:
+        return compact_brief
+    sections = parse_ticket_sections(description)
+    title = _section_text(sections.get("title")) or _as_text(issue.get("title")) or _as_text(issue.get("identifier"))
+    if not title:
+        return None
+
+    scope_section = sections.get("scope") or {}
+    scope_in = _coalesce_text_list(
+        _section_bullets(scope_section.get("subsections", {}).get("in scope")),
+        metadata.get("codex_context_scope_in"),
+    )
+    if not scope_in:
+        scope_in = _compact_lines(description, limit=3, line_chars=180)
+    scope_out = _coalesce_text_list(
+        _section_bullets(scope_section.get("subsections", {}).get("out of scope")),
+        metadata.get("codex_context_scope_out"),
+    )
+    requirements = _coalesce_text_list(
+        _section_bullets((sections.get("requirements") or {}).get("lines")),
+        metadata.get("codex_context_requirements"),
+    )
+    acceptance = _coalesce_text_list(
+        _section_bullets((sections.get("acceptance criteria") or {}).get("lines")),
+        metadata.get("codex_context_acceptance_criteria"),
+    )
+    definition_of_done = _coalesce_text_list(
+        _section_bullets((sections.get("definition of done") or {}).get("lines")),
+        metadata.get("codex_context_definition_of_done"),
+    )
+    technical_notes = _coalesce_text_list(
+        _section_bullets((sections.get("technical notes") or {}).get("lines")),
+        metadata.get("codex_context_technical_notes"),
+    )
+    execution_context = _section_bullets((sections.get("execution context") or {}).get("lines"))
+    problem = _section_text(sections.get("why")) or _as_text(metadata.get("codex_context_why"))
+    goal = _section_text(sections.get("goal")) or _as_text(metadata.get("codex_context_goal")) or title
+
+    constraints = list(requirements)
+    constraints.extend(execution_context)
+    constraints.extend(technical_notes)
+    if scope_out:
+        constraints.append(f"Out of scope: {'; '.join(scope_out[:3])}")
+    constraints = _dedupe_lines(constraints)
+
+    success_criteria = list(acceptance)
+    success_criteria.extend(f"Definition of done: {item}" for item in definition_of_done)
+    success_criteria = _dedupe_lines(success_criteria)
+
+    brief: dict[str, Any] = {
+        "objective_title": title,
+        "problem": problem,
+        "goal": goal,
+        "scope_in": scope_in or [f"Execute {title}."],
+        "scope_out": scope_out,
+        "success_criteria": success_criteria or [f"Complete {title} with recorded verification evidence."],
+        "constraints": constraints,
+    }
+    return brief
+
+
+def _normalize_compact_execution_brief(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    objective_title = _as_text(raw.get("objective_title"))
+    if not objective_title:
+        return None
+    return {
+        "objective_title": objective_title,
+        "problem": _as_text(raw.get("problem")) or None,
+        "goal": _as_text(raw.get("goal")) or objective_title,
+        "scope_in": _coalesce_text_list(raw.get("scope_in"), None) or [f"Execute {objective_title}."],
+        "scope_out": _coalesce_text_list(raw.get("scope_out"), None),
+        "success_criteria": (
+            _coalesce_text_list(raw.get("success_criteria"), None)
+            or [f"Complete {objective_title} with recorded verification evidence."]
+        ),
+        "constraints": _coalesce_text_list(raw.get("constraints"), None),
+    }
+
+
 def issue_url(issue: dict[str, Any]) -> str | None:
     metadata = issue.get("metadata") if isinstance(issue.get("metadata"), dict) else {}
     for key in ("url", "linear_url", "issue_url"):
@@ -234,6 +360,69 @@ def issue_url(issue: dict[str, Any]) -> str | None:
     identifier = _as_text(issue.get("identifier"))
     if not identifier:
         return None
+
+
+def _normalize_heading(value: str) -> str:
+    return " ".join(str(value).strip().lower().split())
+
+
+def _section_text(section: dict[str, Any] | None) -> str | None:
+    if not isinstance(section, dict):
+        return None
+    lines = [str(line).strip() for line in section.get("lines", []) if str(line).strip()]
+    if not lines:
+        return None
+    return " ".join(lines)
+
+
+def _section_bullets(lines: Any) -> list[str]:
+    if not isinstance(lines, list):
+        return []
+    bullets: list[str] = []
+    for raw in lines:
+        text = str(raw).strip()
+        if not text:
+            continue
+        if text.startswith("- "):
+            text = text[2:].strip()
+        bullets.append(text)
+    return bullets
+
+
+def _coalesce_text_list(*candidates: Any) -> list[str]:
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            values = [str(item).strip() for item in candidate if str(item).strip()]
+            if values:
+                return values
+    return []
+
+
+def _compact_lines(text: str, *, limit: int, line_chars: int) -> list[str]:
+    values: list[str] = []
+    for line in str(text or "").splitlines():
+        compact = " ".join(line.strip().split())
+        if not compact or compact.startswith("#") or compact.startswith("<!--"):
+            continue
+        values.append(compact[:line_chars])
+        if len(values) >= limit:
+            break
+    return values
+
+
+def _dedupe_lines(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
     slug = (
         os.environ.get("LINEAR_WORKSPACE_SLUG")
         or os.environ.get("ORX_LINEAR_WORKSPACE_SLUG")

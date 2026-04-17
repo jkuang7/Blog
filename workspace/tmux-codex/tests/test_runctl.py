@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.runctl import RUNNER_PROMPT_NAMES, clear_runner_state, create_runner_state, inspect_runner_start_state, parse_args, run
+from src.runctl import RUNNER_PROMPT_NAMES, _active_issue_seed_context, clear_runner_state, create_runner_state, inspect_runner_start_state, parse_args, run
 from src.runner_graph import _load_graph_config
 from src.runner_state import build_runner_state_paths, build_runner_state_paths_for_root, compute_worktree_fingerprint, read_json, write_json
 
@@ -47,6 +47,56 @@ class RunctlTests(unittest.TestCase):
         codex_dir = project_root / ".codex"
         codex_dir.mkdir(parents=True, exist_ok=True)
         write_json(codex_dir / "context-pack.json", payload)
+
+    def test_active_issue_seed_context_prefers_structured_linear_ticket_sections(self):
+        context = _active_issue_seed_context(
+            {
+                "active_issue": {
+                    "identifier": "PRO-31",
+                    "title": "Fallback title",
+                    "description": """## Title
+Replace legacy GitHub-native issue language in runner status
+
+## Why
+Operators still see GitHub-oriented issue wording in a Linear-native flow.
+
+## Goal
+Make the runner status read like Linear-native execution.
+
+## Scope
+### In scope
+- Update the runner status copy.
+- Keep runner-only execution behavior unchanged.
+
+### Out of scope
+- Rewriting ORX dispatch.
+
+## Requirements
+- Keep the runner deterministic.
+
+## Acceptance Criteria
+- Given the runner status view
+- When the active issue is shown
+- Then the copy uses Linear-native wording.
+
+## Definition of Done
+- The status copy is updated.
+- Verification evidence is recorded.
+
+## Execution Context
+- Worktree path: `/tmp/worktrees/blog/pro-31`
+- Branch: `linear/pro-31`
+""",
+                }
+            }
+        )
+
+        assert context is not None
+        self.assertEqual(context["objective_title"], "Replace legacy GitHub-native issue language in runner status")
+        self.assertIn("Update the runner status copy.", context["scope_in"])
+        self.assertIn("Keep the runner deterministic.", context["constraints"])
+        self.assertIn("Branch: `linear/pro-31`", context["constraints"])
+        self.assertIn("The status copy is updated.", " ".join(context["success_criteria"]))
 
     def test_setup_creates_canonical_files_and_removes_legacy_views(self):
         paths = self._paths()

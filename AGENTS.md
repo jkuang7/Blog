@@ -1,70 +1,93 @@
 # Global Agent Standards (`~/Dev`)
 
-Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overrides it.
-
-## Priority
-
-1. Reproduce from real behavior first.
-2. Prefer the smallest valid change.
-3. Add regression protection before trusting notes or memory.
-4. Keep only non-testable residual knowledge in `.memory/lessons.md`.
+Applies to everything under `/Users/jian/Dev` unless overridden by a deeper `AGENTS.md`.
 
 ## Keep This File Token-Efficient
 
+- Keep only guidance that must be satisfied before a full lint/verify pass.
 - Do not restate rules already enforced by repo lint/build hooks.
-- Assume repos using `eslint-config-jian` already enforce maintainability limits, promise safety, cycle checks, feature/UI boundaries, and no focused tests.
-- Only keep guidance here for contracts agents should satisfy before burning a full lint/verify pass.
 
 ## Commit Requests
 
-- Treat worktrees as the default execution surface for new feature/problem work; `main` is the integration target, not the default place to implement changes.
-- When the user says `commit`, treat that as a request to move the conversation-relevant changes onto `main`, not just to create a commit on the current branch.
-- Prefer cherry-picking or otherwise replaying only the relevant changes onto `main` instead of blindly merging unrelated branch state.
-- Resolve merge or cherry-pick conflicts as needed, using the conversation intent and current `main` behavior to decide the correct integration.
-- Be selective and smart about scope: include the changes that satisfy the user request from the conversation, and leave unrelated branch-only work out of the `main` update.
-- After promoting changes to `main`, restore normal branch/worktree ownership: put the canonical checkout back on `main`, return the feature worktree to its working branch, and leave branch ownership in a clean predictable state.
-- Do not clean up, delete, stash-drop, move, or otherwise disturb unrelated branch changes, preserve branches, stashes, worktrees, or local resource directories during commit-to-`main` work unless the user explicitly asks for that cleanup.
+- Use worktrees by default for new feature/problem work; `main` is the integration target, not the default execution surface.
+- When the user says `commit`, promote the conversation-relevant changes onto `main`.
+- Prefer cherry-picking or otherwise replaying only relevant changes onto `main`; do not blindly merge unrelated branch state.
+- Resolve merge/cherry-pick conflicts using conversation intent and current `main` behavior.
+- Keep scope selective: include only changes needed for the user request.
+- After promotion, restore a clean ownership state: canonical checkout on `main`, feature worktree on its branch.
+- Do not disturb unrelated branches, stashes, worktrees, or local resource directories unless explicitly asked.
 
 ## Task Start
 
-- Read the nearest project `AGENTS.md` first if one exists.
-- Load `<project-root>/.memory/lessons.md` if present.
-- Only create `.memory/lessons.md` for projects rooted under `/Users/jian/Dev/Repos/<project>*`.
-- If the repo defines an LLM or harness contract, follow that loading order exactly.
-- If runner graph artifacts exist, use them as the first structural hint before broad repo scanning.
-- Keep full dependency graphs out of normal execution slices; use compact active-slice graph context for execute and reserve full graph reasoning for planning/reseeding.
-- Reuse an already-running app or browser instance before launching a new one when the existing instance is suitable for the task.
-- For a new feature or problem in a repo, start from a worktree by default instead of working directly in the main checkout.
+- If the repo defines an LLM or harness contract, follow its loading order exactly.
+- Reuse an already-running app or browser when suitable.
+- Start new feature/problem work from a worktree by default, not the main checkout.
 
-## Default Definition Of Done
+## ORX / Linear Flow
 
-- **Signal:** concrete repro evidence, or explicit “not reproducible” with reason.
-- **Fix:** smallest valid change.
-- **Regression:** automated fail-before/pass-after, or explicit why not.
-- **Verify:** exact commands run and pass evidence.
-- **Gaps:** remaining risks called out.
+- Treat `Telegram -> telecodex -> ORX -> Linear -> tmux-codex runner` as the canonical control flow.
+- telecodex is transport and presentation, not the source of truth for project selection or execution state.
+- ORX owns deterministic orchestration:
+  - intake
+  - decomposition
+  - project routing
+  - bot assignment
+  - dependency checks
+  - queueing
+  - recovery
+- Linear is the durable task graph and the reviewable execution brief.
+- tmux-codex `runner-<project>` sessions are the only canonical execution sessions for ORX-managed work.
+- Do not reintroduce raw `orx-*` executor sessions or local task-file selection into the active runtime path.
 
-## Required Handoff
+## Linear Ticket Contract
 
-- **Signal:** …
-- **Hypothesis:** …
-- **Change:** …
-- **Verification:** …
-- **Regression:** …
+- Runnable Linear leaf tickets should be stateless enough for medium-tier Codex execution.
+- Prefer ticket bodies that stand on their own:
+  - problem
+  - goal
+  - scope
+  - requirements
+  - acceptance criteria
+  - execution context
+  - verification expectations
+- Keep execution context in the ticket itself when it is stable and reviewable:
+  - project key
+  - repo root
+  - worktree or packet context
+  - branch intent
+  - relevant dependencies and risks
+- Do not assume prior Codex chat memory when drafting or refining runnable tickets.
 
-## Non-Lint Contracts To Respect Early
+## Execution Ownership
 
-- Co-locate unit tests with touched source modules when the repo uses colocated unit tests.
-- Keep integration and e2e tests in the repo’s dedicated test roots.
-- When a repo has generated context, harness manifests, or structure checks, update them as required by that repo instead of leaving it for the end.
-- Preserve observable behavior during refactors unless the user explicitly asks for behavior change.
-- Delete dummy resources created during testing once they are no longer needed, unless the user explicitly wants them kept.
+- Keep the control plane low-coupling and high-cohesion:
+  - ORX decides what should run
+  - Linear records what the work is
+  - tmux-codex runner executes it
+  - telecodex reports it
+- Prefer one runner session per project.
+- When work spans multiple tightly related tickets, prefer one shared packet execution context until the packet is complete.
+- Keep final integration explicit under HIL:
+  - merge to `main`
+  - or cherry-pick from the packet branch to `main`
+- Avoid silent auto-merge behavior for multi-ticket packets.
 
-## Verify Before Claiming Fixed
+## Early Non-Lint Contracts
 
-Loop: reproduce -> hypothesis -> smallest fix -> rerun same repro -> run targeted regressions.
+- Delete dummy resources created during testing once no longer needed, unless the user wants them kept.
 
-Never mark fixed without post-fix execution evidence.
+## Bug Fix Loop
+
+Loop: analyze context -> hypothesis -> smallest fix -> reproduce and verify with the appropriate execution surface -> repeat until fixed
+
+Verification must include post-fix execution evidence from the relevant surface, such as:
+
+- app/runtime behavior
+- browser automation (for example Playwright or browser MCP flows)
+- repo-specific harnesses/tools
+- tests/logs
+
+After the fix is confirmed, add targeted regressions when the behavior is worth protecting.
 
 ## `.memory/lessons.md`
 
@@ -90,8 +113,10 @@ Rules:
 
 ## React Design
 
+- Prefer: Reusability, Maintainable, Scalable
+- Your changes should not conflict with the styling of the system or the design structure
 - Prefer small, cohesive feature components over god components.
-- Keep pure render pieces separate from stateful orchestration when that split improves clarity.
+- Separate pure render pieces from stateful orchestration when it improves clarity.
 - Preserve stable naming, file ordering, and grep-friendly exports/test IDs.
-- Before making a UI/UX change, trace the component owner chain far enough to understand where props, composition, and shared styles originate.
-- For CSS, layout, and visual system changes, assess likely cascade and reuse impact before editing so fixes stay at the right layer and do not create unintended downstream changes.
+- Before UI/UX changes, trace the owner chain far enough to understand props, composition, and shared styles.
+- For CSS/layout/visual system changes, assess cascade and reuse impact before editing so fixes happen at the right layer.
