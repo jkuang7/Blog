@@ -20,7 +20,7 @@ STATE_UPNOTE_TILED="false"
 STATE_TILED_ORDER=""
 STATE_ACTIVE_UTILITY_BUNDLE=""
 STATE_ACTIVE_UTILITY_WID=""
-POPUP_TITLE_AWK_REGEX='oauth|auth|sign[[:space:]]in|log[[:space:]]in|login|permission|extension|download|save|open[[:space:]]file|alert|dialog|sheet|confirm|prompt|settings|preferences|prefs'
+POPUP_TITLE_AWK_REGEX='oauth|auth|sign[[:space:]]in|log[[:space:]]in|login|permission|extension|download|save|open[[:space:]]file|alert|dialog|sheet|confirm|prompt|settings|preferences|prefs|rename[[:space:]]+(tab|workspace|surface|pane)'
 
 now_ms() {
     python3 - <<'PY' 2>/dev/null
@@ -107,11 +107,38 @@ should_promote_focused_terminal_window() {
     local focused_is_popup="${3:-false}"
     local active_bundle="${4:-}"
     local active_wid="${5:-}"
+    local snapshot="${6:-}"
+    local primary_wid=""
 
     [[ "$focused_bundle" == "$TERMINAL" ]] || return 1
     [[ "$focused_is_popup" != "true" ]] || return 1
     [[ "$focused_wid" =~ ^[0-9]+$ ]] || return 1
+    if [[ -n "$snapshot" ]]; then
+        primary_wid="$(get_primary_window_for_bundle_from_snapshot "$snapshot" "$TERMINAL")"
+        [[ -n "$primary_wid" && "$focused_wid" != "$primary_wid" ]] && return 1
+    fi
     [[ "$active_bundle" != "$TERMINAL" || "$focused_wid" != "$active_wid" ]]
+}
+
+should_allow_utility_main_window_rebuild() {
+    local bundle="${1:-}"
+    local focused_app="${2:-}"
+    local focused_wid="${3:-}"
+    local latest_wid="${4:-}"
+    local primary_wid="${5:-}"
+    local focused_is_popup="${6:-false}"
+
+    is_utility_bundle "$bundle" || return 1
+    [[ "$focused_app" == "$bundle" ]] || return 1
+    [[ "$focused_is_popup" != "true" ]] || return 1
+    [[ "$focused_wid" =~ ^[0-9]+$ ]] || return 1
+    [[ "$focused_wid" == "$latest_wid" ]] || return 1
+
+    if [[ "$bundle" == "$TERMINAL" && -n "$primary_wid" && "$focused_wid" != "$primary_wid" ]]; then
+        return 1
+    fi
+
+    return 0
 }
 
 filter_overlay_candidates_from_lines() {
@@ -1459,8 +1486,6 @@ rebuild_workspace() {
 apply_sizing() {
     local ws="$1"
     local slot_csv="${2:-}"
-    local browser_wid="${3:-}"
-    local primary_upnote_wid="${4:-}"
     local slots=()
 
     if [[ -z "$slot_csv" ]]; then
@@ -1470,56 +1495,13 @@ apply_sizing() {
 
     IFS=',' read -r -a slots <<< "$slot_csv"
 
-    local screen_w
-    screen_w=$(get_screen_width)
-    log "apply_sizing: screen_w=$screen_w, slots=$slot_csv"
-
-    resize_width_delta() {
-        local wid="$1"
-        local delta="$2"
-        if [[ -z "$wid" || "$delta" -eq 0 ]]; then
-            return 0
-        fi
-        if [[ "$delta" -ge 0 ]]; then
-            aerospace resize --window-id "$wid" width "+${delta}" 2>/dev/null || true
-        else
-            aerospace resize --window-id "$wid" width "${delta}" 2>/dev/null || true
-        fi
-    }
-
     case "${#slots[@]}" in
         0|1)
             log "apply_sizing: <=1 tiled slot, skipping explicit widths"
             return 0
             ;;
-        2)
-            if [[ -n "$browser_wid" && "${slots[1]}" == "$browser_wid" ]]; then
-                local right_delta=$(( (SLOT2_RIGHT_PCT - 50) * screen_w / 100 ))
-                log "apply_sizing: 2-col browser-right delta=$right_delta"
-                resize_width_delta "${slots[1]}" "$right_delta"
-            else
-                log "apply_sizing: 2-col balanced layout, leaving default balance"
-            fi
-            return 0
-            ;;
         *)
-            local left_delta
-            local middle_delta
-            local right_delta
-            if [[ -n "$primary_upnote_wid" && "${slots[0]}" == "$primary_upnote_wid" ]]; then
-                left_delta=$(( (SLOT3_UPNOTE_LEFT_PCT - 33) * screen_w / 100 ))
-                middle_delta=$(( (SLOT3_UPNOTE_MIDDLE_PCT - 33) * screen_w / 100 ))
-                right_delta=$(( (SLOT3_UPNOTE_RIGHT_PCT - 33) * screen_w / 100 ))
-                log "apply_sizing: 3-col upnote-led deltas(left=$left_delta,middle=$middle_delta,right=$right_delta)"
-            else
-                left_delta=$(( (SLOT3_STANDARD_LEFT_PCT - 33) * screen_w / 100 ))
-                middle_delta=$(( (SLOT3_STANDARD_MIDDLE_PCT - 33) * screen_w / 100 ))
-                right_delta=$(( (SLOT3_STANDARD_RIGHT_PCT - 33) * screen_w / 100 ))
-                log "apply_sizing: 3-col standard deltas(left=$left_delta,middle=$middle_delta,right=$right_delta)"
-            fi
-            resize_width_delta "${slots[0]}" "$left_delta"
-            resize_width_delta "${slots[1]}" "$middle_delta"
-            resize_width_delta "${slots[2]}" "$right_delta"
+            log "apply_sizing: keeping balanced widths for slots=$slot_csv"
             return 0
             ;;
     esac

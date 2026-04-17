@@ -200,6 +200,73 @@ describe("planner", () => {
     expect(actions[0]?.details.activeUtilityWindowId).toBe(12000);
   });
 
+  it("skips cmux rename-tab popups", () => {
+    const context = toCanonicalPlannerContext({
+      callback: {
+        kind: "on_window",
+        workspace: "w1",
+        bundleId: "com.cmuxterm.app",
+        argv: ["com.cmuxterm.app"],
+        timestampMs: 1730000000000
+      },
+      workspaceState: {
+        workspace: "w1",
+        browser: "zen",
+        upnoteTiled: false,
+        tiledOrder: [441, 12000, 11670],
+        activeUtilityBundle: "com.cmuxterm.app",
+        activeUtilityWindowId: 12000
+      },
+      focusedWindow: {
+        windowId: 12042,
+        workspace: "w1",
+        bundleId: "com.cmuxterm.app",
+        layout: "floating",
+        title: "Rename Tab"
+      },
+      windows: [
+        {
+          windowId: 441,
+          workspace: "w1",
+          bundleId: "com.microsoft.VSCode",
+          layout: "h_tiles",
+          title: "AGENTS.md"
+        },
+        {
+          windowId: 12000,
+          workspace: "w1",
+          bundleId: "com.cmuxterm.app",
+          layout: "h_tiles",
+          title: "cmux"
+        },
+        {
+          windowId: 12042,
+          workspace: "w1",
+          bundleId: "com.cmuxterm.app",
+          layout: "floating",
+          title: "Rename Tab"
+        },
+        {
+          windowId: 11670,
+          workspace: "w1",
+          bundleId: "app.zen-browser.zen",
+          layout: "h_tiles",
+          title: "Zen"
+        }
+      ]
+    });
+
+    const actions = planActions(context);
+
+    expect(actions).toEqual([
+      expect.objectContaining({
+        type: "NOOP",
+        reason: "popup-intent",
+        target: "on_window"
+      })
+    ]);
+  });
+
   it("treats Telegram on_window as a managed non-browser app", () => {
     const context = toCanonicalPlannerContext({
       callback: {

@@ -40,6 +40,7 @@ assert_true "sign-in title should be popup" is_popup_title "Sign in required"
 assert_true "oauth title should be popup" is_popup_title "OAuth permission"
 assert_true "settings title should be popup" is_popup_title "Settings"
 assert_true "preferences title should be popup" is_popup_title "Preferences"
+assert_true "rename-tab title should be popup" is_popup_title "Rename Tab"
 assert_false "normal browsing title should not be popup" is_popup_title "Start Page"
 
 # --- contender/main-intent rebuild decision ---
@@ -103,14 +104,26 @@ assert_eq "$ORDER_WITHOUT_BROWSER" "10,20,30" "utility uses the right slot when 
 ORDER_STANDARD_THREE="$(build_tiled_slot_order_csv "" "20" "30" "50")"
 assert_eq "$ORDER_STANDARD_THREE" "20,30,50" "standard three-slot order keeps VSCode left, utility middle, browser right"
 
-assert_true "focused non-popup Terminal with a different window id should promote" \
-    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "false" "com.cmuxterm.app" "40"
+TERMINAL_PROMOTION_SNAPSHOT=$'40|com.cmuxterm.app|h_tiles|Main Terminal\n42|com.cmuxterm.app|floating|Scratch Terminal\n'
+assert_true "focused primary Terminal window with a different owner should promote" \
+    should_promote_focused_terminal_window "com.cmuxterm.app" "40" "false" "com.cmuxterm.app" "38" "$TERMINAL_PROMOTION_SNAPSHOT"
 assert_false "focused Terminal should not promote when already the active owner" \
-    should_promote_focused_terminal_window "com.cmuxterm.app" "40" "false" "com.cmuxterm.app" "40"
+    should_promote_focused_terminal_window "com.cmuxterm.app" "40" "false" "com.cmuxterm.app" "40" "$TERMINAL_PROMOTION_SNAPSHOT"
 assert_false "popup-like Terminal windows should not promote" \
-    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "true" "com.cmuxterm.app" "40"
+    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "true" "com.cmuxterm.app" "40" "$TERMINAL_PROMOTION_SNAPSHOT"
+assert_false "secondary Terminal windows should not promote over the main Terminal window" \
+    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "false" "com.cmuxterm.app" "40" "$TERMINAL_PROMOTION_SNAPSHOT"
 assert_false "non-Terminal utilities should remain sticky-owner" \
-    should_promote_focused_terminal_window "com.openai.codex" "42" "false" "com.cmuxterm.app" "40"
+    should_promote_focused_terminal_window "com.openai.codex" "42" "false" "com.cmuxterm.app" "40" "$TERMINAL_PROMOTION_SNAPSHOT"
+
+assert_true "primary Terminal window may trigger main-window retile" \
+    should_allow_utility_main_window_rebuild "com.cmuxterm.app" "com.cmuxterm.app" "40" "40" "40" "false"
+assert_false "secondary Terminal windows should not trigger main-window retile" \
+    should_allow_utility_main_window_rebuild "com.cmuxterm.app" "com.cmuxterm.app" "42" "42" "40" "false"
+assert_false "popup-like Terminal windows should not trigger main-window retile" \
+    should_allow_utility_main_window_rebuild "com.cmuxterm.app" "com.cmuxterm.app" "42" "42" "40" "true"
+assert_true "Codex keeps the existing utility main-window retile behavior" \
+    should_allow_utility_main_window_rebuild "com.openai.codex" "com.openai.codex" "80" "80" "80" "false"
 
 ORIGINAL_WINDOW_IS_ON_SCREEN="$(declare -f window_is_on_screen)"
 window_is_on_screen() {

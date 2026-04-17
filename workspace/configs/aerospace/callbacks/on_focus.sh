@@ -102,7 +102,7 @@ read_state "$WS"
 get_home_windows
 ALL_WINDOWS_FOCUS="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
 PROMOTE_FOCUSED_TERMINAL="false"
-if should_promote_focused_terminal_window "$FOCUSED_APP" "$FOCUSED_WID" "$FOCUSED_LOOKS_POPUP" "$STATE_ACTIVE_UTILITY_BUNDLE" "$STATE_ACTIVE_UTILITY_WID"; then
+if should_promote_focused_terminal_window "$FOCUSED_APP" "$FOCUSED_WID" "$FOCUSED_LOOKS_POPUP" "$STATE_ACTIVE_UTILITY_BUNDLE" "$STATE_ACTIVE_UTILITY_WID" "$ALL_WINDOWS_FOCUS"; then
     PROMOTE_FOCUSED_TERMINAL="true"
 fi
 

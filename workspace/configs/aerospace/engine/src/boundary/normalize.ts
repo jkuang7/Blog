@@ -8,7 +8,7 @@ import {
 } from "./schemas.js";
 
 const POPUP_TITLE_REGEX =
-  /oauth|auth|sign\s*in|log\s*in|login|permission|extension|download|save|open\s*file|alert|dialog|sheet|confirm|prompt/i;
+  /oauth|auth|sign\s*in|log\s*in|login|permission|extension|download|save|open\s*file|alert|dialog|sheet|confirm|prompt|settings|preferences|prefs|rename\s+(tab|workspace|surface|pane)/i;
 
 export function normalizeWorkspaceId(raw: string): "w1" {
   const normalized = raw.trim();

@@ -92,6 +92,7 @@ describe("boundary normalization", () => {
 
   it("classifies popup titles", () => {
     expect(isPopupTitle("Sign in required")).toBe(true);
+    expect(isPopupTitle("Rename Tab")).toBe(true);
     expect(isPopupTitle("Start Page")).toBe(false);
   });
 

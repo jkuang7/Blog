@@ -283,6 +283,18 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
                 ;;
         esac
 
+        if is_utility_bundle "$LAST_BUNDLE" && [[ "$FOCUSED_APP" == "$LAST_BUNDLE" && "$FOCUSED_LOOKS_POPUP" == "true" ]]; then
+            log "on_window: transient utility popup for $LAST_BUNDLE, skipping rebuild"
+            if [[ -n "$FOCUSED_WID" ]]; then
+                aerospace layout --window-id "$FOCUSED_WID" floating 2>/dev/null || true
+                set_churn_window
+                aerospace focus --window-id "$FOCUSED_WID" 2>/dev/null || true
+            fi
+            printf "%s" "$cur" > "$LAST_APPLIED_FILE"
+            PERF_DECISION="utility_popup_skip"
+            exit 0
+        fi
+
         # If this app already has a tiled primary window, any additional windows
         # from the same app are float-intent (OAuth/download/login popups).
         BUNDLE_WINDOW_COUNT="$(get_window_count_for_bundle "$LAST_BUNDLE" "$ALL_WINDOWS_LATE")"
@@ -298,7 +310,7 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
 
             if [[ "$IS_BROWSER_BUNDLE" == "true" && "$BROWSER_MAIN_INTENT" == "true" ]]; then
                 log "on_window: browser main-window intent for $LAST_BUNDLE, allowing retile"
-            elif is_utility_bundle "$LAST_BUNDLE" && [[ "$FOCUSED_APP" == "$LAST_BUNDLE" && "$FOCUSED_WID" == "$LATEST_BUNDLE_WID" && "$FOCUSED_LOOKS_POPUP" != "true" ]]; then
+            elif should_allow_utility_main_window_rebuild "$LAST_BUNDLE" "$FOCUSED_APP" "$FOCUSED_WID" "$LATEST_BUNDLE_WID" "$PRIMARY_WID" "$FOCUSED_LOOKS_POPUP"; then
                 log "on_window: utility main-window intent for $LAST_BUNDLE, allowing retile"
             else
                 log "on_window: secondary window for tiled $LAST_BUNDLE, skipping rebuild"
