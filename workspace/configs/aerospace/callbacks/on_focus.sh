@@ -101,6 +101,10 @@ fi
 read_state "$WS"
 get_home_windows
 ALL_WINDOWS_FOCUS="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+PROMOTE_FOCUSED_TERMINAL="false"
+if should_promote_focused_terminal_window "$FOCUSED_APP" "$FOCUSED_WID" "$FOCUSED_LOOKS_POPUP" "$STATE_ACTIVE_UTILITY_BUNDLE" "$STATE_ACTIVE_UTILITY_WID"; then
+    PROMOTE_FOCUSED_TERMINAL="true"
+fi
 
 # Resolve browser primary windows directly from live windows to avoid stale
 # TILED_ORDER ids misclassifying which browser should drive retile decisions.
@@ -116,7 +120,7 @@ fi
 FOCUSED_IS_PRIMARY="true"
 if [[ "$FOCUSED_APP" == "$VSCODE" && -n "$VSCODE_WID" && "$FOCUSED_WID" != "$VSCODE_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
-elif is_utility_bundle "$FOCUSED_APP" && [[ -n "${STATE_ACTIVE_UTILITY_WID:-}" && "$FOCUSED_WID" != "$STATE_ACTIVE_UTILITY_WID" ]]; then
+elif is_utility_bundle "$FOCUSED_APP" && [[ -n "${STATE_ACTIVE_UTILITY_WID:-}" && "$FOCUSED_WID" != "$STATE_ACTIVE_UTILITY_WID" && "$PROMOTE_FOCUSED_TERMINAL" != "true" ]]; then
     FOCUSED_IS_PRIMARY="false"
 elif [[ "$FOCUSED_APP" == "$ZEN" && -n "$PRIMARY_ZEN_WID" && "$FOCUSED_WID" != "$PRIMARY_ZEN_WID" ]]; then
     FOCUSED_IS_PRIMARY="false"
@@ -152,9 +156,33 @@ if is_home_ws "$WS" && [[ "$FOCUSED_IS_PRIMARY" == "true" && "$FOCUSED_APP" == "
     log "on_focus: UpNote focused in w1, tiling"
 fi
 
+# Case 3.25: focused Terminal windows promote into the utility slot. Terminal's
+# visible tab cycle can surface as distinct window ids, so treat the focused
+# Terminal window as the intended utility owner rather than a transient overlay.
+if [[ "$PROMOTE_FOCUSED_TERMINAL" == "true" ]]; then
+    PREV_TERMINAL_OWNER_WID="${STATE_ACTIVE_UTILITY_WID:-}"
+    STATE_ACTIVE_UTILITY_BUNDLE="$TERMINAL"
+    STATE_ACTIVE_UTILITY_WID="$FOCUSED_WID"
+    NEEDS_REBUILD="true"
+    log "on_focus: promoted focused Terminal utility owner (${PREV_TERMINAL_OWNER_WID:-none} -> $FOCUSED_WID)"
+fi
+
+# Case 3.5: if the stored utility owner still exists but has drifted out of the
+# tiled layout (for example after a manual drag), rebuild to snap it back.
+ACTIVE_UTILITY_LAYOUT=""
+if [[ -n "${STATE_ACTIVE_UTILITY_WID:-}" ]]; then
+    ACTIVE_UTILITY_LAYOUT="$(get_window_layout_for_id_from_snapshot "$ALL_WINDOWS_FOCUS" "$STATE_ACTIVE_UTILITY_WID")"
+    if [[ -n "$ACTIVE_UTILITY_LAYOUT" && "$ACTIVE_UTILITY_LAYOUT" != *tiles* ]]; then
+        NEEDS_REBUILD="true"
+        log "on_focus: active utility drifted from tiles (${STATE_ACTIVE_UTILITY_BUNDLE}:${STATE_ACTIVE_UTILITY_WID} -> $ACTIVE_UTILITY_LAYOUT)"
+    fi
+fi
+
 if [[ "$IS_WS_CHANGE" == "false" && "$FOCUSED_IS_PRIMARY" == "false" ]]; then
-    log "on_focus: transient window focused ($FOCUSED_APP:$FOCUSED_WID), skipping rebuild"
-    exit 0
+    if [[ "$NEEDS_REBUILD" != "true" ]]; then
+        log "on_focus: transient window focused ($FOCUSED_APP:$FOCUSED_WID), skipping rebuild"
+        exit 0
+    fi
 fi
 
 # Case 4: Detect closed apps - rebalance if layout changed

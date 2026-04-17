@@ -56,11 +56,11 @@ export function planOnWindow(context: PlannerContext): SemanticActionInput[] {
   const upnoteTiled =
     bundle === "com.getupnote.desktop" ? true : context.workspaceState.upnoteTiled;
   const nextUtilityBundle =
-    bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram"
+    bundle === "com.openai.codex" || bundle === "com.cmuxterm.app" || bundle === "com.tdesktop.Telegram"
       ? bundle
       : context.workspaceState.activeUtilityBundle;
   const nextUtilityWindowId =
-    bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram"
+    bundle === "com.openai.codex" || bundle === "com.cmuxterm.app" || bundle === "com.tdesktop.Telegram"
       ? focusedWindowId
       : context.workspaceState.activeUtilityWindowId;
   const stateDetails: Record<string, string | boolean | number | null> = {
@@ -68,7 +68,7 @@ export function planOnWindow(context: PlannerContext): SemanticActionInput[] {
     upnoteTiled
   };
 
-  if (bundle === "com.openai.codex" || bundle === "com.apple.Terminal" || bundle === "com.tdesktop.Telegram") {
+  if (bundle === "com.openai.codex" || bundle === "com.cmuxterm.app" || bundle === "com.tdesktop.Telegram") {
     stateDetails.activeUtilityBundle = nextUtilityBundle;
     stateDetails.activeUtilityWindowId = nextUtilityWindowId;
   }

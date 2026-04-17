@@ -101,6 +101,19 @@ is_utility_bundle() {
     esac
 }
 
+should_promote_focused_terminal_window() {
+    local focused_bundle="${1:-}"
+    local focused_wid="${2:-}"
+    local focused_is_popup="${3:-false}"
+    local active_bundle="${4:-}"
+    local active_wid="${5:-}"
+
+    [[ "$focused_bundle" == "$TERMINAL" ]] || return 1
+    [[ "$focused_is_popup" != "true" ]] || return 1
+    [[ "$focused_wid" =~ ^[0-9]+$ ]] || return 1
+    [[ "$active_bundle" != "$TERMINAL" || "$focused_wid" != "$active_wid" ]]
+}
+
 filter_overlay_candidates_from_lines() {
     local active_browser_bundle="${1:-}"
     local excluded_wids_csv="${2:-}"
@@ -179,7 +192,7 @@ for value in data.get("tiledOrder", []):
 active_utility_bundle = data.get("activeUtilityBundle", "")
 if active_utility_bundle not in {
     "com.openai.codex",
-    "com.apple.Terminal",
+    "com.cmuxterm.app",
     "com.tdesktop.Telegram",
     "",
 }:
@@ -232,7 +245,7 @@ payload = {
     "tiledOrder": tiled_order,
     "activeUtilityBundle": (
         active_utility_bundle
-        if active_utility_bundle in {"com.openai.codex", "com.apple.Terminal", "com.tdesktop.Telegram", ""}
+        if active_utility_bundle in {"com.openai.codex", "com.cmuxterm.app", "com.tdesktop.Telegram", ""}
         else ""
     ),
     "activeUtilityWindowId": int(active_utility_wid_raw) if active_utility_wid_raw.isdigit() else None,
@@ -292,6 +305,11 @@ read_state() {
         STATE_TILED_ORDER="${TILED_ORDER:-$STATE_TILED_ORDER}"
         STATE_ACTIVE_UTILITY_BUNDLE="${ACTIVE_UTILITY_BUNDLE:-$STATE_ACTIVE_UTILITY_BUNDLE}"
         STATE_ACTIVE_UTILITY_WID="${ACTIVE_UTILITY_WID:-$STATE_ACTIVE_UTILITY_WID}"
+    fi
+
+    if ! is_utility_bundle "${STATE_ACTIVE_UTILITY_BUNDLE:-}"; then
+        STATE_ACTIVE_UTILITY_BUNDLE=""
+        STATE_ACTIVE_UTILITY_WID=""
     fi
 }
 
@@ -594,7 +612,15 @@ get_home_windows() {
 
     VSCODE_WID="$vscode_min"
     CODEX_WID="$codex_min"
-    TERMINAL_WID="$terminal_min"
+    TERMINAL_WID=""
+    if [[ "${STATE_ACTIVE_UTILITY_BUNDLE:-}" == "$TERMINAL" && -n "${STATE_ACTIVE_UTILITY_WID:-}" ]]; then
+        if printf '%s\n' "$all_windows" | awk -F'|' -v wid="$STATE_ACTIVE_UTILITY_WID" '$1==wid { found=1 } END { exit(found ? 0 : 1) }'; then
+            TERMINAL_WID="$STATE_ACTIVE_UTILITY_WID"
+        fi
+    fi
+    if [[ -z "$TERMINAL_WID" ]]; then
+        TERMINAL_WID="$terminal_min"
+    fi
     TELEGRAM_WID="$telegram_min"
     ZEN_WID="$zen_min"
     SAFARI_WID="$safari_min"
@@ -764,7 +790,7 @@ get_latest_nonpopup_utility_window_from_snapshot() {
     printf '%s\n' "$snapshot" \
         | awk -F'|' -v re="$POPUP_TITLE_AWK_REGEX" '
             function is_utility(bundle) {
-                return (bundle=="com.openai.codex" || bundle=="com.apple.Terminal" || bundle=="com.tdesktop.Telegram")
+                return (bundle=="com.openai.codex" || bundle=="com.cmuxterm.app" || bundle=="com.tdesktop.Telegram")
             }
             {
                 wid=$1+0
@@ -811,6 +837,15 @@ resolve_active_utility_window() {
 
     if [[ -z "$snapshot" ]]; then
         snapshot="$(aerospace list-windows --all --format '%{window-id}|%{app-bundle-id}|%{window-layout}|%{window-title}' 2>/dev/null || true)"
+    fi
+
+    if [[ -n "$STATE_ACTIVE_UTILITY_WID" ]] && window_exists_in_snapshot "$snapshot" "$STATE_ACTIVE_UTILITY_WID"; then
+        local active_title_lc
+        active_title_lc="$(printf '%s\n' "$snapshot" | awk -F'|' -v wid="$STATE_ACTIVE_UTILITY_WID" '$1==wid { print tolower($4); exit }')"
+        if [[ -z "$active_title_lc" || ! "$active_title_lc" =~ $POPUP_TITLE_AWK_REGEX ]]; then
+            echo "${STATE_ACTIVE_UTILITY_BUNDLE}|${STATE_ACTIVE_UTILITY_WID}"
+            return 0
+        fi
     fi
 
     latest_pair="$(get_latest_on_screen_utility_window_from_snapshot "$snapshot")"
@@ -1075,7 +1110,9 @@ restore_non_browser_floating_windows() {
     local overlay_wids="$2"
     local active_browser_bundle="${3:-}"
     local core_wids_csv="${4:-}"
-    local line overlay_top_wid="" overlay_top_active_wid="" wid bundle
+    local preferred_focus_wid="${5:-}"
+    local preferred_focus_bundle="${6:-}"
+    local line overlay_top_wid="" overlay_top_bundle="" overlay_top_active_wid="" wid bundle
     [[ -z "$overlay_wids" ]] && return 0
 
     local ws_windows_snapshot
@@ -1089,8 +1126,8 @@ restore_non_browser_floating_windows() {
         wid="${line%%|*}"
         bundle="${line#*|}"
         [[ -z "$wid" ]] && continue
-        aerospace layout --window-id "$wid" floating 2>/dev/null || true
         overlay_top_wid="$wid"
+        overlay_top_bundle="$bundle"
         if [[ -n "$active_browser_bundle" && "$bundle" == "$active_browser_bundle" ]]; then
             overlay_top_active_wid="$wid"
         fi
@@ -1098,12 +1135,16 @@ restore_non_browser_floating_windows() {
 
     if [[ -n "$overlay_top_active_wid" ]]; then
         set_churn_window
-        aerospace focus --window-id "$overlay_top_active_wid" 2>/dev/null || true
+        focus_window_stably "$overlay_top_active_wid" "$active_browser_bundle"
         log "restore overlays: active browser floating window raised"
     elif [[ -n "$overlay_top_wid" ]]; then
         set_churn_window
-        aerospace focus --window-id "$overlay_top_wid" 2>/dev/null || true
+        focus_window_stably "$overlay_top_wid" "$overlay_top_bundle"
         log "restore overlays: non-browser floating windows raised"
+    elif [[ -n "$preferred_focus_wid" ]]; then
+        set_churn_window
+        focus_window_stably "$preferred_focus_wid" "$preferred_focus_bundle"
+        log "restore overlays: kept core tiled window focused"
     fi
 }
 
@@ -1153,6 +1194,24 @@ hide_app() {
 hide_bundle_app() {
     local bundle_id="$1"
     osascript -e "tell application id \"$bundle_id\" to hide" 2>/dev/null &
+}
+
+focus_window_stably() {
+    local wid="${1:-}"
+    local bundle="${2:-}"
+    [[ -z "$wid" ]] && return 0
+
+    if [[ "$bundle" == "com.apple.Terminal" ]]; then
+        osascript <<APPLESCRIPT >/dev/null 2>&1 || true
+tell application "Terminal"
+    activate
+    set index of window id ${wid} to 1
+end tell
+APPLESCRIPT
+        return 0
+    fi
+
+    aerospace focus --window-id "$wid" 2>/dev/null || true
 }
 
 show_app() {
@@ -1223,6 +1282,15 @@ rebuild_workspace() {
     local primary_upnote_wid=""
     if [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -gt 0 ]]; then
         primary_upnote_wid="${UPNOTE_WIDS[0]}"
+    fi
+    local preferred_focus_wid=""
+    local preferred_focus_bundle=""
+    if [[ -n "$active_utility_wid" ]]; then
+        preferred_focus_wid="$active_utility_wid"
+        preferred_focus_bundle="$active_utility_bundle"
+    else
+        preferred_focus_wid="$browser_wid"
+        preferred_focus_bundle="$active_browser_bundle"
     fi
     local target_order_csv=""
     target_order_csv="$(build_tiled_slot_order_csv "$primary_upnote_wid" "$VSCODE_WID" "$active_utility_wid" "$browser_wid")"
@@ -1361,10 +1429,10 @@ rebuild_workspace() {
 
         # Restore captured floating overlays (excluding inactive browsers).
         if [[ -n "$master_floating_overlay_wids" ]]; then
-            restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv"
+            restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv" "$preferred_focus_wid" "$preferred_focus_bundle"
         elif [[ -n "$browser_wid" ]]; then
             # No overlay windows, keep browser front-most.
-            aerospace focus --window-id "$browser_wid" 2>/dev/null || true
+            focus_window_stably "$browser_wid" "$active_browser_bundle"
         fi
 
         # Re-apply invariant after focus churn.
@@ -1377,7 +1445,7 @@ rebuild_workspace() {
         apply_sizing "$ws" "$master_core_order_csv" "$browser_wid" "$primary_upnote_wid"
         enforce_precedence_order "$primary_upnote_wid" "$VSCODE_WID" "$codex_wid" "$terminal_wid" "$telegram_wid" "$browser_wid"
 
-        restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv"
+        restore_non_browser_floating_windows "$ws" "$master_floating_overlay_wids" "$active_browser_bundle" "$master_core_order_csv" "$preferred_focus_wid" "$preferred_focus_bundle"
         enforce_single_browser_window_in_workspace "$ws" "$browser_wid" "$active_browser_bundle"
     fi
 

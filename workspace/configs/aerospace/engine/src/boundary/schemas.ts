@@ -21,7 +21,7 @@ export const knownBundleIdSchema = z.enum(KNOWN_BUNDLE_IDS);
 export const browserStateSchema = z.enum(["zen", "safari", ""]);
 export const activeUtilityBundleSchema = z.enum([
   "com.openai.codex",
-  "com.apple.Terminal",
+  "com.cmuxterm.app",
   "com.tdesktop.Telegram",
   ""
 ]);

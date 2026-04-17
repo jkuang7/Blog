@@ -87,7 +87,7 @@ SUB_EXPECTED=$'1|com.apple.Safari\n4|com.microsoft.VSCode'
 assert_eq "$SUB_OUT" "$SUB_EXPECTED" "second-pass subtraction removes core tiles and competing browser overlays"
 
 # Force rebuilds should untile the whole workspace first, not just managed apps.
-UNTILE_LINES=$'10|com.microsoft.VSCode\n11|NULL-APP-BUNDLE-ID\n12|com.apple.Terminal\n10|com.microsoft.VSCode\n'
+UNTILE_LINES=$'10|com.microsoft.VSCode\n11|NULL-APP-BUNDLE-ID\n12|com.cmuxterm.app\n10|com.microsoft.VSCode\n'
 UNTILE_OUT="$(printf '%s' "$UNTILE_LINES" | workspace_untile_ids_from_lines)"
 UNTILE_EXPECTED=$'10\n11\n12'
 assert_eq "$UNTILE_OUT" "$UNTILE_EXPECTED" "workspace untile helper includes all workspace windows exactly once"
@@ -101,6 +101,15 @@ assert_eq "$ORDER_WITHOUT_BROWSER" "10,20,30" "utility uses the right slot when 
 ORDER_STANDARD_THREE="$(build_tiled_slot_order_csv "" "20" "30" "50")"
 assert_eq "$ORDER_STANDARD_THREE" "20,30,50" "standard three-slot order keeps VSCode left, utility middle, browser right"
 
+assert_true "focused non-popup Terminal with a different window id should promote" \
+    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "false" "com.cmuxterm.app" "40"
+assert_false "focused Terminal should not promote when already the active owner" \
+    should_promote_focused_terminal_window "com.cmuxterm.app" "40" "false" "com.cmuxterm.app" "40"
+assert_false "popup-like Terminal windows should not promote" \
+    should_promote_focused_terminal_window "com.cmuxterm.app" "42" "true" "com.cmuxterm.app" "40"
+assert_false "non-Terminal utilities should remain sticky-owner" \
+    should_promote_focused_terminal_window "com.openai.codex" "42" "false" "com.cmuxterm.app" "40"
+
 ORIGINAL_WINDOW_IS_ON_SCREEN="$(declare -f window_is_on_screen)"
 window_is_on_screen() {
     case "$1" in
@@ -109,13 +118,13 @@ window_is_on_screen() {
     esac
 }
 
-STATE_ACTIVE_UTILITY_BUNDLE="com.apple.Terminal"
+STATE_ACTIVE_UTILITY_BUNDLE="com.cmuxterm.app"
 STATE_ACTIVE_UTILITY_WID="40"
-SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n40|com.apple.Terminal|h_tiles|Old Terminal\n42|com.apple.Terminal|floating|Visible Terminal\n50|app.zen-browser.zen|h_tiles|Zen\n'
+SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n40|com.cmuxterm.app|h_tiles|Old Terminal\n42|com.cmuxterm.app|floating|Visible Terminal\n50|app.zen-browser.zen|h_tiles|Zen\n'
 RESOLVED_UTILITY="$(resolve_active_utility_window "$SNAPSHOT")"
-assert_eq "$RESOLVED_UTILITY" "com.apple.Terminal|42" "latest visible utility overrides stale stored utility owner"
+assert_eq "$RESOLVED_UTILITY" "com.cmuxterm.app|40" "stored tiled utility owner remains authoritative while it still exists"
 
-STATE_ACTIVE_UTILITY_BUNDLE="com.apple.Terminal"
+STATE_ACTIVE_UTILITY_BUNDLE="com.cmuxterm.app"
 STATE_ACTIVE_UTILITY_WID="999"
 FALLBACK_SNAPSHOT=$'20|com.microsoft.VSCode|h_tiles|Code\n41|com.openai.codex|floating|Codex\n43|com.tdesktop.Telegram|floating|Telegram\n50|app.zen-browser.zen|h_tiles|Zen\n'
 FALLBACK_UTILITY="$(resolve_active_utility_window "$FALLBACK_SNAPSHOT")"

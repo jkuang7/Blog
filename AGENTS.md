@@ -16,12 +16,18 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 ## Task Start
 
 - Be context-driven, not optimistic.
+- When a user asks to fix something, gather relevant repo/runtime context first before proposing or making changes.
 - If a repo defines an LLM or harness contract, follow its load order exactly.
 - Reuse an already-running app, browser, or service when it helps verify the real surface.
 
 ## Verify, Then Claim
 
 - Treat implementation as provisional until the intended behavior is observed on the right live surface.
+- For debugging, do not present a root-cause explanation as likely unless it has been tested against the live surface; explicitly label unverified explanations as hypotheses.
+- Before changing code for a bug, separate observed facts, unknowns, and hypotheses; gather at least one discriminating observation that rules a cause in or out.
+- If multiple causes are plausible, add the smallest instrumentation or state inspection needed to identify the failing transition before fixing.
+- If the bug may involve platform behavior, a third-party app, or an upstream tool limitation, do targeted official/upstream research before broad local fixes or brute-force workarounds.
+- For layout, focus, tab, selection, resizing, and navigation bugs, trace the transition path and inspect both logical state and rendered layout state.
 - Prefer the highest-signal verification surface available:
   - app or runtime behavior
   - browser automation for UI flows
@@ -30,6 +36,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
   - repo-specific harnesses or tests
 - Passing tests alone is not enough when a live surface can be exercised.
 - For uncertain fixes, validate the risky slice first, then reintegrate the final change.
+- Do not claim a fix unless the failing repro was observed, the cause was evidenced by a targeted check, and the repro passes after the change; otherwise describe it as a hypothesis, mitigation, or likely fix.
 - After a non-trivial fix, add a targeted regression when it is worth protecting.
 - Delete dummy resources created during testing once no longer needed unless the user wants them kept.
 

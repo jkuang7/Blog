@@ -53,8 +53,8 @@ if.app-id = 'com.openai.codex'
 run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.openai.codex']
 
 [[on-window-detected]]
-if.app-id = 'com.apple.Terminal'
-run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.apple.Terminal']
+if.app-id = 'com.cmuxterm.app'
+run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.cmuxterm.app']
 
 [[on-window-detected]]
 if.app-id = 'com.tdesktop.Telegram'

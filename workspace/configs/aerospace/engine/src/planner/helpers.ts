@@ -15,7 +15,7 @@ export function isManagedBundle(bundleId: string | undefined): boolean {
   return [
     "com.microsoft.VSCode",
     "com.openai.codex",
-    "com.apple.Terminal",
+    "com.cmuxterm.app",
     "com.tdesktop.Telegram",
     "app.zen-browser.zen",
     "com.apple.Safari",

@@ -47,8 +47,8 @@ read_state "w1"
 [[ "$STATE_BROWSER" == "zen" ]] || { echo "FAIL: expected legacy fallback browser"; exit 1; }
 [[ "$STATE_UPNOTE_TILED" == "true" ]] || { echo "FAIL: expected legacy fallback upnote"; exit 1; }
 [[ "$STATE_TILED_ORDER" == "4,5,6" ]] || { echo "FAIL: expected legacy fallback tiled order"; exit 1; }
-[[ "$STATE_ACTIVE_UTILITY_BUNDLE" == "com.apple.Terminal" ]] || { echo "FAIL: expected legacy fallback active utility bundle"; exit 1; }
-[[ "$STATE_ACTIVE_UTILITY_WID" == "5" ]] || { echo "FAIL: expected legacy fallback active utility wid"; exit 1; }
+[[ -z "$STATE_ACTIVE_UTILITY_BUNDLE" ]] || { echo "FAIL: expected unmanaged legacy terminal bundle to be cleared"; exit 1; }
+[[ -z "$STATE_ACTIVE_UTILITY_WID" ]] || { echo "FAIL: expected unmanaged legacy terminal wid to be cleared"; exit 1; }
 
 # write mode controls.
 STATE_BROWSER="safari"

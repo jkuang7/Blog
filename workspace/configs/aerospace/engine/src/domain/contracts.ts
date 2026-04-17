@@ -1,7 +1,7 @@
 export const KNOWN_BUNDLE_IDS = [
   "com.microsoft.VSCode",
   "com.openai.codex",
-  "com.apple.Terminal",
+  "com.cmuxterm.app",
   "com.tdesktop.Telegram",
   "app.zen-browser.zen",
   "com.apple.Safari",
@@ -18,7 +18,7 @@ export type KnownBundleId = (typeof KNOWN_BUNDLE_IDS)[number];
 export type CanonicalWorkspaceId = "w1";
 
 export type BrowserState = "zen" | "safari" | "";
-export type ActiveUtilityBundle = "com.openai.codex" | "com.apple.Terminal" | "com.tdesktop.Telegram" | "";
+export type ActiveUtilityBundle = "com.openai.codex" | "com.cmuxterm.app" | "com.tdesktop.Telegram" | "";
 
 export interface WorkspaceState {
   workspace: CanonicalWorkspaceId;

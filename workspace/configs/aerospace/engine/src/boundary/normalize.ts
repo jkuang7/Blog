@@ -49,7 +49,7 @@ export function parseWorkspaceStateFile(
     .filter((value) => Number.isInteger(value) && value >= 0);
   const activeUtilityBundle = (kv.get("ACTIVE_UTILITY_BUNDLE") ?? "") as
     | "com.openai.codex"
-    | "com.apple.Terminal"
+    | "com.cmuxterm.app"
     | "com.tdesktop.Telegram"
     | "";
   const activeUtilityWindowIdRaw = kv.get("ACTIVE_UTILITY_WID") ?? "";

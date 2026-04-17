@@ -45,7 +45,7 @@ describe("boundary normalization", () => {
         browser: "safari",
         upnoteTiled: false,
         tiledOrder: [441, 80, 11446],
-        activeUtilityBundle: "com.apple.Terminal",
+        activeUtilityBundle: "com.cmuxterm.app",
         activeUtilityWindowId: 80,
         updatedAtMs: 1740744000000
       })
@@ -54,7 +54,7 @@ describe("boundary normalization", () => {
     expect(stateV2.version).toBe(2);
     expect(stateV2.browser).toBe("safari");
     expect(stateV2.upnoteTiled).toBe(false);
-    expect(stateV2.activeUtilityBundle).toBe("com.apple.Terminal");
+    expect(stateV2.activeUtilityBundle).toBe("com.cmuxterm.app");
     expect(stateV2.activeUtilityWindowId).toBe(80);
   });
 

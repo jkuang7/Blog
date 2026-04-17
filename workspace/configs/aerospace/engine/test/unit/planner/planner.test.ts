@@ -132,13 +132,13 @@ describe("planner", () => {
     expect(actions[0]?.reason).toBe("active-browser-closed-promote-zen");
   });
 
-  it("treats Terminal on_window as a managed non-browser app", () => {
+  it("treats cmux on_window as a managed non-browser app", () => {
     const context = toCanonicalPlannerContext({
       callback: {
         kind: "on_window",
         workspace: "w1",
-        bundleId: "com.apple.Terminal",
-        argv: ["com.apple.Terminal"],
+        bundleId: "com.cmuxterm.app",
+        argv: ["com.cmuxterm.app"],
         timestampMs: 1730000000000
       },
       workspaceState: {
@@ -150,9 +150,9 @@ describe("planner", () => {
       focusedWindow: {
         windowId: 12000,
         workspace: "w1",
-        bundleId: "com.apple.Terminal",
+        bundleId: "com.cmuxterm.app",
         layout: "floating",
-        title: "jian — -zsh — 80×24"
+        title: "cmux"
       },
       windows: [
         {
@@ -179,9 +179,9 @@ describe("planner", () => {
         {
           windowId: 12000,
           workspace: "w1",
-          bundleId: "com.apple.Terminal",
+          bundleId: "com.cmuxterm.app",
           layout: "floating",
-          title: "jian — -zsh — 80×24"
+          title: "cmux"
         }
       ]
     });
@@ -196,7 +196,7 @@ describe("planner", () => {
     ]);
     expect(actions[0]?.reason).toBe("managed-window-open");
     expect(actions[0]?.details.browser).toBe("zen");
-    expect(actions[0]?.details.activeUtilityBundle).toBe("com.apple.Terminal");
+    expect(actions[0]?.details.activeUtilityBundle).toBe("com.cmuxterm.app");
     expect(actions[0]?.details.activeUtilityWindowId).toBe(12000);
   });
 

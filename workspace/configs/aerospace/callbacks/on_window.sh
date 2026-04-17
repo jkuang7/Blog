@@ -96,8 +96,8 @@ if ( set -o noclobber; echo "$$" > "$JOB_LOCK" ) 2>/dev/null; then
         # Get snapshot of home app windows (first per app only, matching layout engine)
         # Extra windows (SSO popups, etc.) are excluded so they don't trigger rebuilds
         snapshot_windows() {
-            aerospace list-windows --workspace "$1" --format '%{app-name}|%{window-id}' 2>/dev/null \
-                | grep -E '^(Zen|Safari|Code|Codex|UpNote|Terminal|Telegram)\|[0-9]+$' \
+            aerospace list-windows --workspace "$1" --format '%{app-bundle-id}|%{window-id}' 2>/dev/null \
+                | grep -E "^(app\\.zen-browser\\.zen|com\\.apple\\.Safari|com\\.microsoft\\.VSCode|com\\.openai\\.codex|com\\.getupnote\\.desktop|${TERMINAL//./\\.}|com\\.tdesktop\\.Telegram)\\|[0-9]+$" \
                 | awk -F'|' '
                     {
                         app=$1

@@ -83,6 +83,11 @@ if [[ "$TITLE" == *"Attention"* ]] || [[ "$MESSAGE" == *"waiting for your input"
   SOUND_FILE="/System/Library/Sounds/Glass.aiff"
 fi
 
+IS_APPLE_TERMINAL=0
+if [[ "${TERM_PROGRAM:-}" == "Apple_Terminal" ]]; then
+  IS_APPLE_TERMINAL=1
+fi
+
 # macOS desktop notification (fails silently in headless/SSH cases)
 ESCAPED_TITLE=${TITLE//\\/\\\\}
 ESCAPED_TITLE=${ESCAPED_TITLE//\"/\\\"}
@@ -93,12 +98,18 @@ ESCAPED_MESSAGE=${ESCAPED_MESSAGE//\"/\\\"}
 # macOS sound
 afplay "$SOUND_FILE" 2>/dev/null &
 
-# Terminal bell
-printf '\a'
+# Avoid terminal-local activity signals in Apple Terminal. They can steal focus
+# to the tab that finished, which is the opposite of what we want for Codex
+# sessions running in background tabs.
+if [[ "$IS_APPLE_TERMINAL" -ne 1 ]]; then
+  printf '\a'
+fi
 
 # tmux message
 if [ -n "${TMUX:-}" ]; then
   tmux display-message "$TITLE: $MESSAGE" 2>/dev/null || true
 fi
 
-echo "[$(date)] $TITLE: $MESSAGE"
+if [[ "$IS_APPLE_TERMINAL" -ne 1 ]]; then
+  echo "[$(date)] $TITLE: $MESSAGE"
+fi

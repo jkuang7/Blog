@@ -32,7 +32,7 @@ const traceContextSchema = z.object({
       upnoteTiled: z.boolean(),
       tiledOrder: z.array(z.number().int().nonnegative()),
       activeUtilityBundle: z
-        .enum(["com.openai.codex", "com.apple.Terminal", "com.tdesktop.Telegram", ""])
+        .enum(["com.openai.codex", "com.cmuxterm.app", "com.tdesktop.Telegram", ""])
         .optional(),
       activeUtilityWindowId: z.number().int().nonnegative().nullable().optional()
     }),

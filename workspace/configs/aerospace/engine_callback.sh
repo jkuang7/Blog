@@ -145,7 +145,7 @@ windows = []
 for window_id, bundle_id, title in [
     (wid("ENGINE_VSCODE_WID"), "com.microsoft.VSCode", "VSCode"),
     (wid("ENGINE_CODEX_WID"), "com.openai.codex", "Codex"),
-    (wid("ENGINE_TERMINAL_WID"), "com.apple.Terminal", "Terminal"),
+    (wid("ENGINE_TERMINAL_WID"), "com.cmuxterm.app", "cmux"),
     (wid("ENGINE_TELEGRAM_WID"), "com.tdesktop.Telegram", "Telegram"),
     (wid("ENGINE_ZEN_WID"), "app.zen-browser.zen", "Zen"),
     (wid("ENGINE_SAFARI_WID"), "com.apple.Safari", "Safari"),
@@ -196,7 +196,7 @@ payload = {
         "tiledOrder": tiled_order,
         "activeUtilityBundle": (
             active_utility_bundle
-            if active_utility_bundle in {"com.openai.codex", "com.apple.Terminal", "com.tdesktop.Telegram", ""}
+            if active_utility_bundle in {"com.openai.codex", "com.cmuxterm.app", "com.tdesktop.Telegram", ""}
             else ""
         ),
         "activeUtilityWindowId": wid("ENGINE_STATE_ACTIVE_UTILITY_WID"),
