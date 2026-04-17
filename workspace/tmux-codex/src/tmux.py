@@ -61,26 +61,8 @@ class TmuxClient:
 
         # Filter by prefix if provided
         if prefix:
-            # ORX-driven Linear runs live on the same tmux socket but use `orx-...`
-            # session names instead of the legacy `codex-...` prefix.
             allowed_prefixes = [f"{prefix}-", "runner-"]
-            if prefix == "codex":
-                allowed_prefixes.append("orx-")
             sessions = [s for s in sessions if any(s.startswith(allowed) for allowed in allowed_prefixes)]
-            if prefix == "codex":
-                runner_projects = {
-                    session.removeprefix("runner-")
-                    for session in sessions
-                    if session.startswith("runner-")
-                }
-                if runner_projects:
-                    filtered: list[str] = []
-                    for session in sessions:
-                        project = _orx_session_project(session)
-                        if project is not None and project in runner_projects:
-                            continue
-                        filtered.append(session)
-                    sessions = filtered
 
         # Sort: prefix-N numerically first, then others alphabetically
         sort_prefix = prefix or "codex"

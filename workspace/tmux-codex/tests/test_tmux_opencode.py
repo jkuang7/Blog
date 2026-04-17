@@ -25,7 +25,7 @@ class _Result:
 
 
 class TmuxClientTests(unittest.TestCase):
-    def test_list_sessions_hides_orx_session_when_runner_for_same_project_exists(self):
+    def test_list_sessions_hides_orx_sessions_from_codex_listing(self):
         client = TmuxClient()
         client._run = Mock(
             return_value=_Result(
@@ -36,9 +36,9 @@ class TmuxClientTests(unittest.TestCase):
 
         sessions = client.list_sessions(prefix="codex")
 
-        self.assertEqual(sessions, ["codex-2", "orx-tmux-codex-pro-99-main", "runner-blog"])
+        self.assertEqual(sessions, ["codex-2", "runner-blog"])
 
-    def test_list_sessions_prefers_runner_over_matching_orx_session(self):
+    def test_list_sessions_hides_matching_orx_session_even_when_runner_exists(self):
         client = TmuxClient()
         client._run = Mock(
             return_value=_Result(
