@@ -17,6 +17,11 @@ unset _this
 export REPOS_HOME="$DEV/Repos"
 export CODEX_GLOBAL_AGENTS_FILE="$CODEX_HOME/AGENTS.md"
 
+# New interactive terminals launched at $HOME should default to the Dev root.
+if [[ -o interactive ]] && [[ "${PWD:A}" == "${HOME:A}" ]]; then
+    builtin cd "$DEV"
+fi
+
 alias cdd='cd $DEV'
 alias ze="code ~/.zshrc"
 alias zs='source ~/.zprofile && source ~/.zshrc'
