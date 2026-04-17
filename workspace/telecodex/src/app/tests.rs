@@ -208,6 +208,67 @@ fn retries_bot_name_sync_after_rate_limit_expires() {
 }
 
 #[test]
+fn summarizes_orx_dispatch_for_reconciliation_lane() {
+    let payload = serde_json::json!({
+        "dispatch": {
+            "ingress_message": "Project `validation-os` is paused for ORX reconciliation after `PRO-740`.",
+            "project_key": "validation-os",
+            "lane_state": "awaiting_orx_review",
+            "feature_key": "PRO-740",
+        }
+    });
+
+    let summary = summarize_orx_dispatch(&payload);
+
+    assert!(summary.contains("paused for ORX reconciliation"));
+    assert!(
+        summary.contains("Reserved feature lane: `PRO-740` is waiting for ORX reconciliation.")
+    );
+    assert!(summary.contains("use the inline operator controls below"));
+}
+
+#[test]
+fn summarizes_orx_status_with_reconciliation_details() {
+    let payload = serde_json::json!({
+        "project": {
+            "project_key": "validation-os",
+            "feature_lane": {
+                "feature_key": "PRO-740",
+                "lane_state": "awaiting_orx_review"
+            },
+            "reconciliation": {
+                "status": "awaiting_orx_review",
+                "action": "needs_human_help",
+                "reason": "needs human help",
+                "review_kind": "design_review_required",
+                "ui_mode": "visual",
+                "design_state": "pending",
+                "design_reference": ".codex/stitch/run-1/DESIGN.md",
+                "verification_surface": "none",
+                "design_artifacts": [".codex/stitch/run-1/DESIGN.md"]
+            }
+        },
+        "active_issue_key": "PRO-740",
+        "queue_depth": 0
+    });
+
+    let summary = summarize_orx_status(&payload);
+
+    assert!(summary.contains("- feature lane: awaiting_orx_review (`PRO-740`)"));
+    assert!(
+        summary.contains(
+            "- reconciliation: awaiting_orx_review (needs_human_help) - needs human help"
+        )
+    );
+    assert!(summary.contains("- review gate: design_review_required"));
+    assert!(summary.contains("- ui mode: visual"));
+    assert!(summary.contains("- design state: pending"));
+    assert!(summary.contains("- design reference: .codex/stitch/run-1/DESIGN.md"));
+    assert!(summary.contains("- verification surface: none"));
+    assert!(summary.contains("- design artifacts: .codex/stitch/run-1/DESIGN.md"));
+}
+
+#[test]
 fn derives_project_only_display_name_from_issue_summary_name() {
     assert_eq!(
         project_only_display_name("tmux-codex - fix runner drift"),
@@ -1536,6 +1597,25 @@ fn parses_history_callback_payloads() {
 }
 
 #[test]
+fn parses_orx_operator_callback_payloads() {
+    assert_eq!(
+        parse_orx_operator_callback_data("orx:validation-os:ad"),
+        Some((
+            "validation-os".to_string(),
+            OrxOperatorDecision::ApproveDesign
+        ))
+    );
+    assert_eq!(
+        parse_orx_operator_callback_data("orx:validation-os:mr"),
+        Some((
+            "validation-os".to_string(),
+            OrxOperatorDecision::MergeAndRelease
+        ))
+    );
+    assert_eq!(parse_orx_operator_callback_data("apr:abc123:a"), None);
+}
+
+#[test]
 fn builds_approval_keyboard_buttons() {
     let keyboard = approval_keyboard(
         "token123",
@@ -1576,6 +1656,60 @@ fn builds_history_keyboard_buttons() {
     assert_eq!(
         keyboard.inline_keyboard[0][1].callback_data,
         Some("his:019ce672-9445-7612-bc5e-c8243a0d1915:2".to_string())
+    );
+}
+
+#[test]
+fn builds_orx_operator_keyboard_for_design_review() {
+    let keyboard = orx_operator_keyboard(
+        "validation-os",
+        Some("awaiting_orx_review"),
+        Some("design_review_required"),
+    )
+    .expect("orx operator keyboard");
+
+    assert_eq!(keyboard.inline_keyboard.len(), 1);
+    assert_eq!(
+        keyboard.inline_keyboard[0][0].callback_data,
+        Some("orx:validation-os:ad".to_string())
+    );
+}
+
+#[test]
+fn builds_orx_operator_keyboard_for_release_actions() {
+    let keyboard = orx_operator_keyboard("validation-os", Some("awaiting_hil_release"), None)
+        .expect("orx operator keyboard");
+
+    assert_eq!(keyboard.inline_keyboard.len(), 2);
+    assert_eq!(
+        keyboard.inline_keyboard[0][0].callback_data,
+        Some("orx:validation-os:mr".to_string())
+    );
+    assert_eq!(
+        keyboard.inline_keyboard[0][1].callback_data,
+        Some("orx:validation-os:kr".to_string())
+    );
+}
+
+#[test]
+fn builds_orx_operator_keyboard_from_status_payload() {
+    let payload = serde_json::json!({
+        "project": {
+            "project_key": "validation-os",
+            "feature_lane": {
+                "lane_state": "awaiting_orx_review"
+            },
+            "reconciliation": {
+                "review_kind": "ui_evidence_missing"
+            }
+        }
+    });
+
+    let keyboard = orx_operator_keyboard_for_payload(&payload).expect("orx operator keyboard");
+
+    assert_eq!(
+        keyboard.inline_keyboard[0][0].callback_data,
+        Some("orx:validation-os:ui".to_string())
     );
 }
 
@@ -1736,12 +1870,23 @@ fn summarizes_orx_intake_submission_with_human_readable_ticket_details() {
 
     assert!(summary.contains("I would create 2 Linear tickets across 2 projects."));
     assert!(summary.contains("**Ticket 1 · tmux-codex**"));
-    assert!(summary.contains("Verify the ORX-backed runner picker and remove leftover task wording"));
-    assert!(summary.contains("Problem: The runner picker still uses legacy task wording instead of ORX queue language."));
-    assert!(summary.contains("Goal: Make the tmux-codex runner picker describe ORX queue state clearly."));
+    assert!(
+        summary.contains("Verify the ORX-backed runner picker and remove leftover task wording")
+    );
+    assert!(summary.contains(
+        "Problem: The runner picker still uses legacy task wording instead of ORX queue language."
+    ));
+    assert!(
+        summary
+            .contains("Goal: Make the tmux-codex runner picker describe ORX queue state clearly.")
+    );
     assert!(summary.contains("*Scope*"));
     assert!(summary.contains("*Done when*"));
-    assert!(summary.contains("Why here: Assigned here because the request explicitly mentioned tmux-codex."));
+    assert!(
+        summary.contains(
+            "Why here: Assigned here because the request explicitly mentioned tmux-codex."
+        )
+    );
     assert!(summary.contains("**Ticket 2 · validation-os**"));
     assert!(summary.contains("Review the draft tickets above"));
     assert!(summary.contains("Reject"));
@@ -1806,7 +1951,11 @@ fn summarizes_orx_intake_submission_calls_out_clarification_items() {
 
     assert!(summary.contains("**Ticket 1 · Clarification required**"));
     assert!(summary.contains("*Risks*"));
-    assert!(summary.contains("Why here: ORX could not confidently map this request to a single project yet."));
+    assert!(
+        summary.contains(
+            "Why here: ORX could not confidently map this request to a single project yet."
+        )
+    );
     assert!(summary.contains("Clarification is required before ORX can create tickets in Linear."));
 }
 
@@ -1993,7 +2142,9 @@ async fn resume_recovered_sessions_starts_workers_for_interrupted_sessions() {
     let request = sample_turn_request(session.key);
 
     store.set_session_busy(session.key, true).unwrap();
-    store.enqueue_pending_turn(session.id, &request, "private").unwrap();
+    store
+        .enqueue_pending_turn(session.id, &request, "private")
+        .unwrap();
     let claimed = store.claim_next_pending_turn(session.key).unwrap().unwrap();
     assert_eq!(claimed.request.prompt, "hello");
 

@@ -73,32 +73,6 @@ impl OrxClient {
         self.get(&format!("/bot/status?bot={bot_identity}")).await
     }
 
-    pub async fn bot_queue(&self, bot_identity: &str) -> Result<Value> {
-        self.get(&format!("/bot/queue?bot={bot_identity}")).await
-    }
-
-    pub async fn bot_pause(&self, bot_identity: &str, payload: Value) -> Result<Value> {
-        self.post(
-            "/bot/pause",
-            json!({
-                "bot_identity": bot_identity,
-                "payload": payload,
-            }),
-        )
-        .await
-    }
-
-    pub async fn bot_resume(&self, bot_identity: &str, payload: Value) -> Result<Value> {
-        self.post(
-            "/bot/resume",
-            json!({
-                "bot_identity": bot_identity,
-                "payload": payload,
-            }),
-        )
-        .await
-    }
-
     pub async fn submit_intake(
         &self,
         ingress_bot: &str,
@@ -139,20 +113,52 @@ impl OrxClient {
         .await
     }
 
+    pub async fn resume_reviewed_lane(
+        &self,
+        project_key: &str,
+        next_slice: Option<&str>,
+    ) -> Result<Value> {
+        self.post(
+            "/dispatch/review/resolve",
+            json!({
+                "project_key": project_key,
+                "next_slice": next_slice,
+            }),
+        )
+        .await
+    }
+
+    pub async fn release_feature_lane(
+        &self,
+        project_key: &str,
+        action: &str,
+        note: Option<&str>,
+    ) -> Result<Value> {
+        self.post(
+            "/dispatch/release",
+            json!({
+                "project_key": project_key,
+                "action": action,
+                "note": note,
+            }),
+        )
+        .await
+    }
+
     pub async fn poll_notifications(
         &self,
         bot_identity: &str,
         limit: usize,
     ) -> Result<Vec<OrxNotification>> {
         let payload = self
-            .get(&format!(
-                "/notifications?bot={bot_identity}&limit={limit}"
-            ))
+            .get(&format!("/notifications?bot={bot_identity}&limit={limit}"))
             .await?;
         let notifications = payload
             .get("notifications")
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("ORX notifications response missing notifications array"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("ORX notifications response missing notifications array")
+            })?;
         notifications
             .iter()
             .cloned()

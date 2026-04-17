@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from orx.dispatch import GlobalDispatchService
 from orx.linear_client import LinearIssue
@@ -12,6 +15,35 @@ from orx.storage import Storage
 from orx.config import resolve_runtime_paths
 
 from tests.test_executor import FakeTmuxTransport
+
+
+class FlakyTmuxTransport(FakeTmuxTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.visible_limit_by_session: dict[str, int] = {}
+        self.visible_checks_by_session: dict[str, int] = {}
+
+    def expire_session_after(self, name: str, *, visible_checks: int) -> None:
+        self.visible_limit_by_session[name] = visible_checks
+        self.visible_checks_by_session.pop(name, None)
+
+    def has_session(self, name: str) -> bool:
+        if name not in self.sessions:
+            return False
+        limit = self.visible_limit_by_session.get(name)
+        if limit is None:
+            return True
+        checks = self.visible_checks_by_session.get(name, 0)
+        if checks >= limit:
+            self.sessions.pop(name, None)
+            return False
+        self.visible_checks_by_session[name] = checks + 1
+        return True
+
+    def kill_session(self, name: str) -> bool:
+        self.visible_checks_by_session.pop(name, None)
+        self.visible_limit_by_session.pop(name, None)
+        return super().kill_session(name)
 
 
 class GlobalDispatchTests(unittest.TestCase):
@@ -87,6 +119,39 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertEqual(assignment.bot.assigned_project_key, "beta")
             self.assertEqual(registry.get_project("beta").assigned_bot, "shared_bot")
             self.assertIsNone(registry.get_project("alpha").assigned_bot)
+
+    def test_assign_project_bot_prefers_project_affinity_bot_before_ingress_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+
+            registry.upsert_project(
+                project_key="validation-os",
+                display_name="validation-os",
+                repo_root="/tmp/validation-os",
+                runtime_home="/tmp/runtime-validation-os",
+            )
+            registry.upsert_bot(
+                bot_identity="BentoBoxThreeBot",
+                default_display_name="validation-os",
+                telegram_chat_id=101,
+            )
+            registry.upsert_bot(
+                bot_identity="BerryRamenBot",
+                default_display_name="create-t3-jian",
+                telegram_chat_id=102,
+            )
+
+            assignment = registry.assign_project_bot(
+                project_key="validation-os",
+                preferred_bot="BerryRamenBot",
+            )
+
+            self.assertIsNotNone(assignment)
+            assert assignment is not None
+            self.assertEqual(assignment.bot.bot_identity, "BentoBoxThreeBot")
+            self.assertEqual(assignment.project.assigned_bot, "BentoBoxThreeBot")
 
     def test_deregister_project_removes_registry_entry_and_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -263,12 +328,70 @@ class GlobalDispatchTests(unittest.TestCase):
                 transport_factory=lambda: transport,
             )
             self.assertTrue(runtime.control_status(project_key="beta")["ok"])
-            queued = runtime.control_queue_command(
-                project_key="beta",
-                command_kind="pause",
-                payload={"source": "test"},
+
+    def test_dispatch_run_prefers_project_affinity_bot_over_wrong_ingress_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
             )
-            self.assertEqual(queued["command"]["command_kind"], "pause")
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "validation-os"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="validation-os",
+                display_name="validation-os",
+                repo_root=str(repo_root),
+            )
+            service.register_bot(
+                bot_identity="BentoBoxThreeBot",
+                default_display_name="validation-os",
+                telegram_chat_id=101,
+            )
+            service.register_bot(
+                bot_identity="BerryRamenBot",
+                default_display_name="create-t3-jian",
+                telegram_chat_id=102,
+            )
+            mirror.upsert_issue(
+                linear_id="lin-validation-1",
+                identifier="PRO-645",
+                title="Stay on validation lane",
+                description="Disposable wrong-bot ingress proof",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-validation",
+                project_name="validation-os",
+                source_updated_at="2026-04-17T19:18:00+00:00",
+                metadata={"project_key": "validation-os", "worktree_path": str(repo_root)},
+            )
+
+            result = service.dispatch_run(
+                ingress_bot="BerryRamenBot",
+                explicit_project_key="validation-os",
+                explicit_issue_key="PRO-645",
+            )
+
+            self.assertEqual(result.decision, "dispatched")
+            self.assertEqual(result.assigned_bot, "BentoBoxThreeBot")
+            self.assertEqual(result.owning_bot, "BentoBoxThreeBot")
+            self.assertTrue(result.handoff_required)
+            notifications = registry.list_pending_notifications(
+                project_key="validation-os",
+                owning_bot="BentoBoxThreeBot",
+            )
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0].target_bot, "BentoBoxThreeBot")
+            self.assertEqual(notifications[0].ingress_bot, "BerryRamenBot")
 
     def test_dispatch_prefers_persisted_project_execution_thread_binding(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -488,6 +611,11 @@ class GlobalDispatchTests(unittest.TestCase):
             )
             self.assertFalse(continued.finalized)
             self.assertEqual(continued.next_slice, "Finish the remaining alpha work")
+            self.assertIsNone(runtime.store.get_session("main"))
+            self.assertFalse(transport.has_session("runner-alpha"))
+            restart_context = service.build_restart_context(project_key="alpha")
+            self.assertEqual(restart_context["start_state"], "runnable")
+            self.assertIsNone(restart_context["runtime"]["session"])
 
             drained = service.drain_projects()
             self.assertEqual(len(drained), 1)
@@ -499,6 +627,12 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertIsNotNone(continued_state)
             self.assertIsNotNone(continued_state.active_slice_id)
             self.assertEqual(continued_state.resume_context["project_key"], "alpha")
+            continued_request = runtime.store.get_slice_request(continued_state.active_slice_id)  # type: ignore[arg-type]
+            self.assertIsNotNone(continued_request)
+            self.assertEqual(
+                continued_request.request["slice_goal"],
+                "Finish the remaining alpha work",
+            )
 
             finalized = service.submit_slice_result(
                 project_key="alpha",
@@ -517,15 +651,831 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertIn("complete", linear.calls)
 
             next_batch = service.drain_projects()
-            self.assertEqual(len(next_batch), 1)
-            self.assertEqual(next_batch[0].project_key, "alpha")
-            self.assertEqual(next_batch[0].issue_key, "PRO-701")
-            self.assertEqual(next_batch[0].action, "started")
+            self.assertEqual(next_batch, [])
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            self.assertEqual(
+                registration.metadata["feature_lane"]["lane_state"],
+                "awaiting_hil_release",
+            )
+            self.assertEqual(
+                registration.metadata["feature_lane"]["feature_key"],
+                "PRO-700",
+            )
+            self.assertTrue(registration.metadata["feature_lane"]["release_required"])
 
             completed_issue = mirror.get_issue(identifier="PRO-700")
             self.assertIsNotNone(completed_issue)
             self.assertEqual(completed_issue.state_type, "completed")
             self.assertIsNotNone(completed_issue.completed_at)
+
+    def test_drain_projects_continues_same_feature_without_releasing_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root="/tmp/alpha",
+                owning_bot="alpha_bot",
+            )
+            for identifier, title, priority in (
+                ("PRO-720", "Alpha packet first", 1),
+                ("PRO-721", "Alpha packet second", 2),
+            ):
+                mirror.upsert_issue(
+                    linear_id=f"lin-{identifier.lower()}",
+                    identifier=identifier,
+                    title=title,
+                    description=title,
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_name="Todo",
+                    state_type="unstarted",
+                    priority=priority,
+                    project_id="project-alpha",
+                    project_name="Alpha",
+                    source_updated_at=f"2026-04-16T12:0{priority}:00+00:00",
+                    metadata={"project_key": "alpha", "packet_key": "FEATURE-ALPHA"},
+                )
+
+            first = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(first.issue_key, "PRO-720")
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            runtime = service._runtime_service(registration)  # type: ignore[arg-type]
+            continuity = runtime.continuity.get_state("PRO-720", "main")
+            self.assertIsNotNone(continuity)
+            finalized = service.submit_slice_result(
+                project_key="alpha",
+                slice_id=continuity.active_slice_id,  # type: ignore[arg-type]
+                payload={
+                    "status": "success",
+                    "summary": "First feature ticket complete",
+                    "verified": True,
+                    "next_slice": None,
+                    "artifacts": ["proof"],
+                    "metrics": {"step": 1},
+                },
+            )
+
+            self.assertTrue(finalized.finalized)
+            next_batch = service.drain_projects()
+            self.assertEqual(len(next_batch), 1)
+            self.assertEqual(next_batch[0].issue_key, "PRO-721")
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            self.assertEqual(
+                registration.metadata["feature_lane"]["feature_key"],
+                "FEATURE-ALPHA",
+            )
+            self.assertEqual(
+                registration.metadata["feature_lane"]["lane_state"],
+                "executing",
+            )
+
+    def test_release_feature_lane_clears_reservation_and_releases_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=FakeTmuxTransport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root="/tmp/alpha",
+                owning_bot="alpha_bot",
+                owner_chat_id=101,
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-release",
+                identifier="PRO-730",
+                title="Feature release",
+                description="Finish and wait for HIL",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Done",
+                state_type="completed",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:10:00+00:00",
+                completed_at="2026-04-16T12:12:00+00:00",
+                metadata={"project_key": "alpha", "packet_key": "FEATURE-RELEASE"},
+            )
+            registry.assign_project_bot(project_key="alpha", preferred_bot="alpha_bot")
+            registry.set_project_feature_lane(
+                project_key="alpha",
+                lane={
+                    "feature_key": "FEATURE-RELEASE",
+                    "packet_key": "FEATURE-RELEASE",
+                    "lane_state": "awaiting_hil_release",
+                    "release_required": True,
+                    "last_issue_key": "PRO-730",
+                    "last_issue_title": "Feature release",
+                    "merge_target": "main",
+                    "merge_strategy": "hil_merge_to_main",
+                },
+            )
+
+            released = service.release_feature_lane(
+                project_key="alpha",
+                action="merge_to_main_and_release",
+                note="Merged by HIL.",
+            )
+
+            self.assertTrue(released["released"])
+            self.assertIsNone(registry.get_project("alpha").assigned_bot)
+            self.assertIsNone(registry.get_project_feature_lane("alpha"))
+
+    def test_recover_failed_start_clears_lane_and_releases_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root="/tmp/alpha",
+                owning_bot="alpha_bot",
+                owner_chat_id=101,
+            )
+            registry.assign_project_bot(project_key="alpha", preferred_bot="alpha_bot")
+            registry.set_project_feature_lane(
+                project_key="alpha",
+                lane={
+                    "feature_key": "FEATURE-FAILED",
+                    "packet_key": "FEATURE-FAILED",
+                    "lane_state": "launch_failed",
+                    "release_required": False,
+                    "last_issue_key": "PRO-731",
+                    "last_issue_title": "Failed start",
+                    "merge_target": "main",
+                    "merge_strategy": "hil_merge_to_main",
+                },
+            )
+
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            runtime = service._runtime_service(registration)  # type: ignore[arg-type]
+            runtime.repository.upsert_runner(
+                "main",
+                transport="tmux-codex",
+                display_name="Alpha main",
+                state="ready",
+            )
+            runtime.repository.acquire_issue_lease("PRO-731", "main")
+            runtime.store.upsert_session(
+                runner_id="main",
+                issue_key="PRO-731",
+                session_name="runner-alpha",
+                pane_target="%1",
+                transport="tmux-codex",
+                state="claimed",
+            )
+
+            recovered = service.recover_failed_start(project_key="alpha")
+
+            self.assertTrue(recovered["recovered"])
+            self.assertEqual(runtime.repository.list_active_leases(runner_id="main"), [])
+            self.assertIsNone(runtime.store.get_session("main"))
+            self.assertIsNone(registry.get_project("alpha").assigned_bot)
+            self.assertIsNone(registry.get_project_feature_lane("alpha"))
+
+    def test_runner_event_parks_lane_for_orx_reconciliation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-review",
+                identifier="PRO-740",
+                title="Needs review",
+                description="Runner stalled before handoff",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:13:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+
+            parked = service.submit_runner_event(
+                project_key="alpha",
+                event_kind="result_missing",
+                final_summary="Codex stopped after hitting a blocker.",
+                transcript_excerpt="blocked on missing migration context",
+                reason="missing RUNNER_RESULT block",
+            )
+
+            self.assertTrue(parked["ok"])
+            self.assertEqual(parked["feature_lane"]["lane_state"], "awaiting_orx_review")
+            self.assertEqual(parked["reconciliation"]["status"], "awaiting_orx_review")
+            self.assertEqual(parked["reconciliation"]["action"], "blocked")
+            self.assertFalse(parked["has_active_slice"])
+            self.assertIsNone(parked["active_slice_id"])
+            restart = service.build_restart_context(project_key="alpha")
+            self.assertEqual(restart["start_state"], "awaiting_orx_review")
+            refreshed = runtime.continuity.get_state("PRO-740", "main")
+            self.assertIsNotNone(refreshed)
+            assert refreshed is not None
+            self.assertIsNone(refreshed.active_slice_id)
+            self.assertEqual(refreshed.last_result_status, "failed")
+            self.assertEqual(refreshed.resume_context["interpreted_action"], "blocked")
+            mirrored = mirror.get_issue(identifier="PRO-740")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertIn("## Latest Handoff", mirrored.description)
+            self.assertIn("Codex stopped after hitting a blocker.", mirrored.description)
+            self.assertEqual(runtime.repository.list_active_leases(runner_id="main"), [])
+            self.assertIsNone(runtime.store.get_session("main"))
+            self.assertEqual(service.drain_projects(), [])
+
+    def test_submit_slice_result_routes_visual_work_to_design_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-visual-review",
+                identifier="PRO-741",
+                title="Redesign the dashboard layout",
+                description="Create a cleaner visual hierarchy for the dashboard.",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:14:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+            continuity = runtime.continuity.get_state("PRO-741", "main")
+            self.assertIsNotNone(continuity)
+
+            reviewed = service.submit_slice_result(
+                project_key="alpha",
+                slice_id=continuity.active_slice_id,  # type: ignore[arg-type]
+                payload={
+                    "status": "success",
+                    "summary": "Prepared the design direction and captured Stitch artifacts.",
+                    "verified": False,
+                    "next_slice": None,
+                    "artifacts": [".codex/stitch/run-1/STYLE.md"],
+                    "design_artifacts": [".codex/stitch/run-1/DESIGN.md"],
+                    "design_reference": ".codex/stitch/run-1/DESIGN.md",
+                    "design_review_requested": True,
+                    "verification_surface": "none",
+                    "metrics": {"step": 1},
+                },
+            )
+
+            self.assertEqual(reviewed.status, "awaiting_orx_review")
+            self.assertFalse(reviewed.finalized)
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            self.assertEqual(registration.metadata["feature_lane"]["lane_state"], "awaiting_orx_review")
+            self.assertEqual(registration.metadata["feature_lane"]["release_action"], "design_review_required")
+            self.assertEqual(registration.metadata["reconciliation"]["review_kind"], "design_review_required")
+            self.assertEqual(registration.metadata["reconciliation"]["design_state"], "pending")
+
+            resumed = service.resume_reviewed_lane(
+                project_key="alpha",
+                next_slice="Implement the approved dashboard design and verify it with Playwright.",
+            )
+
+            self.assertTrue(resumed["resumed"])
+            refreshed = runtime.continuity.get_state("PRO-741", "main")
+            self.assertIsNotNone(refreshed)
+            assert refreshed is not None
+            self.assertEqual(refreshed.resume_context["design_state"], "approved")
+            self.assertTrue(refreshed.resume_context["ui_evidence_required"])
+            self.assertEqual(refreshed.resume_context["design_reference"], ".codex/stitch/run-1/DESIGN.md")
+
+    def test_submit_slice_result_blocks_ui_logic_closeout_without_playwright(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            (repo_root / "ui.txt").write_text("before\n", encoding="utf-8")
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-ui-logic",
+                identifier="PRO-743",
+                title="Fix modal submit validation bug",
+                description="The submit button state is wrong after validation fails.",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:16:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+            continuity = runtime.continuity.get_state("PRO-743", "main")
+            self.assertIsNotNone(continuity)
+            (repo_root / "ui.txt").write_text("after\n", encoding="utf-8")
+
+            blocked = service.submit_slice_result(
+                project_key="alpha",
+                slice_id=continuity.active_slice_id,  # type: ignore[arg-type]
+                payload={
+                    "status": "success",
+                    "summary": "Fixed the modal submit behavior.",
+                    "verified": True,
+                    "next_slice": None,
+                    "artifacts": ["ui.txt"],
+                    "verification_ran": ["pnpm test"],
+                    "verification_surface": "cli",
+                    "metrics": {"step": 1},
+                },
+            )
+
+            self.assertEqual(blocked.status, "awaiting_orx_review")
+            self.assertFalse(blocked.finalized)
+            self.assertFalse(blocked.linear_completed)
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            self.assertEqual(registration.metadata["reconciliation"]["review_kind"], "ui_evidence_missing")
+            self.assertEqual(registration.metadata["reconciliation"]["verification_surface"], "cli")
+            mirrored = mirror.get_issue(identifier="PRO-743")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertEqual(mirrored.state_type, "unstarted")
+
+    def test_resume_reviewed_lane_continues_same_issue_with_new_slice_goal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-review-resume",
+                identifier="PRO-742",
+                title="Resume after ORX review",
+                description="Runner stalled before a structured result",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:15:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+            parked = service.submit_runner_event(
+                project_key="alpha",
+                event_kind="result_missing",
+                issue_key="PRO-742",
+                final_summary="Stopped before the final structured result.",
+                transcript_excerpt="The missing context is now available.",
+                reason="missing RUNNER_RESULT block",
+            )
+            self.assertTrue(parked["ok"])
+
+            resumed = service.resume_reviewed_lane(
+                project_key="alpha",
+                next_slice="Retry with the missing context filled in.",
+            )
+
+            self.assertTrue(resumed["ok"])
+            self.assertTrue(resumed["resumed"])
+            self.assertEqual(resumed["feature_lane"]["lane_state"], "executing")
+            self.assertIsNone(resumed["reconciliation"])
+            status = service.control_status(project_key="alpha")
+            execution_packet = status["restart_context"]["execution_packet"]
+            self.assertIsInstance(execution_packet, dict)
+            assert isinstance(execution_packet, dict)
+            execution_brief = execution_packet.get("execution_brief")
+            self.assertIsInstance(execution_brief, dict)
+            assert isinstance(execution_brief, dict)
+            self.assertEqual(execution_packet.get("owning_bot"), "alpha_bot")
+            self.assertEqual(execution_packet.get("assigned_bot"), "alpha_bot")
+            self.assertEqual(execution_packet.get("feature_lane", {}).get("lane_state"), "executing")
+            self.assertEqual(
+                execution_brief.get("goal"),
+                "Retry with the missing context filled in.",
+            )
+            state = runtime.continuity.get_state("PRO-742", "main")
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertIsNotNone(state.active_slice_id)
+            self.assertEqual(state.next_slice, "Retry with the missing context filled in.")
+            self.assertEqual(runtime.active_issue_key(), "PRO-742")
+
+    def test_dispatch_run_rolls_back_when_runner_never_becomes_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FlakyTmuxTransport()
+            transport.expire_session_after("runner-alpha", visible_checks=1)
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-flaky",
+                identifier="PRO-743",
+                title="Start should fail closed",
+                description="runner vanishes immediately",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:16:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            result = service.dispatch_run(ingress_bot="alpha_bot")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+
+            self.assertEqual(result.decision, "launch-failed")
+            self.assertEqual(result.lane_state, "launch_failed")
+            self.assertEqual(runtime.repository.list_active_leases(runner_id="main"), [])
+            self.assertIsNone(runtime.store.get_session("main"))
+            self.assertIsNone(runtime.continuity.get_state("PRO-743", "main"))
+            self.assertEqual(registry.get_project_feature_lane("alpha")["lane_state"], "launch_failed")
+
+    def test_resume_reviewed_lane_restores_parked_state_when_runner_never_becomes_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FlakyTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-review-flaky",
+                identifier="PRO-744",
+                title="Resume should fail closed",
+                description="runner vanishes during resume",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:17:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            parked = service.submit_runner_event(
+                project_key="alpha",
+                event_kind="result_missing",
+                issue_key="PRO-744",
+                final_summary="Runner stopped before the final structured result.",
+                reason="missing RUNNER_RESULT block",
+            )
+            self.assertTrue(parked["ok"])
+            parked_state = service._runtime_service(registry.get_project("alpha")).continuity.get_state(  # type: ignore[arg-type]
+                "PRO-744",
+                "main",
+            )
+            self.assertIsNotNone(parked_state)
+            assert parked_state is not None
+            transport.expire_session_after("runner-alpha", visible_checks=1)
+
+            resumed = service.resume_reviewed_lane(
+                project_key="alpha",
+                next_slice="Retry after ORX fills the missing context.",
+            )
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+            state = runtime.continuity.get_state("PRO-744", "main")
+
+            self.assertTrue(resumed["ok"])
+            self.assertFalse(resumed["resumed"])
+            self.assertEqual(resumed["reason"], "runner_not_durable")
+            self.assertEqual(resumed["feature_lane"]["lane_state"], "awaiting_orx_review")
+            self.assertEqual(resumed["reconciliation"]["status"], "awaiting_orx_review")
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertIsNone(state.active_slice_id)
+            self.assertEqual(state.next_slice, parked_state.next_slice)
+            self.assertEqual(runtime.repository.list_active_leases(runner_id="main"), [])
+            self.assertIsNone(runtime.store.get_session("main"))
+
+    def test_resume_reviewed_lane_reclassifies_stale_ui_routing_from_current_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            transport = FakeTmuxTransport()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=lambda: transport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "validation-os-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="validation-os",
+                display_name="validation-os",
+                repo_root=str(repo_root),
+                owning_bot="BentoBoxThreeBot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-validation-review-stale-ui",
+                identifier="PRO-745",
+                title="Disposable wrong-bot ingress proof on validation-os",
+                description="Confirm the control-plane lane stayed on the assigned bot.",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-validation-os",
+                project_name="validation-os",
+                source_updated_at="2026-04-16T12:18:00+00:00",
+                metadata={"project_key": "validation-os", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="BentoBoxThreeBot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("validation-os"))  # type: ignore[arg-type]
+            parked = service.submit_runner_event(
+                project_key="validation-os",
+                event_kind="result_missing",
+                issue_key="PRO-745",
+                final_summary="Stopped before the final structured result.",
+                reason="missing RUNNER_RESULT block",
+            )
+            self.assertTrue(parked["ok"])
+            runtime.continuity.apply_handoff_interpretation(
+                issue_key="PRO-745",
+                runner_id="main",
+                next_slice="Retry with the fresh lane proof.",
+                resume_context_updates={
+                    "ui_mode": "logic",
+                    "design_state": "none",
+                    "ui_evidence_required": True,
+                },
+            )
+
+            resumed = service.resume_reviewed_lane(
+                project_key="validation-os",
+                next_slice="Retry with the fresh lane proof.",
+            )
+
+            self.assertTrue(resumed["ok"])
+            self.assertTrue(resumed["resumed"])
+            status = service.control_status(project_key="validation-os")
+            execution_packet = status["restart_context"]["execution_packet"]
+            self.assertEqual(execution_packet["ui_mode"], "none")
+            self.assertFalse(execution_packet["ui_evidence_required"])
+
+    def test_finalized_slice_records_checkpoint_commit_when_packet_worktree_is_git_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "-C", str(repo_root), "init"], check=True, capture_output=True, text=True)
+            (repo_root / "feature.txt").write_text("initial\n", encoding="utf-8")
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "-c",
+                    "user.name=Tests",
+                    "-c",
+                    "user.email=tests@example.com",
+                    "add",
+                    "-A",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "-c",
+                    "user.name=Tests",
+                    "-c",
+                    "user.email=tests@example.com",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            baseline_head = subprocess.run(
+                ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            linear = FakeLinearCompleteClient()
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                linear_client=linear,  # type: ignore[arg-type]
+                transport_factory=FakeTmuxTransport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            mirror.upsert_issue(
+                linear_id="lin-alpha-checkpoint",
+                identifier="PRO-741",
+                title="Checkpoint ticket",
+                description="Create a checkpoint commit when complete",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:14:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+            )
+
+            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+            self.assertEqual(dispatched.decision, "dispatched")
+            runtime = service._runtime_service(registry.get_project("alpha"))  # type: ignore[arg-type]
+            active = runtime.continuity.get_state("PRO-741", "main")
+            self.assertIsNotNone(active)
+            (repo_root / "feature.txt").write_text("initial\ncheckpointed\n", encoding="utf-8")
+
+            finalized = service.submit_slice_result(
+                project_key="alpha",
+                slice_id=active.active_slice_id,  # type: ignore[arg-type]
+                payload={
+                    "status": "success",
+                    "summary": "Ticket complete with checkpoint",
+                    "verified": True,
+                    "next_slice": None,
+                    "artifacts": ["feature.txt"],
+                    "metrics": {"step": 1},
+                },
+            )
+
+            self.assertTrue(finalized.finalized)
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            reconciliation = registration.metadata.get("reconciliation")
+            self.assertIsInstance(reconciliation, dict)
+            checkpoint_commit = reconciliation.get("checkpoint_commit")
+            self.assertIsInstance(checkpoint_commit, str)
+            self.assertNotEqual(checkpoint_commit, baseline_head)
 
     def test_restart_context_pack_exposes_durable_project_issue_and_slice_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -565,12 +1515,15 @@ class GlobalDispatchTests(unittest.TestCase):
                 metadata={"project_key": "alpha"},
             )
 
-            dispatched = service.dispatch_run(ingress_bot="alpha_bot")
-            context = service.build_restart_context(project_key="alpha")
+            with patch.dict(os.environ, {"DEV": temp_dir}, clear=False):
+                dispatched = service.dispatch_run(ingress_bot="alpha_bot")
+                context = service.build_restart_context(project_key="alpha")
 
             self.assertEqual(dispatched.project_key, "alpha")
             self.assertEqual(context["project"]["project_key"], "alpha")
             self.assertEqual(context["runtime"]["active_issue_key"], "PRO-710")
+            self.assertEqual(context["start_state"], "already_running")
+            self.assertIn("Attach to the existing managed runner", context["remediation"])
             self.assertEqual(context["issue"]["identifier"], "PRO-710")
             self.assertEqual(context["continuity"]["issue_key"], "PRO-710")
             self.assertEqual(context["continuity"]["resume_context"]["project_key"], "alpha")
@@ -578,7 +1531,24 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertEqual(context["execution_packet"]["active_slice_id"], context["continuity"]["active_slice_id"])
             self.assertEqual(context["execution_packet"]["continuity_revision"], context["continuity"]["updated_at"])
             self.assertEqual(context["execution_packet"]["decision_epoch"], context["continuity"]["active_slice_id"])
+            self.assertEqual(context["execution_packet"]["owning_bot"], "alpha_bot")
+            self.assertEqual(context["execution_packet"]["assigned_bot"], "alpha_bot")
+            self.assertEqual(context["execution_packet"]["feature_lane"]["lane_state"], "executing")
             self.assertIsNotNone(context["execution_packet"]["packet_revision"])
+            expected_worktree = str(Path(temp_dir).resolve() / "worktrees" / "alpha" / "pro-710")
+            self.assertEqual(context["execution_packet"]["worktree_path"], expected_worktree)
+            self.assertEqual(context["execution_packet"]["branch"], "linear/pro-710")
+            self.assertIsInstance(context["execution_packet"]["execution_brief"], dict)
+            execution_brief = context["execution_packet"]["execution_brief"]
+            assert isinstance(execution_brief, dict)
+            self.assertEqual(
+                execution_brief["success_criteria"],
+                ["Persist enough to resume after a crash"],
+            )
+            self.assertEqual(
+                execution_brief["verification"],
+                ["Confirm PRO-710 remains on the intended ORX project runtime."],
+            )
             self.assertEqual(
                 context["active_slice_request"]["request"]["context"]["project_key"],
                 "alpha",
@@ -853,6 +1823,8 @@ class GlobalDispatchTests(unittest.TestCase):
             context = service.build_restart_context(project_key="alpha")
 
             self.assertEqual(context["runtime"]["active_issue_key"], "PRO-711C")
+            self.assertEqual(context["start_state"], "runnable")
+            self.assertIn("valid ORX execution packet", context["remediation"])
             self.assertIsNone(context["runtime"]["session"])
             self.assertFalse(context["drift"]["checks"]["session_exists"])
             self.assertTrue(context["drift"]["checks"]["session_recoverable"])
@@ -1068,6 +2040,8 @@ class GlobalDispatchTests(unittest.TestCase):
 
             context = service.build_restart_context(project_key="alpha")
 
+            self.assertEqual(context["start_state"], "drift_blocked")
+            self.assertIn("Repair ORX drift", context["remediation"])
             self.assertEqual(context["recovery"]["action"], "drift")
             self.assertIn("drift blockers", context["recovery"]["reason"])
 

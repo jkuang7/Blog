@@ -18,7 +18,12 @@ from typing import Literal
 from .codex_threads import archive_runner_threads_for_cwd
 from .codex_engine import CodexRunResult, run_codex_iteration
 from .hooks import HookAdapter, LocalHooks, load_agents_bridge
-from .orx_control import OrxControlError, fetch_execution_packet, submit_slice_result
+from .orx_control import (
+    OrxControlError,
+    fetch_execution_packet,
+    submit_runner_event,
+    submit_slice_result,
+)
 from .runctl import create_runner_state, resolve_target_project_root
 from .runner_status import detect_runner_state, has_explicit_codex_prompt
 from .runner_state import (
@@ -864,25 +869,7 @@ def _issue_context_from_execution_packet(packet: dict[str, object] | None) -> di
 def _active_issue_dispatch_context(project_root: Path, *, project: str) -> dict[str, str]:
     execution_packet = _orx_execution_packet(project_root, project=project)
     packet_issue = _issue_context_from_execution_packet(execution_packet)
-    if packet_issue:
-        return packet_issue
-
-    kanban_state = read_json(project_root / ".memory" / "runner" / "KANBAN_STATE.json")
-    if not isinstance(kanban_state, dict):
-        return {}
-    active_issue = kanban_state.get("active_issue")
-    if not isinstance(active_issue, dict):
-        return {}
-    fields = {
-        "identifier": str(active_issue.get("identifier") or "").strip(),
-        "title": str(active_issue.get("title") or "").strip(),
-        "external_url": str(active_issue.get("external_url") or "").strip(),
-        "project_key": str(active_issue.get("project_key") or "").strip(),
-        "project_name": str(active_issue.get("project_name") or "").strip(),
-        "worktree": str(active_issue.get("worktree") or "").strip(),
-        "branch": str(active_issue.get("branch") or "").strip(),
-    }
-    return {key: value for key, value in fields.items() if value}
+    return packet_issue
 
 
 def _active_issue_snapshot(project_root: Path) -> dict[str, object] | None:
@@ -898,12 +885,13 @@ def _active_issue_snapshot(project_root: Path) -> dict[str, object] | None:
 def _orx_execution_packet(project_root: Path, *, project: str) -> dict[str, object] | None:
     active_issue = _active_issue_snapshot(project_root)
     existing = active_issue.get("execution_packet") if isinstance(active_issue, dict) else None
-    if isinstance(existing, dict) and existing.get("active_slice_id"):
+    if _is_orx_execution_packet(existing):
         return existing
     try:
-        return fetch_execution_packet(project_key=project)
+        packet = fetch_execution_packet(project_key=project)
     except OrxControlError:
-        return existing if isinstance(existing, dict) else None
+        return None
+    return packet if _is_orx_execution_packet(packet) else None
 
 
 def _is_orx_execution_packet(packet: dict[str, object] | None) -> bool:
@@ -915,30 +903,57 @@ def _is_orx_execution_packet(packet: dict[str, object] | None) -> bool:
 
 
 def _parse_orx_runner_result(text: str) -> tuple[dict[str, object] | None, str | None]:
-    raw_lines = text.splitlines()
-    start_idx = -1
-    end_idx = -1
-    for idx, raw in enumerate(raw_lines):
-        line = raw.strip()
-        if line == RUNNER_RESULT_START_MARKER:
-            start_idx = idx
-            end_idx = -1
+    search_upto = len(text)
+    last_error = "missing RUNNER_RESULT_START/END block"
+    while search_upto > 0:
+        end_idx = text.rfind(RUNNER_RESULT_END_MARKER, 0, search_upto)
+        if end_idx == -1:
+            return None, last_error
+        start_idx = text.rfind(RUNNER_RESULT_START_MARKER, 0, end_idx)
+        if start_idx == -1:
+            search_upto = end_idx
             continue
-        if line == RUNNER_RESULT_END_MARKER and start_idx != -1:
-            end_idx = idx
 
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx + 1:
-        return None, "missing RUNNER_RESULT_START/END block"
+        payload_start = start_idx + len(RUNNER_RESULT_START_MARKER)
+        if end_idx <= payload_start:
+            search_upto = start_idx
+            continue
 
-    payload_text = "\n".join(raw_lines[start_idx + 1 : end_idx]).strip()
-    if not payload_text:
-        return None, "empty runner result payload"
-    try:
-        payload = json.loads(payload_text)
-    except json.JSONDecodeError as exc:
-        return None, f"invalid runner result json: {exc}"
-    if not isinstance(payload, dict):
-        return None, "runner result payload must be a JSON object"
+        payload_text = text[payload_start:end_idx].strip()
+        if not payload_text:
+            last_error = "empty runner result payload"
+            search_upto = start_idx
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            repaired_payload_text = _escape_json_control_chars_in_strings(payload_text)
+            if repaired_payload_text != payload_text:
+                try:
+                    payload = json.loads(repaired_payload_text)
+                except json.JSONDecodeError:
+                    last_error = f"invalid runner result json: {exc}"
+                    search_upto = start_idx
+                    continue
+            else:
+                last_error = f"invalid runner result json: {exc}"
+                search_upto = start_idx
+                continue
+        if not isinstance(payload, dict):
+            last_error = "runner result payload must be a JSON object"
+            search_upto = start_idx
+            continue
+
+        normalized, error = _validate_orx_runner_result_payload(payload)
+        if error is None:
+            return normalized, None
+        last_error = error
+        search_upto = start_idx
+
+    return None, last_error
+
+
+def _validate_orx_runner_result_payload(payload: dict[str, object]) -> tuple[dict[str, object] | None, str | None]:
 
     status = str(payload.get("status") or "").strip().lower()
     if status not in {"success", "blocked", "failed"}:
@@ -946,6 +961,8 @@ def _parse_orx_runner_result(text: str) -> tuple[dict[str, object] | None, str |
     summary = str(payload.get("summary") or "").strip()
     if not summary:
         return None, "runner result summary must be a non-empty string"
+    if _is_placeholder_runner_summary(summary):
+        return None, "runner result summary must not be a placeholder"
     if not isinstance(payload.get("verified"), bool):
         return None, "runner result verified must be boolean"
 
@@ -985,10 +1002,81 @@ def _parse_orx_runner_result(text: str) -> tuple[dict[str, object] | None, str |
     for field in ("next_step_hint",):
         if field in payload and payload[field] is not None and not isinstance(payload[field], str):
             return None, f"runner result {field} must be a string when present"
+    for field in ("verification_surface", "design_reference"):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], str):
+            return None, f"runner result {field} must be a string when present"
+    for field in ("design_review_requested",):
+        if field in payload and payload[field] is not None and not isinstance(payload[field], bool):
+            return None, f"runner result {field} must be boolean when present"
+    if "design_artifacts" in payload:
+        if not isinstance(payload["design_artifacts"], list):
+            return None, "runner result design_artifacts must be a list"
+        payload["design_artifacts"] = [str(item).strip() for item in payload["design_artifacts"] if str(item).strip()]
 
     if "next_slice" not in payload:
         payload["next_slice"] = None
     return payload, None
+
+
+def _escape_json_control_chars_in_strings(payload_text: str) -> str:
+    escaped: list[str] = []
+    in_string = False
+    escape_next = False
+    for char in payload_text:
+        if in_string:
+            if escape_next:
+                escaped.append(char)
+                escape_next = False
+                continue
+            if char == "\\":
+                escaped.append(char)
+                escape_next = True
+                continue
+            if char == "\"":
+                escaped.append(char)
+                in_string = False
+                continue
+            if ord(char) < 0x20:
+                if char == "\n":
+                    escaped.append("\\n")
+                elif char == "\r":
+                    escaped.append("\\r")
+                elif char == "\t":
+                    escaped.append("\\t")
+                elif char == "\b":
+                    escaped.append("\\b")
+                elif char == "\f":
+                    escaped.append("\\f")
+                else:
+                    escaped.append(f"\\u{ord(char):04x}")
+                continue
+        else:
+            if char == "\"":
+                in_string = True
+        escaped.append(char)
+    return "".join(escaped)
+
+
+def _is_placeholder_runner_summary(summary: str) -> bool:
+    normalized = " ".join(summary.strip().lower().split())
+    return normalized in {"...", "…", "tbd", "todo", "n/a", "placeholder"}
+
+
+def _transcript_excerpt(text: str, *, max_lines: int = 80) -> str:
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[-max_lines:]).strip()
+
+
+def _runner_terminal_summary(text: str) -> str | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    for line in reversed(lines):
+        if line not in {RUNNER_RESULT_START_MARKER, RUNNER_RESULT_END_MARKER}:
+            return line[:400]
+    return None
 
 
 def _build_runner_dispatch_prompt(
@@ -1479,9 +1567,12 @@ def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
     state = read_json(paths.state_file) or {}
     project_root = paths.memory_dir.parent
     execution_packet = _orx_execution_packet(project_root, project=project)
+    if not _is_orx_execution_packet(execution_packet):
+        raise RuntimeError(
+            f"Managed runner for {project} requires a valid ORX execution packet; "
+            "repair ORX context and rerun."
+        )
     packet_issue = _issue_context_from_execution_packet(execution_packet)
-    kanban_state = {} if packet_issue else (read_json(paths.kanban_state_json) or {})
-    active_backlog = {} if packet_issue else (read_json(paths.active_backlog_json) or {})
 
     def _compact_list(raw: object, *, limit: int = 3, item_chars: int = 140) -> list[str]:
         if not isinstance(raw, list):
@@ -1517,46 +1608,14 @@ def _build_prompt(project: str, runner_id: str, paths: RunnerStatePaths) -> str:
         "done_gate_status": str(state.get("done_gate_status", "pending")).strip(),
         "status": str(state.get("status", "ready")).strip(),
         "linear_issue": {
-            "identifier": str(
-                packet_issue.get("identifier")
-                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("identifier"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_identifier"))
-                or ""
-            ).strip(),
-            "title": str(
-                packet_issue.get("title")
-                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("title"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_title"))
-                or ""
-            ).strip(),
-            "url": str(
-                packet_issue.get("external_url")
-                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("url"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_url"))
-                or ""
-            ).strip(),
-            "project_key": str(
-                packet_issue.get("project_key")
-                or (((kanban_state.get("active_issue") or {}) if isinstance(kanban_state, dict) else {}).get("project_key"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("active_issue_project_key"))
-                or project
-            ).strip(),
-            "worktree": str(
-                packet_issue.get("worktree")
-                or (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("worktree"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_worktree"))
-                or ""
-            ).strip(),
-            "branch": str(
-                packet_issue.get("branch")
-                or (((kanban_state.get("active_checkout") or {}) if isinstance(kanban_state, dict) else {}).get("branch"))
-                or (((active_backlog.get("kanban") or {}) if isinstance(active_backlog, dict) else {}).get("kanban_checkout_branch"))
-                or ""
-            ).strip(),
+            "identifier": str(packet_issue.get("identifier") or "").strip(),
+            "title": str(packet_issue.get("title") or "").strip(),
+            "url": str(packet_issue.get("external_url") or "").strip(),
+            "project_key": str(packet_issue.get("project_key") or project).strip(),
+            "worktree": str(packet_issue.get("worktree") or "").strip(),
+            "branch": str(packet_issue.get("branch") or "").strip(),
         },
-        "active_backlog_top4": []
-        if packet_issue
-        else (active_backlog.get("active_backlog", [])[:4] if isinstance(active_backlog, dict) else []),
+        "active_backlog_top4": [],
         "execution_packet": execution_packet if isinstance(execution_packet, dict) else None,
     }
     state_context = json.dumps(snapshot, indent=2)
@@ -1579,7 +1638,7 @@ Rules:
 3. Do not create the done lock early.
 4. Before creating done lock, source .memory/gates.sh and run run_gates.
 5. Only create done lock if run_gates succeeds and the active ORX/Linear backlog is actually empty for this runner cycle.
-6. Treat ORX + Linear as the source of truth for what this runner should do. If an ORX execution packet is present, treat it as the only live objective source for this cycle. KANBAN_STATE.json, RUNNER_ACTIVE_BACKLOG.json, RUNNER_EXEC_CONTEXT.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state are cache/recovery context only. Legacy TASKS.json / SEAMS.json files are compatibility inputs, not the planner of record. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
+6. Treat the ORX execution packet as the only live objective source for this cycle. KANBAN_STATE.json, RUNNER_ACTIVE_BACKLOG.json, RUNNER_EXEC_CONTEXT.json, optional .memory/runner/graph/RUNNER_GRAPH_ACTIVE_SLICE.json, and runner state are cache/recovery context only. Treat RUNNER_HANDOFF.md as human/manual recovery context, not default per-cycle input.
 7. End your response with this exact machine-parsable block:
 RUNNER_UPDATE_START
 {{"summary":"...","completed":["..."],"completed_seam_ids":["TT-..."],"next_seam":"...","next_seam_reason":"...","blockers":["..."],"remaining_gaps":["..."],"done_candidate":false}}
@@ -2563,6 +2622,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                     if orx_managed and isinstance(execution_packet, dict):
                         result_payload, parse_error = _parse_orx_runner_result(output)
                         if parse_error:
+                            transcript_excerpt = _transcript_excerpt(output)
                             _append_ledger(
                                 state_paths,
                                 "runner.orx_result_parse_failed",
@@ -2573,6 +2633,22 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                                 state_paths,
                                 f"ORX execute slice did not return a valid result block for phase={injected_phase}: {parse_error}",
                             )
+                            try:
+                                submit_runner_event(
+                                    project_key=project,
+                                    event_kind="result_missing",
+                                    issue_key=str(execution_packet.get("issue_key") or "").strip() or None,
+                                    final_summary=_runner_terminal_summary(output),
+                                    transcript_excerpt=transcript_excerpt or None,
+                                    reason=parse_error,
+                                )
+                            except OrxControlError as exc:
+                                _append_ledger(
+                                    state_paths,
+                                    "runner.orx_event_submit_failed",
+                                    phase=injected_phase,
+                                    error=str(exc),
+                                )
                             state = update_state(state_paths.state_file, state, status="error", current_step="")
                             _sync_runner_status_snapshot(state_paths, state)
                             return 1
@@ -2595,6 +2671,7 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                             result_payload["decision_epoch"] = str(
                                 execution_packet.get("decision_epoch") or ""
                             ).strip()
+                            result_payload["transcript_excerpt"] = _transcript_excerpt(output)
                             submit_slice_result(
                                 project_key=project,
                                 slice_id=str(execution_packet.get("active_slice_id")),
@@ -2611,6 +2688,38 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                                 state_paths,
                                 f"Failed to submit ORX slice result for phase={injected_phase}: {exc}",
                             )
+                            try:
+                                submit_runner_event(
+                                    project_key=project,
+                                    event_kind="result_submit_failed",
+                                    issue_key=str(execution_packet.get("issue_key") or "").strip() or None,
+                                    final_summary=str(result_payload.get("summary") or "").strip() or _runner_terminal_summary(output),
+                                    transcript_excerpt=_transcript_excerpt(output) or None,
+                                    raw_status=str(result_payload.get("status") or "").strip() or None,
+                                    verification_ran=[
+                                        str(item).strip()
+                                        for item in result_payload.get("verification_ran", [])
+                                        if str(item).strip()
+                                    ],
+                                    verification_failed=[
+                                        str(item).strip()
+                                        for item in result_payload.get("verification_failed", [])
+                                        if str(item).strip()
+                                    ],
+                                    artifacts=[
+                                        str(item).strip()
+                                        for item in result_payload.get("artifacts", [])
+                                        if str(item).strip()
+                                    ],
+                                    reason=str(exc),
+                                )
+                            except OrxControlError as event_exc:
+                                _append_ledger(
+                                    state_paths,
+                                    "runner.orx_event_submit_failed",
+                                    phase=injected_phase,
+                                    error=str(event_exc),
+                                )
                             state = update_state(state_paths.state_file, state, status="error", current_step="")
                             _sync_runner_status_snapshot(state_paths, state)
                             return 1
@@ -2663,6 +2772,8 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         completed_at=utc_now(),
                     )
                     _log_line(state_paths, f"Execute completed for phase={injected_phase}")
+                    managed_packet = _orx_execution_packet(project_root, project=project)
+                    orx_managed_execute = _is_orx_execution_packet(managed_packet)
                     update_request = _parse_execute_update_request(output)
                     closeout_incomplete = injected_phase == "closeout" and not bool(update_request.get("phase_done"))
                     if closeout_incomplete and not bool(update_request.get("needs_update")):
@@ -2674,6 +2785,37 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                         update_profile = str(update_request.get("update_profile") or "mini")
                         update_reason = str(update_request.get("update_reason") or "").strip()
                         scope_status = str(update_request.get("scope_status") or "ok")
+                        if orx_managed_execute:
+                            failure_reason = update_reason or "managed_orx_update_rejected"
+                            _append_ledger(
+                                state_paths,
+                                "runner.managed_update_rejected",
+                                phase=injected_phase,
+                                update_profile=update_profile,
+                                reason=failure_reason,
+                            )
+                            _log_line(
+                                state_paths,
+                                (
+                                    f"Execute requested semantic run_govern for phase={injected_phase}; "
+                                    "managed ORX runs fail closed instead of planning locally"
+                                ),
+                            )
+                            _write_runner_stop_lock(
+                                state_paths=state_paths,
+                                source="managed_orx_update_rejected",
+                                reason=failure_reason,
+                                phase=injected_phase,
+                                session_name=session_name,
+                            )
+                            state = update_state(
+                                state_paths.state_file,
+                                state,
+                                status="error",
+                                current_step="",
+                            )
+                            _sync_runner_status_snapshot(state_paths, state)
+                            return 1
                         _append_ledger(
                             state_paths,
                             "runner.update_requested",
@@ -2738,6 +2880,36 @@ def run_interactive_runner_controller(argv: list[str]) -> int:
                                 ),
                             )
                         else:
+                            if orx_managed_execute:
+                                failure_reason = refresh_error or "managed_orx_refresh_failed"
+                                _append_ledger(
+                                    state_paths,
+                                    "runner.managed_refresh_failed",
+                                    phase=injected_phase,
+                                    error=failure_reason,
+                                )
+                                _log_line(
+                                    state_paths,
+                                    (
+                                        f"Scripted refresh failed after execute for phase={injected_phase}; "
+                                        "managed ORX runs stop instead of falling back to run_govern"
+                                    ),
+                                )
+                                _write_runner_stop_lock(
+                                    state_paths=state_paths,
+                                    source="managed_orx_refresh_failed",
+                                    reason=failure_reason,
+                                    phase=injected_phase,
+                                    session_name=session_name,
+                                )
+                                state = update_state(
+                                    state_paths.state_file,
+                                    state,
+                                    status="error",
+                                    current_step="",
+                                )
+                                _sync_runner_status_snapshot(state_paths, state)
+                                return 1
                             state = update_state(
                                 state_paths.state_file,
                                 state,

@@ -75,6 +75,36 @@ pub(super) fn parse_orx_intake_callback_data(data: &str) -> Option<(String, OrxI
     Some((token, decision))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OrxOperatorDecision {
+    ApproveDesign,
+    RequestUiEvidence,
+    MergeAndRelease,
+    CherryPickAndRelease,
+    DiscardAndRelease,
+    KeepReserved,
+}
+
+pub(super) fn parse_orx_operator_callback_data(
+    data: &str,
+) -> Option<(String, OrxOperatorDecision)> {
+    let mut parts = data.split(':');
+    if parts.next()? != "orx" {
+        return None;
+    }
+    let project_key = parts.next()?.to_string();
+    let decision = match parts.next()? {
+        "ad" => OrxOperatorDecision::ApproveDesign,
+        "ui" => OrxOperatorDecision::RequestUiEvidence,
+        "mr" => OrxOperatorDecision::MergeAndRelease,
+        "cr" => OrxOperatorDecision::CherryPickAndRelease,
+        "dr" => OrxOperatorDecision::DiscardAndRelease,
+        "kr" => OrxOperatorDecision::KeepReserved,
+        _ => return None,
+    };
+    Some((project_key, decision))
+}
+
 pub(super) fn parse_history_callback_data(data: &str) -> Option<(String, usize)> {
     let mut parts = data.split(':');
     if parts.next()? != "his" {
@@ -122,6 +152,64 @@ pub(super) fn orx_intake_keyboard(token: &str) -> InlineKeyboardMarkup {
                 url: None,
             },
         ]],
+    }
+}
+
+pub(super) fn orx_operator_keyboard(
+    project_key: &str,
+    lane_state: Option<&str>,
+    review_kind: Option<&str>,
+) -> Option<InlineKeyboardMarkup> {
+    let mut inline_keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    if lane_state == Some("awaiting_orx_review") {
+        match review_kind {
+            Some("design_review_required") => {
+                inline_keyboard.push(vec![InlineKeyboardButton {
+                    text: "Approve design".to_string(),
+                    callback_data: Some(format!("orx:{project_key}:ad")),
+                    url: None,
+                }]);
+            }
+            Some("ui_evidence_missing") => {
+                inline_keyboard.push(vec![InlineKeyboardButton {
+                    text: "Request Playwright evidence".to_string(),
+                    callback_data: Some(format!("orx:{project_key}:ui")),
+                    url: None,
+                }]);
+            }
+            _ => {}
+        }
+    }
+    if lane_state == Some("awaiting_hil_release") {
+        inline_keyboard.push(vec![
+            InlineKeyboardButton {
+                text: "Merge + release".to_string(),
+                callback_data: Some(format!("orx:{project_key}:mr")),
+                url: None,
+            },
+            InlineKeyboardButton {
+                text: "Keep reserved".to_string(),
+                callback_data: Some(format!("orx:{project_key}:kr")),
+                url: None,
+            },
+        ]);
+        inline_keyboard.push(vec![
+            InlineKeyboardButton {
+                text: "Cherry-pick + release".to_string(),
+                callback_data: Some(format!("orx:{project_key}:cr")),
+                url: None,
+            },
+            InlineKeyboardButton {
+                text: "Discard + release".to_string(),
+                callback_data: Some(format!("orx:{project_key}:dr")),
+                url: None,
+            },
+        ]);
+    }
+    if inline_keyboard.is_empty() {
+        None
+    } else {
+        Some(InlineKeyboardMarkup { inline_keyboard })
     }
 }
 
@@ -1068,7 +1156,11 @@ fn format_runner_status_snapshot(status: &Value) -> Option<String> {
 }
 
 pub(super) fn runner_status_snapshot(cwd: &Path) -> Option<Value> {
-    read_json_value(&cwd.join(".memory").join("runner").join("RUNNER_STATUS.json"))
+    read_json_value(
+        &cwd.join(".memory")
+            .join("runner")
+            .join("RUNNER_STATUS.json"),
+    )
 }
 
 pub(super) fn runner_notification_fingerprint(status: &Value) -> Option<String> {
@@ -1162,7 +1254,10 @@ pub(super) fn format_runner_notification(status: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .unwrap_or("-");
         lines.push(format!("- queue phase: `{runner_phase}`"));
-        lines.push(format!("- issue: {}", escape_markdown_label(active_issue_url)));
+        lines.push(format!(
+            "- issue: {}",
+            escape_markdown_label(active_issue_url)
+        ));
     }
     Some(lines.join("\n"))
 }

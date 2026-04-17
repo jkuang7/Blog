@@ -519,6 +519,59 @@ impl App {
             }
             return Ok(());
         }
+        if let Some((project_key, decision)) = parse_orx_operator_callback_data(&data) {
+            let Some(orx_client) = self.shared.orx.as_ref() else {
+                self.send_status(
+                    message.chat.id,
+                    message.message_thread_id,
+                    "ORX is not configured for operator actions on this bot.",
+                )
+                .await?;
+                return Ok(());
+            };
+            let payload = match decision {
+                OrxOperatorDecision::ApproveDesign => orx_client
+                    .resume_reviewed_lane(
+                        &project_key,
+                        Some("Implement the approved design reference and verify it with Playwright."),
+                    )
+                    .await?,
+                OrxOperatorDecision::RequestUiEvidence => orx_client
+                    .resume_reviewed_lane(
+                        &project_key,
+                        Some("Collect Playwright evidence for the current UI behavior and report the result without broad redesign."),
+                    )
+                    .await?,
+                OrxOperatorDecision::MergeAndRelease => orx_client
+                    .release_feature_lane(&project_key, "merge_to_main_and_release", None)
+                    .await?,
+                OrxOperatorDecision::CherryPickAndRelease => orx_client
+                    .release_feature_lane(&project_key, "cherry_pick_and_release", None)
+                    .await?,
+                OrxOperatorDecision::DiscardAndRelease => orx_client
+                    .release_feature_lane(&project_key, "discard_and_release", None)
+                    .await?,
+                OrxOperatorDecision::KeepReserved => orx_client
+                    .release_feature_lane(&project_key, "keep_reserved", None)
+                    .await?,
+            };
+            let body = if payload.get("dispatch").is_some() {
+                summarize_orx_dispatch(&payload)
+            } else if payload.get("project").is_some() {
+                summarize_orx_status(&payload)
+            } else {
+                format!("ORX action completed for `{project_key}`.")
+            };
+            let keyboard = orx_operator_keyboard_for_payload(&payload);
+            self.send_markdown_with_audit(
+                message.chat.id,
+                message.message_thread_id,
+                &body,
+                keyboard,
+            )
+            .await?;
+            return Ok(());
+        }
         if let Some((token, decision)) = parse_approval_callback_data(&data) {
             let pending = {
                 let mut approvals = self.shared.pending_approvals.lock().await;
@@ -957,11 +1010,12 @@ impl App {
                 }
                 BridgeCommand::Status => {
                     if self.orx_binding().is_some() {
-                        let body = self.orx_status_body(message, session_key).await?;
-                        self.send_status(
+                        let response = self.orx_status_response(message, session_key).await?;
+                        self.send_markdown_with_audit(
                             message.chat.id,
                             message.message_thread_id,
-                            &body,
+                            &response.body,
+                            response.keyboard,
                         )
                         .await?;
                     } else if is_primary_forum_dashboard(
@@ -984,9 +1038,14 @@ impl App {
                 }
                 BridgeCommand::Kanban => {
                     if self.shared.orx.is_some() {
-                        let body = self.orx_dispatch_run_body(message).await?;
-                        self.send_status(message.chat.id, message.message_thread_id, &body)
-                            .await?;
+                        let response = self.orx_dispatch_run_response(message).await?;
+                        self.send_markdown_with_audit(
+                            message.chat.id,
+                            message.message_thread_id,
+                            &response.body,
+                            response.keyboard,
+                        )
+                        .await?;
                     } else if is_primary_forum_dashboard(
                         &self.shared.config,
                         &message.chat,
@@ -999,37 +1058,10 @@ impl App {
                         )
                         .await?;
                     } else {
-                        let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
-                        let workspace = resolve_runner_workspace(&session.cwd)?;
-                        let outcome = start_tmux_codex_runner(&workspace)?;
-                        self.shared
-                            .store
-                            .save_bot_state(&runner_watch_enabled_key(session_key), "1")?;
-                        if let Some(snapshot) = runner_status_snapshot(&session.cwd) {
-                            if let Some(fingerprint) = runner_notification_fingerprint(&snapshot) {
-                                self.shared.store.save_bot_state(
-                                    &runner_watch_state_key(session_key),
-                                    &fingerprint,
-                                )?;
-                            }
-                        }
-                        let mut body = format!(
-                            "Linear runner ready for `{}`.\nProject root: `{}`",
-                            workspace.project,
-                            workspace.project_root.display()
-                        );
-                        if !outcome.stdout.is_empty() {
-                            body.push_str("\n\n");
-                            body.push_str(&outcome.stdout);
-                        }
-                        if !outcome.stderr.is_empty() {
-                            body.push_str("\n\nstderr:\n");
-                            body.push_str(&outcome.stderr);
-                        }
                         self.send_status(
                             message.chat.id,
                             message.message_thread_id,
-                            &body,
+                            "ORX is required for `/run` on this bot. Repair or configure ORX, then retry the managed run.",
                         )
                         .await?;
                     }
@@ -1080,12 +1112,8 @@ impl App {
                             body.push_str("\n\n");
                             body.push_str(&outcome.stdout);
                         }
-                        self.send_status(
-                            message.chat.id,
-                            message.message_thread_id,
-                            &body,
-                        )
-                        .await?;
+                        self.send_status(message.chat.id, message.message_thread_id, &body)
+                            .await?;
                     } else {
                         self.send_status(
                             message.chat.id,

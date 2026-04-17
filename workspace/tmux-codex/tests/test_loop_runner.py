@@ -35,6 +35,46 @@ from src.runner_loop import (
 from src.runner_state import build_runner_state_paths, build_runner_state_paths_for_root, default_runner_state, read_json, write_json
 
 
+def _seed_orx_execution_packet(project_root: Path, *, project: str = "blog", issue_key: str = "PRO-9") -> dict[str, object]:
+    packet = {
+        "project_key": project,
+        "project_display_name": project.title(),
+        "packet_key": issue_key,
+        "packet_scope": "single_leaf",
+        "packet_revision": f"{issue_key.lower()}-packet-rev",
+        "issue_key": issue_key,
+        "issue_title": f"{issue_key} execution packet",
+        "issue_url": f"https://linear.app/jkprojects/issue/{issue_key}",
+        "repo_root": str(project_root),
+        "worktree_path": str(project_root),
+        "branch": f"linear/{issue_key.lower()}",
+        "execution_model": "gpt-5.4",
+        "execution_reasoning_effort": "medium",
+        "active_slice_id": f"{issue_key.lower()}-slice-1",
+    }
+    write_json(
+        project_root / ".memory" / "runner" / "KANBAN_STATE.json",
+        {
+            "project": project,
+            "mode": "ticket_native",
+            "version": 1,
+            "phase": "executing",
+            "active_issue": {
+                "identifier": issue_key,
+                "title": packet["issue_title"],
+                "url": packet["issue_url"],
+                "external_url": packet["issue_url"],
+                "project_key": project,
+                "project_name": project.title(),
+                "worktree": str(project_root),
+                "branch": packet["branch"],
+                "execution_packet": packet,
+            },
+        },
+    )
+    return packet
+
+
 class LoopArgsTests(unittest.TestCase):
     def test_parse_loop_defaults(self):
         parsed = parse_loop_args(["blog"])
@@ -217,6 +257,10 @@ class LoopScriptTests(unittest.TestCase):
                             "lessons": ["Keep the runner packet authoritative."],
                             "verification_ran": ["pytest tests/test_loop_runner.py -q"],
                             "verification_failed": [],
+                            "design_artifacts": [".codex/stitch/run-1/DESIGN.md"],
+                            "design_reference": ".codex/stitch/run-1/DESIGN.md",
+                            "design_review_requested": True,
+                            "verification_surface": "playwright",
                             "touched_paths": ["src/runner_loop.py"],
                             "next_step_hint": "Continue with the next bounded slice only if ORX requests it.",
                             "owner_mismatch": False,
@@ -233,6 +277,140 @@ class LoopScriptTests(unittest.TestCase):
         assert payload is not None
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["artifacts"], ["tests/test_loop_runner.py"])
+        self.assertEqual(payload["verification_surface"], "playwright")
+        self.assertTrue(payload["design_review_requested"])
+
+    def test_parse_orx_runner_result_prefers_last_marker_pair_with_tui_chrome(self):
+        example_payload = json.dumps(
+            {
+                "status": "success",
+                "summary": "Implemented the bounded slice and updated the affected files.",
+                "verified": False,
+                "next_slice": None,
+                "artifacts": ["path/to/file"],
+                "metrics": {},
+                "blockers": [],
+                "risks": [],
+                "lessons": [],
+                "verification_ran": [],
+                "verification_failed": [],
+                "touched_paths": ["path/to/file"],
+                "next_step_hint": "",
+                "owner_mismatch": False,
+                "scope_mismatch": False,
+                "needs_human_help": False,
+            }
+        )
+        actual_payload = json.dumps(
+            {
+                "status": "success",
+                "summary": "Confirmed package.json exists at the repo root.",
+                "verified": True,
+                "next_slice": None,
+                "artifacts": [],
+                "metrics": {"package_json_exists": True},
+                "blockers": [],
+                "risks": [],
+                "lessons": [],
+                "verification_ran": ["Checked package.json at the repo root."],
+                "verification_failed": [],
+                "touched_paths": [],
+                "next_step_hint": "",
+                "owner_mismatch": False,
+                "scope_mismatch": False,
+                "needs_human_help": False,
+            }
+        )
+        payload, error = _parse_orx_runner_result(
+            "\n".join(
+                [
+                    "Prompt example",
+                    "RUNNER_RESULT_START",
+                    example_payload,
+                    "RUNNER_RESULT_END",
+                    "",
+                    "• RUNNER_RESULT_START",
+                    actual_payload,
+                    "RUNNER_RESULT_END › Run /review on my current changes",
+                ]
+            )
+        )
+
+        self.assertIsNone(error)
+        assert payload is not None
+        self.assertEqual(payload["summary"], "Confirmed package.json exists at the repo root.")
+        self.assertEqual(payload["metrics"], {"package_json_exists": True})
+
+    def test_parse_orx_runner_result_ignores_trailing_unpaired_start_marker(self):
+        actual_payload = json.dumps(
+            {
+                "status": "success",
+                "summary": "Recorded the disposable wrong-bot ingress proof.",
+                "verified": True,
+                "next_slice": None,
+                "artifacts": [".codex/proofs/PRO-136-proof.md"],
+                "metrics": {"proof_written": True},
+                "blockers": [],
+                "risks": [],
+                "lessons": [],
+                "verification_ran": ["git branch --show-current", "git rev-parse --show-toplevel"],
+                "verification_failed": [],
+                "touched_paths": [".codex/proofs/PRO-136-proof.md"],
+                "next_step_hint": "",
+                "owner_mismatch": False,
+                "scope_mismatch": False,
+                "needs_human_help": False,
+            }
+        )
+        payload, error = _parse_orx_runner_result(
+            "\n".join(
+                [
+                    "compact proof",
+                    "RUNNER_RESULT_START",
+                    actual_payload,
+                    "RUNNER_RESULT_END",
+                    "• RUNNER_RESULT_START › Implement {feature}",
+                ]
+            )
+        )
+
+        self.assertIsNone(error)
+        assert payload is not None
+        self.assertEqual(payload["summary"], "Recorded the disposable wrong-bot ingress proof.")
+        self.assertEqual(payload["metrics"], {"proof_written": True})
+
+    def test_parse_orx_runner_result_repairs_literal_control_chars_inside_strings(self):
+        payload, error = _parse_orx_runner_result(
+            "\n".join(
+                [
+                    "working",
+                    "RUNNER_RESULT_START",
+                    '{"status":"blocked","summary":"Hit a gap\nand stopped.","verified":false,"next_slice":"Retry after ORX fills the gap.","artifacts":[],"metrics":{},"blockers":["Missing context\tfrom ORX"],"risks":[],"lessons":[],"verification_ran":[],"verification_failed":[],"touched_paths":[],"next_step_hint":"","owner_mismatch":false,"scope_mismatch":false,"needs_human_help":true}',
+                    "RUNNER_RESULT_END",
+                ]
+            )
+        )
+
+        self.assertIsNone(error)
+        assert payload is not None
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["summary"], "Hit a gap\nand stopped.")
+        self.assertEqual(payload["blockers"], ["Missing context\tfrom ORX"])
+
+    def test_parse_orx_runner_result_rejects_placeholder_summary(self):
+        payload, error = _parse_orx_runner_result(
+            "\n".join(
+                [
+                    "working",
+                    "RUNNER_RESULT_START",
+                    '{"status":"success","summary":"...","verified":false,"next_slice":null,"artifacts":[],"metrics":{},"blockers":[],"risks":[],"lessons":[],"verification_ran":[],"verification_failed":[],"touched_paths":[],"next_step_hint":"","owner_mismatch":false,"scope_mismatch":false,"needs_human_help":false}',
+                    "RUNNER_RESULT_END",
+                ]
+            )
+        )
+
+        self.assertIsNone(payload)
+        self.assertEqual(error, "runner result summary must not be a placeholder")
 
     def test_run_loop_runner_switches_model_between_iterations_from_active_task_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,6 +449,7 @@ class LoopScriptTests(unittest.TestCase):
                     "profile_reason": "bounded file family",
                 },
             )
+            _seed_orx_execution_packet(project_root)
 
             calls: list[tuple[str, str]] = []
 
@@ -332,7 +511,7 @@ class LoopScriptTests(unittest.TestCase):
                 )
 
             self.assertEqual(rc, 0)
-            self.assertEqual(calls, [("gpt-5.4-mini", "medium"), ("gpt-5.4", "high")])
+            self.assertEqual(calls, [("gpt-5.4", "medium"), ("gpt-5.4", "medium")])
 
     def test_interactive_runner_controller_writes_runner_status_snapshot_when_session_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -532,6 +711,86 @@ class LoopScriptTests(unittest.TestCase):
         self.assertEqual(summary["kept"], 1)
         self.assertEqual(summary["archived"], 1)
         self.assertEqual(archived_ids, ["runner-old"])
+
+    def test_interactive_runner_controller_submits_runner_event_when_orx_result_block_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            project_root = dev / "Repos" / "blog"
+            project_root.mkdir(parents=True)
+            paths = build_runner_state_paths_for_root(
+                project_root=project_root,
+                dev=str(dev),
+                project="blog",
+                runner_id="main",
+            )
+            paths.runner_dir.mkdir(parents=True, exist_ok=True)
+            write_json(paths.state_file, default_runner_state("blog", "main"))
+            write_json(
+                paths.exec_context_json,
+                {
+                    "phase": "discover",
+                    "orx_execution_packet": {
+                        "project_key": "blog",
+                        "issue_key": "PRO-109",
+                        "issue_title": "Missing result block",
+                        "execution_model": "gpt-5.4-mini",
+                        "execution_reasoning_effort": "medium",
+                    },
+                },
+            )
+            invalid_output = "\n".join(["working", "no structured result here", "OpenAI Codex"])
+            tmux = SimpleNamespace(
+                has_session=lambda _name: True,
+                capture_pane=MagicMock(side_effect=["", invalid_output]),
+                get_pane_process=MagicMock(return_value="codex"),
+                send_eof=MagicMock(return_value=True),
+            )
+
+            with (
+                patch("src.runner_loop.resolve_target_project_root", return_value=project_root),
+                patch("src.runner_loop.TmuxClient", return_value=tmux),
+                patch(
+                    "src.runner_loop._orx_execution_packet",
+                    return_value={
+                        "active_slice_id": "slice-109",
+                        "issue_key": "PRO-109",
+                        "issue_title": "Missing result block",
+                        "packet_key": "packet-109",
+                        "packet_revision": "packet-rev-109",
+                        "latest_handoff_revision": "handoff-rev-109",
+                        "continuity_revision": "continuity-rev-109",
+                        "decision_epoch": "slice-109",
+                        "execution_model": "gpt-5.4-mini",
+                        "execution_reasoning_effort": "medium",
+                    },
+                ),
+                patch("src.runner_loop.detect_runner_state", side_effect=["idle", "idle"]),
+                patch("src.runner_loop._submit_runner_prompt", return_value=(True, None)),
+                patch("src.runner_loop._has_completion_directive_for_step", return_value=True),
+                patch("src.runner_loop.submit_runner_event", return_value={"ok": True}) as submit_event,
+                patch("src.runner_loop.time.sleep", return_value=None),
+            ):
+                rc = run_interactive_runner_controller(
+                    [
+                        "--project",
+                        "blog",
+                        "--runner-id",
+                        "main",
+                        "--session-name",
+                        "runner-blog",
+                        "--dev",
+                        str(dev),
+                        "--poll-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(rc, 1)
+            submit_event.assert_called_once()
+            self.assertEqual(submit_event.call_args.kwargs["project_key"], "blog")
+            self.assertEqual(submit_event.call_args.kwargs["event_kind"], "result_missing")
+            self.assertEqual(submit_event.call_args.kwargs["issue_key"], "PRO-109")
+            self.assertIn("missing RUNNER_RESULT", submit_event.call_args.kwargs["reason"])
 
     def test_module_entrypoint_executes_main(self):
         result = subprocess.run(
@@ -1574,11 +1833,12 @@ class LoopPromptTests(unittest.TestCase):
     def test_prompt_mentions_canonical_runner_state_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = build_runner_state_paths(tmp, "blog", "main")
+            _seed_orx_execution_packet(paths.memory_dir.parent)
             prompt = _build_prompt(project="blog", runner_id="main", paths=paths)
 
         self.assertIn(f"Runner state file: {paths.state_file}", prompt)
         self.assertIn(
-            "Treat ORX + Linear as the source of truth for what this runner should do.",
+            "Treat the ORX execution packet as the only live objective source for this cycle.",
             prompt,
         )
         self.assertIn(f"Active backlog file: {paths.active_backlog_json}", prompt)
@@ -1797,6 +2057,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
             paths.done_lock.parent.mkdir(parents=True, exist_ok=True)
             paths.done_lock.touch()
 
@@ -1856,6 +2117,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
 
             codex_result = CodexRunResult(
                 exit_code=0,
@@ -1882,6 +2144,9 @@ class CompletionEnforcementTests(unittest.TestCase):
 
             with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
                 "src.runner_loop.run_codex_iteration", return_value=codex_result
+            ), patch(
+                "src.runner_loop._extract_open_runner_backlog",
+                return_value=([], "ORX execution packet"),
             ), patch("src.runner_loop.time.sleep", return_value=None):
                 rc = run_loop_runner(
                     dev=str(dev),
@@ -1908,6 +2173,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
             tasks_file = paths.runner_dir / "TASKS.json"
             tasks_file.parent.mkdir(parents=True, exist_ok=True)
             tasks_file.write_text(
@@ -1970,6 +2236,9 @@ class CompletionEnforcementTests(unittest.TestCase):
 
             with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
                 "src.runner_loop.run_codex_iteration", side_effect=_once_then_stop
+            ), patch(
+                "src.runner_loop._extract_open_runner_backlog",
+                return_value=(["TT-001: Refactor remaining slice."], "TASKS.json"),
             ), patch("src.runner_loop.time.sleep", return_value=None):
                 rc = run_loop_runner(
                     dev=str(dev),
@@ -1995,6 +2264,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
 
             codex_result = CodexRunResult(
                 exit_code=0,
@@ -2060,6 +2330,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
 
             main_result = CodexRunResult(
                 exit_code=0,
@@ -2122,6 +2393,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state = default_runner_state("blog", "alpha")
             state["enabled"] = True
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
 
             main_result = CodexRunResult(
                 exit_code=0,
@@ -2156,6 +2428,9 @@ class CompletionEnforcementTests(unittest.TestCase):
             with patch("src.runner_loop.create_runner_state", return_value={"ok": True}), patch(
                 "src.runner_loop.run_codex_iteration",
                 side_effect=[main_result, probe_result],
+            ), patch(
+                "src.runner_loop._extract_open_runner_backlog",
+                return_value=([], "ORX execution packet"),
             ), patch("src.runner_loop.time.sleep", return_value=None):
                 rc = run_loop_runner(
                     dev=str(dev),
@@ -2186,6 +2461,7 @@ class CompletionEnforcementTests(unittest.TestCase):
             state["enabled"] = True
             state["session_id"] = "previous-thread"
             write_json(paths.state_file, state)
+            _seed_orx_execution_packet(paths.memory_dir.parent)
             paths.stop_lock.parent.mkdir(parents=True, exist_ok=True)
             paths.stop_lock.write_text("stop now\n")
 

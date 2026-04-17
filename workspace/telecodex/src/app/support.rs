@@ -269,7 +269,12 @@ pub(super) fn resolve_runner_workspace(cwd: &Path) -> Result<RunnerWorkspace> {
         .and_then(|value| value.to_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("failed to infer project name for {}", project_root.display()))?
+        .ok_or_else(|| {
+            anyhow!(
+                "failed to infer project name for {}",
+                project_root.display()
+            )
+        })?
         .to_string();
     Ok(RunnerWorkspace {
         project,
@@ -283,23 +288,57 @@ pub(super) fn resolve_tmux_codex_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/Users/jian/Dev/workspace/tmux-codex"))
 }
 
-pub(super) fn start_tmux_codex_runner(workspace: &RunnerWorkspace) -> Result<RunnerCommandOutcome> {
-    let args = vec![
-        "loop-bg".to_string(),
-        workspace.project.clone(),
-        "--project-root".to_string(),
-        workspace.project_root.to_string_lossy().to_string(),
-    ];
-    run_tmux_codex_command(&args)
-}
-
 pub(super) fn summarize_orx_dispatch(payload: &Value) -> String {
-    payload
-        .get("dispatch")
-        .and_then(|value| value.get("ingress_message"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "ORX did not return a dispatch summary.".to_string())
+    let Some(dispatch) = payload.get("dispatch") else {
+        return "ORX did not return a dispatch summary.".to_string();
+    };
+    let mut lines = Vec::new();
+    if let Some(message) = dispatch.get("ingress_message").and_then(Value::as_str) {
+        lines.push(message.to_string());
+    }
+    if let Some(lane_state) = dispatch.get("lane_state").and_then(Value::as_str) {
+        match lane_state {
+            "awaiting_orx_review" => {
+                if let Some(feature_key) = dispatch.get("feature_key").and_then(Value::as_str) {
+                    lines.push(format!(
+                        "Reserved feature lane: `{feature_key}` is waiting for ORX reconciliation."
+                    ));
+                }
+                lines.push(
+                    "ORX is interpreting the last runner outcome before this lane can resume."
+                        .to_string(),
+                );
+                if let Some(project_key) = dispatch.get("project_key").and_then(Value::as_str) {
+                    lines.push(format!(
+                        "Use `/status` in `{project_key}` to review the gate details or use the inline operator controls below."
+                    ));
+                }
+            }
+            "awaiting_hil_release" => {
+                if let Some(feature_key) = dispatch.get("feature_key").and_then(Value::as_str) {
+                    lines.push(format!(
+                        "Reserved feature lane: `{feature_key}` is waiting for HIL release."
+                    ));
+                }
+                lines.push(
+                    "Choose a release action below when the checkpointed feature is ready."
+                        .to_string(),
+                );
+            }
+            "launch_failed" => {
+                lines.push(
+                    "Managed start left the lane in a failed state; repair it before retrying."
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+    if lines.is_empty() {
+        "ORX did not return a dispatch summary.".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 pub(super) fn summarize_orx_intake_submission(payload: &Value) -> String {
@@ -323,7 +362,8 @@ pub(super) fn summarize_orx_intake_submission(payload: &Value) -> String {
         let total_items = groups
             .iter()
             .map(|group| {
-                group.get("items")
+                group
+                    .get("items")
                     .and_then(Value::as_array)
                     .map(|items| items.len())
                     .unwrap_or(0)
@@ -331,7 +371,11 @@ pub(super) fn summarize_orx_intake_submission(payload: &Value) -> String {
             .sum::<usize>();
         if total_items > 0 {
             let project_count = groups.len();
-            let ticket_word = if total_items == 1 { "ticket" } else { "tickets" };
+            let ticket_word = if total_items == 1 {
+                "ticket"
+            } else {
+                "tickets"
+            };
             let project_word = if project_count == 1 {
                 "project"
             } else {
@@ -355,7 +399,8 @@ pub(super) fn summarize_orx_intake_submission(payload: &Value) -> String {
                         item_index,
                         super::presentation::escape_markdown_label(display_name)
                     ));
-                    if let Some(draft_ticket) = item.get("draft_ticket").and_then(Value::as_object) {
+                    if let Some(draft_ticket) = item.get("draft_ticket").and_then(Value::as_object)
+                    {
                         append_ticket_preview_sections(&mut lines, draft_ticket, item);
                     } else {
                         append_ticket_preview_fallback(&mut lines, item);
@@ -376,9 +421,8 @@ pub(super) fn summarize_orx_intake_submission(payload: &Value) -> String {
         );
     } else if status == "clarification_required" {
         lines.push(String::new());
-        lines.push(
-            "Clarification is required before ORX can create tickets in Linear.".to_string(),
-        );
+        lines
+            .push("Clarification is required before ORX can create tickets in Linear.".to_string());
     }
     lines.join("\n")
 }
@@ -485,7 +529,14 @@ fn append_ticket_preview_fallback(lines: &mut Vec<String>, item: &Value) {
         super::presentation::escape_markdown_label(title.trim())
     ));
     push_preview_compact_value(lines, "Problem", &problem);
-    push_preview_compact_value(lines, "Goal", &format!("Deliver `{}` and leave the project in a verifiable state.", title));
+    push_preview_compact_value(
+        lines,
+        "Goal",
+        &format!(
+            "Deliver `{}` and leave the project in a verifiable state.",
+            title
+        ),
+    );
     lines.push("*Scope*".to_string());
     let in_scope = [Value::String(problem.clone())];
     push_preview_bullets(lines, Some(&in_scope), Some(2));
@@ -513,8 +564,14 @@ fn preview_lines(values: Option<&[Value]>, limit: Option<usize>) -> Vec<String> 
         Some(values) if !values.is_empty() => {
             let max_items = limit.unwrap_or(usize::MAX);
             for value in values {
-                if let Some(text) = value.as_str().map(str::trim).filter(|text| !text.is_empty()) {
-                    if text.starts_with("Touch only the code, docs, tests, and runtime wiring inside `") {
+                if let Some(text) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    if text.starts_with(
+                        "Touch only the code, docs, tests, and runtime wiring inside `",
+                    ) {
                         continue;
                     }
                     lines.push(format!(
@@ -567,17 +624,20 @@ fn push_preview_list(
     values: Option<&[Value]>,
     limit: Option<usize>,
 ) {
-    lines.push(format!("*{}*", super::presentation::escape_markdown_label(heading)));
+    lines.push(format!(
+        "*{}*",
+        super::presentation::escape_markdown_label(heading)
+    ));
     if heading == "Done when" {
         let labels = ["Given", "When", "Then"];
         match values {
             Some(values) if !values.is_empty() => {
-                for (index, value) in values
-                    .iter()
-                    .take(limit.unwrap_or(usize::MAX))
-                    .enumerate()
-                {
-                    if let Some(text) = value.as_str().map(str::trim).filter(|text| !text.is_empty()) {
+                for (index, value) in values.iter().take(limit.unwrap_or(usize::MAX)).enumerate() {
+                    if let Some(text) = value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                    {
                         let label = labels.get(index).copied().unwrap_or("And");
                         let rendered = if text.starts_with(&format!("{label} ")) {
                             text.to_string()
@@ -669,25 +729,25 @@ fn compact_preview_why(value: &str) -> String {
             })
             .unwrap_or(trimmed)
             .trim();
-        return format!(
-            "Current behavior still needs tightening: {problem}."
-        );
+        return format!("Current behavior still needs tightening: {problem}.");
     }
     if let Some(problem) = text
         .strip_prefix("There is not enough confidence that ")
         .and_then(|value| value.split(" is correct today").next())
     {
-        return format!("This still needs verification: {}.", problem.trim().trim_end_matches('.'));
+        return format!(
+            "This still needs verification: {}.",
+            problem.trim().trim_end_matches('.')
+        );
     }
-    text
-        .replace(
-            "which makes the current workflow harder for operators to understand.",
-            "This is still confusing for operators.",
-        )
-        .replace(
-            "which creates avoidable operator or runtime risk.",
-            "This still creates avoidable operator/runtime risk.",
-        )
+    text.replace(
+        "which makes the current workflow harder for operators to understand.",
+        "This is still confusing for operators.",
+    )
+    .replace(
+        "which creates avoidable operator or runtime risk.",
+        "This still creates avoidable operator/runtime risk.",
+    )
 }
 
 fn compact_preview_goal(value: &str, fallback_title: &str) -> String {
@@ -780,8 +840,77 @@ pub(super) fn summarize_orx_status(payload: &Value) -> String {
     lines.push(format!("- active issue: {active_issue}"));
     lines.push(format!(
         "- queue depth: {}",
-        payload.get("queue_depth").and_then(Value::as_i64).unwrap_or(0)
+        payload
+            .get("queue_depth")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
     ));
+    if let Some(feature_lane) = payload
+        .get("project")
+        .and_then(|value| value.get("feature_lane"))
+        .and_then(Value::as_object)
+    {
+        if let Some(feature_key) = feature_lane.get("feature_key").and_then(Value::as_str) {
+            let lane_state = feature_lane
+                .get("lane_state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            lines.push(format!("- feature lane: {lane_state} (`{feature_key}`)"));
+        }
+    }
+    if let Some(reconciliation) = payload
+        .get("project")
+        .and_then(|value| value.get("reconciliation"))
+        .and_then(Value::as_object)
+    {
+        if let Some(status) = reconciliation.get("status").and_then(Value::as_str) {
+            let mut line = format!("- reconciliation: {status}");
+            if let Some(action) = reconciliation.get("action").and_then(Value::as_str) {
+                line.push_str(&format!(" ({action})"));
+            }
+            if let Some(reason) = reconciliation.get("reason").and_then(Value::as_str) {
+                line.push_str(&format!(" - {reason}"));
+            }
+            lines.push(line);
+        }
+        if let Some(review_kind) = reconciliation.get("review_kind").and_then(Value::as_str) {
+            lines.push(format!("- review gate: {review_kind}"));
+        }
+        if let Some(ui_mode) = reconciliation.get("ui_mode").and_then(Value::as_str) {
+            lines.push(format!("- ui mode: {ui_mode}"));
+        }
+        if let Some(design_state) = reconciliation.get("design_state").and_then(Value::as_str) {
+            lines.push(format!("- design state: {design_state}"));
+        }
+        if let Some(design_reference) = reconciliation
+            .get("design_reference")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("- design reference: {design_reference}"));
+        }
+        if let Some(verification_surface) = reconciliation
+            .get("verification_surface")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("- verification surface: {verification_surface}"));
+        }
+        if let Some(design_artifacts) = reconciliation
+            .get("design_artifacts")
+            .and_then(Value::as_array)
+        {
+            let artifacts = design_artifacts
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .take(3)
+                .collect::<Vec<_>>();
+            if !artifacts.is_empty() {
+                lines.push(format!("- design artifacts: {}", artifacts.join(", ")));
+            }
+        }
+    }
     if let Some(session) = payload.get("session").or_else(|| payload.get("continuity")) {
         if let Some(session_name) = session.get("session_name").and_then(Value::as_str) {
             lines.push(format!("- tmux session: {session_name}"));
@@ -801,70 +930,26 @@ pub(super) fn summarize_orx_status(payload: &Value) -> String {
     lines.join("\n")
 }
 
-pub(super) fn summarize_orx_queue(payload: &Value) -> String {
-    let project = payload
-        .get("project")
+pub(super) fn orx_operator_keyboard_for_payload(payload: &Value) -> Option<InlineKeyboardMarkup> {
+    let project = payload.get("project");
+    let dispatch = payload.get("dispatch");
+    let project_key = dispatch
         .and_then(|value| value.get("project_key"))
-        .and_then(Value::as_str)
-        .unwrap_or("idle");
-    let mut lines = vec![format!("ORX queue for `{project}`:")];
-    lines.push(format!(
-        "- active issue: {}",
-        payload
-            .get("active_issue_key")
-            .and_then(Value::as_str)
-            .unwrap_or("none")
-    ));
-    lines.push(format!(
-        "- queue depth: {}",
-        payload.get("queue_depth").and_then(Value::as_i64).unwrap_or(0)
-    ));
-    match payload.get("queue").and_then(Value::as_array) {
-        Some(queue) if queue.is_empty() => lines.push("- pending commands: none".to_string()),
-        Some(queue) => {
-            for command in queue.iter().take(5) {
-                let command_kind = command
-                    .get("command_kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                let issue_key = command
-                    .get("issue_key")
-                    .and_then(Value::as_str)
-                    .unwrap_or("current");
-                let status = command
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("pending");
-                lines.push(format!("- {command_kind}: {issue_key} ({status})"));
-            }
-        }
-        None => lines.push("- pending commands: unavailable".to_string()),
-    }
-    lines.join("\n")
-}
-
-pub(super) fn summarize_orx_command(payload: &Value) -> String {
-    let project = payload
-        .get("project")
-        .and_then(|value| value.get("project_key"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let command = payload.get("command").unwrap_or(payload);
-    let command_kind = command
-        .get("command_kind")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let issue_key = command
-        .get("issue_key")
-        .and_then(Value::as_str)
-        .unwrap_or("current");
-    let status = command
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("pending");
-    format!(
-        "Queued ORX command `{command_kind}` for `{project}`.\nTarget: {issue_key}\nStatus: {status}"
-    )
+        .or_else(|| project.and_then(|value| value.get("project_key")))
+        .and_then(Value::as_str)?;
+    let lane_state = dispatch
+        .and_then(|value| value.get("lane_state"))
+        .or_else(|| {
+            project
+                .and_then(|value| value.get("feature_lane"))
+                .and_then(|lane| lane.get("lane_state"))
+        })
+        .and_then(Value::as_str);
+    let review_kind = project
+        .and_then(|value| value.get("reconciliation"))
+        .and_then(|value| value.get("review_kind"))
+        .and_then(Value::as_str);
+    orx_operator_keyboard(project_key, lane_state, review_kind)
 }
 
 pub(super) fn summarize_orx_notification(notification: &crate::orx::OrxNotification) -> String {
@@ -892,7 +977,9 @@ pub(super) fn summarize_orx_notification(notification: &crate::orx::OrxNotificat
     {
         lines.push(message.to_string());
     } else if let Some(issue_key) = notification.issue_key.as_deref() {
-        lines.push(format!("Continue `{issue_key}` on the assigned project bot."));
+        lines.push(format!(
+            "Continue `{issue_key}` on the assigned project bot."
+        ));
     }
     lines.join("\n")
 }
@@ -919,7 +1006,11 @@ fn run_tmux_codex_command(args: &[String]) -> Result<RunnerCommandOutcome> {
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let detail = if stderr.is_empty() { stdout.clone() } else { stderr.clone() };
+        let detail = if stderr.is_empty() {
+            stdout.clone()
+        } else {
+            stderr.clone()
+        };
         bail!(
             "tmux-codex command failed: {}",
             if detail.is_empty() {

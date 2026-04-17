@@ -182,6 +182,22 @@ class ProjectRegistry:
         execution_chat_id: int | None = None,
     ) -> ProjectRegistration:
         normalized = normalize_project_key(project_key)
+        return self.update_project_metadata(
+            project_key=normalized,
+            transform=lambda metadata: _with_execution_thread_binding(
+                metadata,
+                execution_thread_id=execution_thread_id,
+                execution_chat_id=execution_chat_id,
+            ),
+        )
+
+    def update_project_metadata(
+        self,
+        *,
+        project_key: str,
+        transform: Any,
+    ) -> ProjectRegistration:
+        normalized = normalize_project_key(project_key)
         now = _utc_now()
         with self.storage.session() as connection:
             row = connection.execute(
@@ -190,19 +206,17 @@ class ProjectRegistry:
             ).fetchone()
             if row is None:
                 raise ValueError(f"Unknown project {project_key}.")
-            metadata = json.loads(row["metadata_json"])
-            metadata = _with_execution_thread_binding(
-                metadata,
-                execution_thread_id=execution_thread_id,
-                execution_chat_id=execution_chat_id,
-            )
+            current_metadata = json.loads(row["metadata_json"])
+            next_metadata = transform(dict(current_metadata))
+            if not isinstance(next_metadata, dict):
+                raise ValueError("Project metadata transform must return a JSON object.")
             connection.execute(
                 """
                 UPDATE project_registry
                 SET metadata_json = ?, updated_at = ?
                 WHERE project_key = ?
                 """,
-                (json.dumps(metadata, sort_keys=True), now, normalized),
+                (json.dumps(next_metadata, sort_keys=True), now, normalized),
             )
             updated = connection.execute(
                 "SELECT * FROM project_registry WHERE project_key = ?",
@@ -210,6 +224,56 @@ class ProjectRegistry:
             ).fetchone()
         assert updated is not None
         return _row_to_project(updated)
+
+    def get_project_feature_lane(self, project_key: str) -> dict[str, Any] | None:
+        project = self.get_project(project_key)
+        if project is None:
+            return None
+        lane = project.metadata.get("feature_lane") if isinstance(project.metadata, dict) else None
+        return _normalize_feature_lane(lane)
+
+    def set_project_feature_lane(
+        self,
+        *,
+        project_key: str,
+        lane: dict[str, Any] | None,
+    ) -> ProjectRegistration:
+        normalized_lane = _normalize_feature_lane(lane)
+
+        def transform(metadata: dict[str, Any]) -> dict[str, Any]:
+            payload = dict(metadata)
+            if normalized_lane is None:
+                payload.pop("feature_lane", None)
+                return payload
+            payload["feature_lane"] = normalized_lane
+            return payload
+
+        return self.update_project_metadata(project_key=project_key, transform=transform)
+
+    def get_project_reconciliation(self, project_key: str) -> dict[str, Any] | None:
+        project = self.get_project(project_key)
+        if project is None:
+            return None
+        record = project.metadata.get("reconciliation") if isinstance(project.metadata, dict) else None
+        return _normalize_reconciliation(record)
+
+    def set_project_reconciliation(
+        self,
+        *,
+        project_key: str,
+        reconciliation: dict[str, Any] | None,
+    ) -> ProjectRegistration:
+        normalized = _normalize_reconciliation(reconciliation)
+
+        def transform(metadata: dict[str, Any]) -> dict[str, Any]:
+            payload = dict(metadata)
+            if normalized is None:
+                payload.pop("reconciliation", None)
+                return payload
+            payload["reconciliation"] = normalized
+            return payload
+
+        return self.update_project_metadata(project_key=project_key, transform=transform)
 
     def get_project(self, project_key: str) -> ProjectRegistration | None:
         normalized = normalize_project_key(project_key)
@@ -505,7 +569,35 @@ class ProjectRegistry:
                     )
 
             candidate = None
-            if preferred is not None:
+            project_display_name = _normalize_project_display_name(project_row["display_name"])
+            project_key_alias = _normalize_project_display_name(normalized_project)
+            if project_display_name is not None or project_key_alias is not None:
+                candidate = connection.execute(
+                    """
+                    SELECT *
+                    FROM bot_registry
+                    WHERE availability_state = 'available'
+                      AND (assigned_project_key IS NULL OR assigned_project_key = '')
+                    ORDER BY
+                      CASE
+                        WHEN LOWER(TRIM(default_display_name)) = ? THEN 0
+                        WHEN LOWER(TRIM(default_display_name)) = ? THEN 1
+                        ELSE 2
+                      END,
+                      COALESCE(last_heartbeat_at, updated_at) DESC,
+                      bot_identity ASC
+                    LIMIT 1
+                    """,
+                    (
+                        project_display_name or "",
+                        project_key_alias or "",
+                    ),
+                ).fetchone()
+                if candidate is not None:
+                    candidate_name = _normalize_project_display_name(candidate["default_display_name"])
+                    if candidate_name not in {project_display_name, project_key_alias}:
+                        candidate = None
+            if candidate is None and preferred is not None:
                 candidate = connection.execute(
                     """
                     SELECT * FROM bot_registry
@@ -1024,6 +1116,13 @@ def _normalize_optional(value: Any) -> str | None:
     return text or None
 
 
+def _normalize_project_display_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(str(value).strip().lower().split())
+    return normalized or None
+
+
 def _with_execution_thread_binding(
     metadata: dict[str, Any] | None,
     *,
@@ -1042,6 +1141,125 @@ def _with_execution_thread_binding(
     if execution_chat_id is not None:
         payload["execution_chat_id"] = execution_chat_id
     return payload
+
+
+def _normalize_feature_lane(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    feature_key = _normalize_optional(value.get("feature_key"))
+    packet_key = _normalize_optional(value.get("packet_key")) or feature_key
+    lane_state = _normalize_optional(value.get("lane_state")) or "idle"
+    last_issue_key = _normalize_optional(value.get("last_issue_key"))
+    last_issue_title = _normalize_optional(value.get("last_issue_title"))
+    merge_target = _normalize_optional(value.get("merge_target")) or "main"
+    merge_strategy = _normalize_optional(value.get("merge_strategy")) or "hil_merge_to_main"
+    release_action = _normalize_optional(value.get("release_action"))
+    release_note = _normalize_optional(value.get("release_note"))
+    updated_at = _normalize_optional(value.get("updated_at"))
+    if feature_key is None:
+        return None
+    return {
+        "feature_key": feature_key,
+        "packet_key": packet_key,
+        "lane_state": lane_state,
+        "release_required": bool(value.get("release_required")),
+        "last_issue_key": last_issue_key,
+        "last_issue_title": last_issue_title,
+        "merge_target": merge_target,
+        "merge_strategy": merge_strategy,
+        "release_action": release_action,
+        "release_note": release_note,
+        "updated_at": updated_at,
+    }
+
+
+def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    status = _normalize_optional(value.get("status"))
+    event_kind = _normalize_optional(value.get("event_kind"))
+    action = _normalize_optional(value.get("action"))
+    reason = _normalize_optional(value.get("reason"))
+    final_summary = _normalize_optional(value.get("final_summary"))
+    raw_status = _normalize_optional(value.get("raw_status"))
+    issue_key = _normalize_optional(value.get("issue_key"))
+    checkpoint_commit = _normalize_optional(value.get("checkpoint_commit"))
+    transcript_excerpt = _normalize_optional(value.get("transcript_excerpt"))
+    updated_at = _normalize_optional(value.get("updated_at"))
+    ui_mode = _normalize_optional(value.get("ui_mode"))
+    design_state = _normalize_optional(value.get("design_state"))
+    design_reference = _normalize_optional(value.get("design_reference"))
+    review_kind = _normalize_optional(value.get("review_kind"))
+    verification_surface = _normalize_optional(value.get("verification_surface"))
+    changed_files_raw = value.get("changed_files")
+    changed_files = []
+    if isinstance(changed_files_raw, list):
+        changed_files = [item for item in (_normalize_optional(entry) for entry in changed_files_raw) if item]
+    verification_ran_raw = value.get("verification_ran")
+    verification_ran = []
+    if isinstance(verification_ran_raw, list):
+        verification_ran = [item for item in (_normalize_optional(entry) for entry in verification_ran_raw) if item]
+    verification_failed_raw = value.get("verification_failed")
+    verification_failed = []
+    if isinstance(verification_failed_raw, list):
+        verification_failed = [
+            item for item in (_normalize_optional(entry) for entry in verification_failed_raw) if item
+        ]
+    artifacts_raw = value.get("artifacts")
+    artifacts = []
+    if isinstance(artifacts_raw, list):
+        artifacts = [item for item in (_normalize_optional(entry) for entry in artifacts_raw) if item]
+    design_artifacts_raw = value.get("design_artifacts")
+    design_artifacts = []
+    if isinstance(design_artifacts_raw, list):
+        design_artifacts = [item for item in (_normalize_optional(entry) for entry in design_artifacts_raw) if item]
+    if not any(
+        (
+            status,
+            event_kind,
+            action,
+            reason,
+            final_summary,
+            raw_status,
+            issue_key,
+            checkpoint_commit,
+            transcript_excerpt,
+            changed_files,
+            verification_ran,
+            verification_failed,
+            artifacts,
+            ui_mode,
+            design_state,
+            design_reference,
+            review_kind,
+            verification_surface,
+            design_artifacts,
+        )
+    ):
+        return None
+    return {
+        "status": status,
+        "event_kind": event_kind,
+        "action": action,
+        "reason": reason,
+        "final_summary": final_summary,
+        "raw_status": raw_status,
+        "issue_key": issue_key,
+        "checkpoint_commit": checkpoint_commit,
+        "checkpoint_created": bool(value.get("checkpoint_created")),
+        "transcript_excerpt": transcript_excerpt,
+        "changed_files": changed_files,
+        "verification_ran": verification_ran,
+        "verification_failed": verification_failed,
+        "artifacts": artifacts,
+        "ui_mode": ui_mode,
+        "design_state": design_state,
+        "design_reference": design_reference,
+        "review_kind": review_kind,
+        "verification_surface": verification_surface,
+        "design_artifacts": design_artifacts,
+        "updated_at": updated_at,
+    }
 
 
 def _utc_now() -> str:
