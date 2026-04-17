@@ -124,12 +124,14 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
   - tooling quirks
 - It is not a changelog, bug diary, or test index.
 - Keep it DRY and current.
-- Do not create new `.memory/lessons.md` files outside `/Users/jian/Dev/Repos/<project>*`.
+- Prefer project-local lessons under `/Users/jian/Dev/Repos/<project>*/.memory/lessons.md`.
+- Exception: `/Users/jian/Dev/workspace/tmux-codex/.memory/lessons.md` may hold runner/control-plane guidance that is specific to tmux-codex itself.
 - If something becomes testable, move it to tests.
 
 ## Runner Memory
 
 - Treat `.memory/runner` files as cache or recovery breadcrumbs, not truth, for ORX-managed work.
+- `.memory/**` is local runtime state and should not be committed as project source, except for intentional checked-in guidance files such as `lessons.md`.
 - Allowed local runner memory:
   - active issue or worktree snapshot
   - runner status

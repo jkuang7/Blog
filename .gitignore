@@ -23,8 +23,16 @@
 
 # runtime and generated content
 /.DS_Store
+/workspace/**/.env
+/workspace/**/.env.*
+!/workspace/**/.env.example
 /workspace/**/.memory/
+/workspace/**/.orx/
+/workspace/**/.telecodex/
+/workspace/**/.pytest_cache/
+/workspace/**/__pycache__/
+/workspace/**/*.py[cod]
+/workspace/**/target/
 /workspace/configs/aerospace/engine/node_modules/
-/workspace/tmux-codex/.pytest_cache/
-/workspace/tmux-codex/**/__pycache__/
-/workspace/tmux-codex/**/*.pyc
+/.bootstrap/**/__pycache__/
+/.bootstrap/**/*.py[cod]

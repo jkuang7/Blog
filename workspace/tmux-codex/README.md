@@ -52,6 +52,8 @@ Single-runner policy:
 
 ## Runner State Contract
 
+For ORX-managed work, generated runner artifacts are local runtime state only. They live under the active project or issue worktree `/.memory/runner/`, are derived from ORX and Linear, and should not be treated as durable source files or committed output.
+
 Runner-scoped files under the active issue worktree `/.memory/runner/`:
 
 - `runtime/RUNNER_STATE.json` (`runner_id` is stored in JSON metadata)
@@ -66,15 +68,21 @@ Runner-scoped files under the active issue worktree `/.memory/runner/`:
 - `locks/RUNNER_CLEAR.pending.json` (two-phase clear token/manifest)
 - `runtime/RUNNER_HOOKS.ndjson` (hook events)
 
-Runner lock files stay in `Repos/<project>/.memory/runner/locks/`:
+Runner lock files stay in `<project-root>/.memory/runner/locks/`:
 
 - `RUNNER_DONE.lock`
 - `RUNNER_STOP.lock`
 
-Project-level top-level files stay in `Repos/<project>/.memory/`:
+Compatibility-era project-level top-level files stay in `<project-root>/.memory/`:
 
 - `PRD.md` (runner-managed objective snapshot)
 - `gates.sh` (must define `run_gates`)
+
+Artifact placement policy:
+
+- checked-in source belongs in the repo tree, not under `.memory/`
+- local runtime output belongs under `.memory/runner/runtime/` or neighboring `.memory/runner/locks/`
+- `.memory/**` is ignored in the parent Dev repo and should be considered ephemeral unless a file is intentionally documented as checked-in guidance
 
 ## Deterministic Linear-Native Direction
 
