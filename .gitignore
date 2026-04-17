@@ -20,15 +20,11 @@
 /Repos/**
 /worktrees/
 /worktrees/**
-/workspace/orx/
-/workspace/telecodex/
 
 # runtime and generated content
 /.DS_Store
+/workspace/**/.memory/
 /workspace/configs/aerospace/engine/node_modules/
 /workspace/tmux-codex/.pytest_cache/
-/workspace/tmux-codex/.memory/PRD.md
-/workspace/tmux-codex/.memory/gates.sh
-/workspace/tmux-codex/.memory/runner/
 /workspace/tmux-codex/**/__pycache__/
 /workspace/tmux-codex/**/*.pyc

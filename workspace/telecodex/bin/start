@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+if [[ "${1:-}" == "--foreground" ]]; then
+  exec "$REPO_ROOT/bin/run-foreground"
+fi
+
+clear_service_disabled
+"$REPO_ROOT/bin/install-launchd"
+launchctl kickstart -k "$(launchctl_domain)/$APP_LABEL"
+echo "Started $APP_LABEL"

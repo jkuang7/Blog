@@ -1,0 +1,83 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+load_env
+render_config
+build_binary
+ensure_dirs
+export_runtime_env
+
+if service_disabled; then
+  echo "self-heal: disabled ($TELECODEX_PROFILE)"
+  exit 0
+fi
+
+repair_needed=0
+service_needs_repair=0
+watchdog_needs_reinstall=0
+locked_pid="$(active_profile_lock_pid || true)"
+
+if [[ ! -f "$PLIST_PATH" ]]; then
+  echo "self-heal: missing launchd plist for $APP_LABEL"
+  repair_needed=1
+  service_needs_repair=1
+elif ! service_loaded "$APP_LABEL"; then
+  echo "self-heal: $APP_LABEL is not loaded"
+  repair_needed=1
+  service_needs_repair=1
+elif ! service_active "$APP_LABEL"; then
+  if pid_is_live "$locked_pid"; then
+    echo "self-heal: $APP_LABEL uses live profile lock pid $locked_pid"
+  else
+    echo "self-heal: $APP_LABEL is loaded but inactive"
+    repair_needed=1
+    service_needs_repair=1
+  fi
+elif [[ -z "$locked_pid" ]]; then
+  echo "self-heal: $APP_LABEL is active without a held profile lock"
+  repair_needed=1
+  service_needs_repair=1
+fi
+
+if [[ ! -f "$HEALTH_PLIST_PATH" ]] || ! service_loaded "$HEALTH_APP_LABEL"; then
+  echo "self-heal: watchdog agent needs reinstall for $HEALTH_APP_LABEL"
+  repair_needed=1
+  watchdog_needs_reinstall=1
+fi
+
+if ! telegram_bot_getme >/dev/null 2>&1; then
+  echo "self-heal: Telegram token check failed for profile $TELECODEX_PROFILE"
+  exit 1
+fi
+
+if ! telegram_webhook_info | grep -q '"url":""'; then
+  echo "self-heal: webhook is configured for profile $TELECODEX_PROFILE"
+  exit 1
+fi
+
+if [[ "$repair_needed" -eq 1 ]]; then
+  if [[ "$watchdog_needs_reinstall" -eq 1 ]]; then
+    "$REPO_ROOT/bin/install-launchd" --profile "$TELECODEX_PROFILE"
+    launchctl kickstart -k "$(launchctl_domain)/$APP_LABEL"
+  elif [[ "$service_needs_repair" -eq 1 ]]; then
+    if ! service_loaded "$APP_LABEL"; then
+      launchctl bootstrap "$(launchctl_domain)" "$PLIST_PATH"
+      launchctl enable "$(launchctl_domain)/$APP_LABEL"
+    fi
+    launchctl kickstart -k "$(launchctl_domain)/$APP_LABEL"
+  fi
+fi
+
+if [[ -z "$locked_pid" ]]; then
+  clear_profile_lock
+fi
+
+echo "self-heal: ok ($TELECODEX_PROFILE)"

@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Local ORX CLI wrapper for repo checkout usage."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def _bootstrap_path() -> None:
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent
+    sys.path.insert(0, str(repo_root))
+
+
+def main() -> int:
+    _bootstrap_path()
+    from orx.cli import main as cli_main
+
+    return cli_main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

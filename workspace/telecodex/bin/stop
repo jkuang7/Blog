@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+mark_service_disabled
+launchctl bootout "$(launchctl_domain)/$APP_LABEL" >/dev/null 2>&1 || true
+launchctl bootout "$(launchctl_domain)/$HEALTH_APP_LABEL" >/dev/null 2>&1 || true
+clear_profile_lock
+echo "Stopped $APP_LABEL"

@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+ensure_dirs
+touch "$LOG_DIR/telecodex.out.log" "$LOG_DIR/telecodex.err.log"
+
+if [[ "${1:-}" == "-f" ]]; then
+  tail -n "${2:-80}" -f "$LOG_DIR/telecodex.out.log" "$LOG_DIR/telecodex.err.log"
+else
+  tail -n "${1:-80}" "$LOG_DIR/telecodex.out.log" "$LOG_DIR/telecodex.err.log"
+fi

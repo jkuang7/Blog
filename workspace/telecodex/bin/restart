@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+"$REPO_ROOT/bin/stop" --profile "$TELECODEX_PROFILE"
+"$REPO_ROOT/bin/start" --profile "$TELECODEX_PROFILE"

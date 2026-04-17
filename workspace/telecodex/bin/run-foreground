@@ -1,0 +1,33 @@
+#!/bin/bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+parse_profile_args "$@"
+if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
+  set -- "${PROFILE_ARGS_REST[@]}"
+else
+  set --
+fi
+
+load_env
+render_config
+build_binary
+
+export_runtime_env
+
+existing_pid="$(acquire_profile_lock || true)"
+if [[ -n "${existing_pid:-}" ]] && pid_is_live "$existing_pid"; then
+  echo "run-foreground: profile $TELECODEX_PROFILE already running (pid $existing_pid)" >&2
+  exit 0
+fi
+
+cleanup() {
+  clear_profile_lock
+}
+
+trap cleanup EXIT INT TERM
+
+"$BIN_PATH" "$CONFIG_PATH" &
+child_pid=$!
+record_profile_lock_child "$child_pid"
+wait "$child_pid"
