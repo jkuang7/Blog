@@ -22,6 +22,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - Prefer cherry-picking or otherwise replaying only the relevant changes onto `main` instead of blindly merging unrelated branch state.
 - Resolve merge or cherry-pick conflicts as needed, using the conversation intent and current `main` behavior to decide the correct integration.
 - Be selective and smart about scope: include the changes that satisfy the user request from the conversation, and leave unrelated branch-only work out of the `main` update.
+- After promoting changes to `main`, restore normal branch/worktree ownership: put the canonical checkout back on `main`, return the feature worktree to its working branch, and leave branch ownership in a clean predictable state.
 - Do not clean up, delete, stash-drop, move, or otherwise disturb unrelated branch changes, preserve branches, stashes, worktrees, or local resource directories during commit-to-`main` work unless the user explicitly asks for that cleanup.
 
 ## Task Start
