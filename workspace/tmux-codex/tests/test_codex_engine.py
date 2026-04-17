@@ -22,6 +22,33 @@ class _FakeProcess:
 
 
 class CodexEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.global_args_patcher = patch(
+            "src.codex_engine._global_developer_instruction_args", return_value=[]
+        )
+        self.global_args_patcher.start()
+
+    def tearDown(self):
+        self.global_args_patcher.stop()
+
+    def test_injects_global_developer_instructions_when_available(self):
+        lines = ['{"type":"item.completed","item":{"type":"message","text":"ok"}}\n']
+
+        self.global_args_patcher.stop()
+        with patch("src.codex_engine.Path.read_text", return_value="Global instructions"):
+            with patch("src.codex_engine.subprocess.Popen", return_value=_FakeProcess(lines)) as popen:
+                run_codex_iteration(
+                    cwd=Path("/tmp"),
+                    model="gpt-5.3-codex",
+                    prompt="continue",
+                    session_id=None,
+                )
+        self.global_args_patcher.start()
+
+        called_cmd = popen.call_args.args[0]
+        self.assertIn("-c", called_cmd)
+        self.assertIn('developer_instructions="Global instructions"', called_cmd)
+
     def test_parses_json_stream_and_extracts_session(self):
         lines = [
             "warn line\n",

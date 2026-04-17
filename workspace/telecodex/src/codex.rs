@@ -1075,17 +1075,37 @@ fn outcome_to_approval_decision(outcome: CodexEventOutcome) -> CodexApprovalDeci
     }
 }
 
+fn read_global_developer_instructions() -> Option<String> {
+    let env_path = std::env::var("CODEX_GLOBAL_AGENTS_FILE").ok();
+    let path = env_path
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_codex_home().join("AGENTS.md"));
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn merge_instruction_sections(
     session_prompt: Option<&str>,
     runtime_instructions: Option<&str>,
 ) -> Option<String> {
-    let sections = [session_prompt, runtime_instructions]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|section| !section.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let mut sections = Vec::new();
+    if let Some(global_instructions) = read_global_developer_instructions() {
+        sections.push(global_instructions);
+    }
+    sections.extend(
+        [session_prompt, runtime_instructions]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|section| !section.is_empty())
+            .map(str::to_string),
+    );
     if sections.is_empty() {
         None
     } else {
@@ -1426,6 +1446,7 @@ struct ExecItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::NamedTempFile;
 
     fn sample_workspace() -> PathBuf {
         std::env::temp_dir()
@@ -1485,6 +1506,28 @@ mod tests {
             }),
             override_search_mode: None,
         }
+    }
+
+    #[test]
+    fn merge_instruction_sections_prepends_global_file() {
+        let file = NamedTempFile::new().expect("temp file");
+        fs::write(file.path(), "Global file instructions\n").expect("write temp file");
+        unsafe {
+            std::env::set_var("CODEX_GLOBAL_AGENTS_FILE", file.path());
+        }
+
+        let merged =
+            merge_instruction_sections(Some("Session instructions"), Some("Runtime instructions"))
+                .expect("merged instructions");
+
+        unsafe {
+            std::env::remove_var("CODEX_GLOBAL_AGENTS_FILE");
+        }
+
+        assert_eq!(
+            merged,
+            "Global file instructions\n\nSession instructions\n\nRuntime instructions"
+        );
     }
 
     #[test]

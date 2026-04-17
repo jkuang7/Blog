@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -136,6 +137,18 @@ def _extract_final_message_from_plain_lines(lines: list[str]) -> str:
     return final
 
 
+def _global_developer_instruction_args() -> list[str]:
+    env_path = os.environ.get("CODEX_GLOBAL_AGENTS_FILE")
+    agents_path = Path(env_path) if env_path else Path.home() / ".codex" / "AGENTS.md"
+    try:
+        text = agents_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not text:
+        return []
+    return ["-c", f"developer_instructions={json.dumps(text)}"]
+
+
 def run_codex_iteration(
     cwd: Path,
     model: str,
@@ -152,6 +165,7 @@ def run_codex_iteration(
     prefix = ["codex"]
     if enable_search:
         prefix.append("--search")
+    prefix.extend(_global_developer_instruction_args())
     if sandbox_mode:
         prefix.extend(["-s", sandbox_mode])
     if session_id:

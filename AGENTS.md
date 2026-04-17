@@ -10,12 +10,14 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 ## Default Posture
 
 - Be context-driven, not optimistic.
+- Treat implementation as provisional until the intended behavior is observed on the right live surface.
 - Before implementing, gather context on the actual situation:
   - load the repo's required agent or harness context in the required order
   - inspect the relevant code, ownership boundaries, and current constraints
   - reuse a running app or browser when useful
   - reproduce the bug or inspect the live surface when behavior or layout is in question
 - Do not jump into code just because a likely fix seems obvious. Understand what owns the behavior first.
+- Prefer implementations that are easy to test, easy to observe, and easy to maintain.
 - Once the situation is clear, execute end-to-end without pausing for obvious next steps.
 
 ## Task Start
@@ -105,12 +107,18 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 
 ## Verify, Then Claim
 
-- Use the loop: analyze context -> form a hypothesis -> make the smallest correct change -> verify on the right surface -> repeat until resolved.
-- Verification should come from the relevant surface:
+- The source of truth is verifiable behavior on the relevant live surface, not that the code change looks correct.
+- Use the loop: analyze context -> form a hypothesis -> make the smallest correct change -> run a live smoke test or equivalent observable verification -> inspect the result -> repeat until resolved.
+- Do not stop at implementation if verification has not happened yet, or if verification exposes gaps. Continue until the behavior works or a real blocker is identified.
+- Choose the highest-signal verification surface available:
   - app or runtime behavior
-  - browser automation
-  - repo-specific harnesses or tools
-  - tests or logs
+  - browser automation for UI flows
+  - CLI or API invocation for non-UI behavior
+  - logs, traces, or metrics when the effect is indirect but observable
+  - repo-specific harnesses, tests, or other automated checks
+- Passing tests or static checks alone is not sufficient when a live surface can be exercised.
+- If the behavior is hard to observe, first add or use the smallest practical observability seam so correctness can be proven.
+- For high-risk or uncertain work, prefer a throwaway probe, script, fixture, or runner to validate a small slice before reintegrating the final change. Remove temporary verification code when it is no longer needed unless the user wants it kept.
 - After a non-trivial fix, add a targeted regression when the behavior is worth protecting.
 - Delete dummy resources created during testing once no longer needed, unless the user wants them kept.
 

@@ -15,6 +15,7 @@ export WORKSPACE_HOME="$DEV/workspace"
 export CODEX_HOME="$HOME/.codex"
 unset _this
 export REPOS_HOME="$DEV/Repos"
+export CODEX_GLOBAL_AGENTS_FILE="$CODEX_HOME/AGENTS.md"
 
 alias cdd='cd $DEV'
 alias ze="code ~/.zshrc"
@@ -59,7 +60,27 @@ alias sshjk='ssh -t jian@Mac-mini "cd ~/Dev && clear && exec zsh -l"'
 # Codex shortcuts
 #=======================================
 codex() {
-    command codex --yolo "$@"
+    local -a args
+    args=(--yolo)
+
+    local global_agents_file="${CODEX_GLOBAL_AGENTS_FILE:-$CODEX_HOME/AGENTS.md}"
+    if [[ -r "$global_agents_file" ]]; then
+        local developer_instructions
+        developer_instructions="$(
+            python3 - "$global_agents_file" <<'PY'
+import json
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+if text:
+    print(f"developer_instructions={json.dumps(text)}")
+PY
+        )"
+        [[ -n "$developer_instructions" ]] && args+=(-c "$developer_instructions")
+    fi
+
+    command codex "${args[@]}" "$@"
 }
 
 # Avoid alias/function name conflict when this file is re-sourced.
