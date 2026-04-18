@@ -10,9 +10,10 @@
 ## Unit Test Policy
 
 - Unit tests are co-located with the source file they validate.
-- A changed source module must have a co-located unit test file:
+- Prefer a co-located unit test when a changed or new module owns non-trivial logic, a stable contract, or a regression worth keeping cheap:
   - `foo.ts` -> `foo.test.ts` or `foo.spec.ts`
   - `foo.tsx` -> `foo.test.tsx` or `foo.spec.tsx`
+- Do not add placeholder tests for trivial copy/config wiring or for still-fluxy code whose behavior is already proven more directly.
 
 ## Integration/E2E Policy
 
@@ -28,5 +29,6 @@
 
 ## Definition of Done
 
-- `pnpm run verify` (full quality gate)
+- During iteration, use the smallest verification that proves the changed contract.
+- For commit-ready or high-risk work, run `pnpm run verify` (full quality gate)
 - `pnpm run lint` is ESLint-only and does not include structure/tests/context checks

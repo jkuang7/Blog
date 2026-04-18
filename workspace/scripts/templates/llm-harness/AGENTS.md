@@ -23,10 +23,16 @@ If generated context pack is stale, run `pnpm run context:pack`.
   - `pnpm run context:check`
   - `pnpm run typecheck`
   - `pnpm run test:unit`
+- Do not default to `pnpm run verify` during normal iteration.
+- Default verification budget:
+  - low-risk iteration: targeted lint, one changed-surface live check, or one narrow repo-local command for the touched slice
+  - medium-risk or shared-owner changes: add one focused harness, test, or probe for the risky slice
+  - commit-ready or high-risk changes: run the full gate that matches the repo contract
 
 ## Live Verification Contract
 
-- `pnpm run verify` is required but is not, by itself, proof that the feature works.
+- For commit-ready or high-risk work, `pnpm run verify` is the full gate, but it is not, by itself, proof that the feature works.
+- While iterating, prefer the smallest high-signal proof instead of stacking the full gate plus redundant route/unit/E2E checks.
 - Before marking implementation complete, exercise the changed behavior on the most relevant live surface available:
   - browser automation for UI flows
   - direct CLI or API invocation for non-UI behavior
@@ -36,7 +42,8 @@ If generated context pack is stale, run `pnpm run context:pack`.
 
 ## Test Policy
 
-- Unit tests must be co-located with touched source modules.
+- Unit tests should be co-located with the source modules they protect when they add clear value.
+- New source modules do not automatically require tests. Add coverage when the module owns non-trivial logic, a stable contract, or a regression worth keeping cheap.
 - Integration and E2E tests belong in dedicated roots from `harness.config.json`.
 - Legacy centralized unit tests are allowed only until touched.
 

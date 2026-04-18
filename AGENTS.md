@@ -11,7 +11,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 
 - `workspace/*` is owned by the parent `Dev` repo.
 - Do not create nested `.git` repos under `workspace/`.
-- Start new feature or problem work from a worktree by default; `main` is the integration target.
+- Work directly on `main` or the branch already checked out by default; do not require a separate worktree unless the user explicitly asks for one.
 
 ## Task Start
 
@@ -23,6 +23,11 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 ## Verify, Then Claim
 
 - Treat implementation as provisional until the intended behavior is observed on the right live surface.
+- Use a risk-based verification budget instead of defaulting to every available check on every iteration:
+  - low risk or exploratory iteration: reproduce the changed surface live and run the smallest focused check that proves the change
+  - medium risk: add one targeted harness, test, or narrow automation pass for the risky slice
+  - high risk, shared-infra, or commit-ready work: run the broader repo gate that matches the repo contract
+- Avoid stacking redundant checks. When one high-signal live verification or one narrow harness already proves the change, do not automatically add the full suite on top during iteration.
 - For debugging, do not present a root-cause explanation as likely unless it has been tested against the live surface; explicitly label unverified explanations as hypotheses.
 - Before changing code for a bug, separate observed facts, unknowns, and hypotheses; gather at least one discriminating observation that rules a cause in or out.
 - If multiple causes are plausible, add the smallest instrumentation or state inspection needed to identify the failing transition before fixing.
@@ -34,10 +39,14 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
   - CLI or API invocation for non-UI behavior
   - logs, traces, or metrics when the effect is indirect but observable
   - repo-specific harnesses or tests
+- Reserve full `verify`, `precommit`, or broad unit/E2E/typecheck runs for:
+  - commit-ready work
+  - shared contracts, generators, harnesses, or dependency changes
+  - cases where targeted verification is unavailable or insufficient
 - Passing tests alone is not enough when a live surface can be exercised.
 - For uncertain fixes, validate the risky slice first, then reintegrate the final change.
 - Do not claim a fix unless the failing repro was observed, the cause was evidenced by a targeted check, and the repro passes after the change; otherwise describe it as a hypothesis, mitigation, or likely fix.
-- After a non-trivial fix, add a targeted regression when it is worth protecting.
+- Do not add regression coverage by default. Add a targeted regression only when the issue is likely to recur, the contract is stable, and the check will be cheaper than repeated manual repro.
 - Delete dummy resources created during testing once no longer needed unless the user wants them kept.
 
 ## Commit Requests
@@ -45,7 +54,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 - When the user says `commit`, promote only the conversation-relevant changes onto `main`.
 - Prefer cherry-picking or replaying the intended changes; do not blindly merge unrelated branch state.
 - Resolve conflicts using conversation intent and current `main` behavior.
-- After promotion, restore a clean ownership state: canonical checkout on `main`, feature worktree on its branch.
+- After promotion, leave the repo in a clean ownership state on `main` or the branch already in use for the task.
 - Do not disturb unrelated branches, stashes, worktrees, or local resource directories unless explicitly asked.
 
 ## Artifact Hygiene

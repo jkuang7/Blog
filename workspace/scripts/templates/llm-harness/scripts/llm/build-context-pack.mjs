@@ -48,7 +48,8 @@ function buildMarkdown(harness, goldenPathMarkdown) {
   }
   lines.push("");
   lines.push("## Done Criteria");
-  lines.push("- Run `pnpm run verify` (full quality gate)");
+  lines.push("- During iteration, use the smallest verification that proves the changed contract");
+  lines.push("- For commit-ready or high-risk work, run `pnpm run verify` (full quality gate)");
   lines.push("- `pnpm run lint` is ESLint-only");
   lines.push("");
   lines.push("## Golden Path");
