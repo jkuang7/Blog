@@ -68,7 +68,7 @@ run = ['exec-and-forget ~/.config/aerospace/on_window.sh com.tdesktop.Telegram']
 # Workspace layouts
 ctrl-1 = 'exec-and-forget ~/.config/aerospace/switch_ws.sh w1'     # Switch to w1
 ctrl-w = 'exec-and-forget ~/.config/aerospace/reset_ws.sh'         # Reset to workspace defaults
-ctrl-e = 'exec-and-forget ~/.config/aerospace/balance.sh'          # Rebalance columns
+ctrl-e = 'exec-and-forget ~/.config/aerospace/balance.sh'          # Repair layout and preserve current widths when possible
 ctrl-q = 'layout floating tiling'                                  # Pin/unpin window
 
 # Navigation (vim-style)

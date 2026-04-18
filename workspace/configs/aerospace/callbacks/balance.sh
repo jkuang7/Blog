@@ -23,10 +23,16 @@ log "balance: rebalancing $WS"
 # Load existing state (preserve user choices)
 read_state "$WS"
 
+# Preserve the current slot widths when the same tiles remain after rebuild.
+PRESERVED_SLOT_WIDTHS="$(capture_current_tiled_slot_widths "$WS" || true)"
+
 # Rebuild from a clean workspace envelope.
 converge_all_windows_to_workspace "$WS"
 
 # Rebuild with existing state (force to fix column order + sizing)
 rebuild_workspace "$WS" force
+
+read_state "$WS"
+restore_preserved_slot_widths "$STATE_TILED_ORDER" "$PRESERVED_SLOT_WIDTHS"
 
 log "balance: $WS balanced"

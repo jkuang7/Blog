@@ -501,6 +501,111 @@ converge_all_windows_to_workspace() {
     fi
 }
 
+visible_owner_name_for_bundle() {
+    local bundle="${1:-}"
+    case "$bundle" in
+        "$VSCODE") echo "Code" ;;
+        "$CODEX") echo "Codex" ;;
+        "$TERMINAL") echo "cmux" ;;
+        "$TELEGRAM") echo "Telegram" ;;
+        "$ZEN") echo "Zen" ;;
+        "$SAFARI") echo "Safari" ;;
+        "$UPNOTE") echo "UpNote" ;;
+        *) echo "" ;;
+    esac
+}
+
+capture_current_tiled_slot_widths() {
+    local ws="${1:-}"
+    local owner_csv=""
+    local bundle layout owner
+
+    while IFS='|' read -r bundle layout; do
+        [[ -z "$bundle" || -z "$layout" ]] && continue
+        [[ "$layout" == *tiles* ]] || continue
+        owner="$(visible_owner_name_for_bundle "$bundle")"
+        [[ -n "$owner" ]] || continue
+        if [[ -n "$owner_csv" ]]; then
+            owner_csv+=","
+        fi
+        owner_csv+="$owner"
+    done < <(aerospace list-windows --workspace "$ws" --format '%{app-bundle-id}|%{window-layout}' 2>/dev/null || true)
+
+    [[ -n "$owner_csv" ]] || return 0
+
+    OWNER_CSV="$owner_csv" swift - <<'SWIFT'
+import CoreGraphics
+import Foundation
+
+let rawOwners = ProcessInfo.processInfo.environment["OWNER_CSV"] ?? ""
+let allowedOwners = Set(rawOwners.split(separator: ",").map(String.init))
+
+guard !allowedOwners.isEmpty else {
+  print("")
+  exit(0)
+}
+
+let options = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+var bestByOwner: [String: (x: Int, width: Int, area: Int)] = [:]
+
+if let info = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] {
+  for win in info {
+    let owner = win[kCGWindowOwnerName as String] as? String ?? ""
+    guard allowedOwners.contains(owner) else { continue }
+
+    let layer = win[kCGWindowLayer as String] as? Int ?? -1
+    guard layer == 0 else { continue }
+
+    let bounds = win[kCGWindowBounds as String] as? [String: Any] ?? [:]
+    let x = bounds["X"] as? Int ?? 0
+    let width = bounds["Width"] as? Int ?? 0
+    let height = bounds["Height"] as? Int ?? 0
+    guard width > 0, height > 100 else { continue }
+
+    let area = width * height
+    let current = bestByOwner[owner]
+    if current == nil || area > current!.area {
+      bestByOwner[owner] = (x: x, width: width, area: area)
+    }
+  }
+}
+
+let orderedWidths = bestByOwner.values.sorted { $0.x < $1.x }.map { String($0.width) }
+print(orderedWidths.joined(separator: ","))
+SWIFT
+}
+
+restore_preserved_slot_widths() {
+    local slot_csv="${1:-}"
+    local width_csv="${2:-}"
+    local slots=()
+    local widths=()
+    local i
+
+    [[ -n "$slot_csv" && -n "$width_csv" ]] || return 0
+
+    IFS=',' read -r -a slots <<< "$slot_csv"
+    IFS=',' read -r -a widths <<< "$width_csv"
+
+    if [[ ${#slots[@]} -lt 2 || ${#slots[@]} -ne ${#widths[@]} ]]; then
+        log "restore_slot_widths: skipping count mismatch slots=$slot_csv widths=$width_csv"
+        return 0
+    fi
+
+    local pass_count=3
+    local pass
+    for (( pass=0; pass<pass_count; pass++ )); do
+        for (( i=${#slots[@]}-2; i>=0; i-- )); do
+            local wid="${slots[$i]}"
+            local target_width="${widths[$i]}"
+            [[ "$wid" =~ ^[0-9]+$ && "$target_width" =~ ^[0-9]+$ ]] || continue
+            aerospace resize --window-id "$wid" width "$target_width" 2>/dev/null || true
+        done
+    done
+
+    log "restore_slot_widths: restored widths=$width_csv for slots=$slot_csv"
+}
+
 workspace_untile_ids_from_lines() {
     awk -F'|' '
         {
@@ -1501,7 +1606,7 @@ apply_sizing() {
             return 0
             ;;
         *)
-            log "apply_sizing: keeping balanced widths for slots=$slot_csv"
+            log "apply_sizing: keeping current widths for slots=$slot_csv"
             return 0
             ;;
     esac

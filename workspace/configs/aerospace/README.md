@@ -40,7 +40,7 @@ With UpNote (optional):
 | `ctrl+1` | Switch to w1 (restore w1 state) |
 | `ctrl+2` | Switch to w2 (UpNote always visible) |
 | `ctrl+w` | Reset workspace to defaults |
-| `ctrl+e` | Rebalance columns |
+| `ctrl+e` | Repair layout and preserve current widths when possible |
 | `ctrl+q` | Toggle float/tile |
 | `ctrl+f` | Toggle fullscreen |
 | `alt+h/j/k/l` | Focus left/down/up/right |

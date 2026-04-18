@@ -149,14 +149,7 @@ elif [[ "$FOCUSED_IS_PRIMARY" == "true" && "$FOCUSED_APP" == "$SAFARI" && "$STAT
     log "on_focus: switching to Safari browser"
 fi
 
-# Case 3: UpNote focused in w1 - tile it
-if is_home_ws "$WS" && [[ "$FOCUSED_IS_PRIMARY" == "true" && "$FOCUSED_APP" == "$UPNOTE" && "$STATE_UPNOTE_TILED" != "true" ]]; then
-    STATE_UPNOTE_TILED="true"
-    NEEDS_REBUILD="true"
-    log "on_focus: UpNote focused in w1, tiling"
-fi
-
-# Case 3.25: focused Terminal windows promote into the utility slot. Terminal's
+# Case 3: focused Terminal windows promote into the utility slot. Terminal's
 # visible tab cycle can surface as distinct window ids, so treat the focused
 # Terminal window as the intended utility owner rather than a transient overlay.
 if [[ "$PROMOTE_FOCUSED_TERMINAL" == "true" ]]; then
@@ -197,14 +190,7 @@ elif [[ "$STATE_BROWSER" == "safari" && -z "$SAFARI_WID" && -n "$ZEN_WID" ]]; th
     log "on_focus: Safari closed, promoting Zen"
 fi
 
-# Case 5: UpNote closed in w1 - rebalance to 2-col
-if is_home_ws "$WS" && [[ "$STATE_UPNOTE_TILED" == "true" && ${#UPNOTE_WIDS[@]} -eq 0 ]]; then
-    STATE_UPNOTE_TILED="false"
-    NEEDS_REBUILD="true"
-    log "on_focus: UpNote closed in w1, rebalancing"
-fi
-
-# Case 6: Utility owner repair only when the stored owner disappeared.
+# Case 5: Utility owner repair only when the stored owner disappeared.
 PREV_UTILITY_BUNDLE="$STATE_ACTIVE_UTILITY_BUNDLE"
 PREV_UTILITY_WID="$STATE_ACTIVE_UTILITY_WID"
 UTILITY_OWNER_MISSING="false"
