@@ -176,6 +176,16 @@ class ContinuityStore:
             ).fetchall()
         return [_row_to_continuity(row) for row in rows]
 
+    def delete_state(self, issue_key: str, runner_id: str) -> None:
+        with self.storage.session() as connection:
+            connection.execute(
+                """
+                DELETE FROM continuity_state
+                WHERE issue_key = ? AND runner_id = ?
+                """,
+                (issue_key, runner_id),
+            )
+
 
 class ContinuityService:
     def __init__(self, storage: Storage) -> None:
@@ -334,6 +344,98 @@ class ContinuityService:
 
     def list_recovery_candidates(self) -> list[ContinuityRecord]:
         return self.store.list_incomplete_states()
+
+    def clear_state(self, issue_key: str, runner_id: str) -> None:
+        self.store.delete_state(issue_key, runner_id)
+
+    def restore_state(self, record: ContinuityRecord) -> ContinuityRecord:
+        return self.store.upsert_state(
+            issue_key=record.issue_key,
+            runner_id=record.runner_id,
+            objective=record.objective,
+            slice_goal=record.slice_goal,
+            acceptance=record.acceptance,
+            validation_plan=record.validation_plan,
+            blockers=record.blockers,
+            discovered_gaps=record.discovered_gaps,
+            verified_delta=record.verified_delta,
+            next_slice=record.next_slice,
+            failure_signatures=record.failure_signatures,
+            artifact_pointers=record.artifact_pointers,
+            idempotency_key=record.idempotency_key,
+            resume_context=record.resume_context,
+            active_slice_id=record.active_slice_id,
+            active_command_id=record.active_command_id,
+            last_result_status=record.last_result_status,
+            last_result_summary=record.last_result_summary,
+            last_result_at=record.last_result_at,
+            no_delta_count=record.no_delta_count,
+            consecutive_failure_count=record.consecutive_failure_count,
+        )
+
+    def record_runner_terminal_event(
+        self,
+        *,
+        issue_key: str,
+        runner_id: str,
+        status: str,
+        summary: str,
+        submitted_at: str,
+        session_name: str | None = None,
+        pane_target: str | None = None,
+        transport: str | None = None,
+    ) -> ContinuityRecord:
+        current = self.store.get_state(issue_key, runner_id)
+        if current is None:
+            raise ValueError(
+                f"No continuity state exists for issue {issue_key} and runner {runner_id}."
+            )
+
+        failure_signatures = current.failure_signatures
+        if status != "success":
+            failure_signatures = _append_unique(failure_signatures, summary)
+
+        consecutive_failure_count = (
+            0 if status == "success" else current.consecutive_failure_count + 1
+        )
+        merged_context = _merge_resume_context(
+            current.resume_context,
+            {},
+            {
+                "issue_key": issue_key,
+                "runner_id": runner_id,
+                "session_name": session_name,
+                "pane_target": pane_target,
+                "transport": transport,
+                "active_slice_id": None,
+                "active_command_id": None,
+                "last_result_status": status,
+                "last_result_at": submitted_at,
+            },
+        )
+        return self.store.upsert_state(
+            issue_key=issue_key,
+            runner_id=runner_id,
+            objective=current.objective,
+            slice_goal=current.slice_goal,
+            acceptance=current.acceptance,
+            validation_plan=current.validation_plan,
+            blockers=current.blockers,
+            discovered_gaps=current.discovered_gaps,
+            verified_delta=current.verified_delta,
+            next_slice=current.next_slice,
+            failure_signatures=failure_signatures,
+            artifact_pointers=current.artifact_pointers,
+            idempotency_key=current.idempotency_key,
+            resume_context=merged_context,
+            active_slice_id=None,
+            active_command_id=None,
+            last_result_status=status,
+            last_result_summary=summary,
+            last_result_at=submitted_at,
+            no_delta_count=current.no_delta_count,
+            consecutive_failure_count=consecutive_failure_count,
+        )
 
     def apply_handoff_interpretation(
         self,

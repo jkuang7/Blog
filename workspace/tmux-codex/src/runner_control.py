@@ -251,7 +251,6 @@ class RunnerControlPlane:
             runtime_phase=runtime_phase,
             done_gate_status=done_gate_status,
         )
-        selected_issue = selected_issue or (None if recovered_run else self._select_next_issue(base_state, workspace=workspace))
 
         active_issue_before_reconcile = (
             base_state.get("active_issue") if isinstance(base_state.get("active_issue"), dict) else None
@@ -1106,10 +1105,7 @@ class RunnerControlPlane:
                 done_gate_status=done_gate_status,
             )
             if recovery_gate["yield_to_board"]:
-                candidate = self._candidate_issue(exclude_issue_url=issue_url)
-                if candidate:
-                    self._increment_metric("stale_run_yielded")
-                    continue
+                self._increment_metric("stale_run_yielded")
             self._hydrate_issue_from_run(kanban_state, run_row, workspace=workspace)
             return run_row
         return None
@@ -1134,13 +1130,8 @@ class RunnerControlPlane:
         )
         if not recovery_gate["yield_to_board"]:
             return None
-        candidate = self._candidate_issue(exclude_issue_url=issue_url)
-        if not candidate:
-            return None
-        kanban_state["active_issue"] = None
-        kanban_state["phase"] = "selecting"
         self._increment_metric("stale_run_yielded")
-        return self._select_next_issue(kanban_state, workspace=workspace)
+        return None
 
     def _select_next_issue(self, kanban_state: dict[str, Any], *, workspace: dict[str, Any]) -> dict[str, Any] | None:
         active_issue = kanban_state.get("active_issue")

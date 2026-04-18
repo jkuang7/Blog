@@ -164,6 +164,27 @@ class ProjectRuntimeService:
                 pane_target=current.pane_target if current is not None else None,
             )
 
+        if continuity is not None:
+            request = self.executor.dispatch_slice(
+                issue_key=issue.identifier,
+                runner_id=DEFAULT_RUNNER_ID,
+                objective=continuity.objective,
+                slice_goal=(continuity.next_slice or continuity.slice_goal or continuity.objective),
+                acceptance=list(continuity.acceptance),
+                validation_plan=list(continuity.validation_plan),
+                blockers=list(continuity.blockers),
+                discovered_gaps=list(continuity.discovered_gaps),
+                context=continuity.resume_context,
+                resume_context=continuity.resume_context,
+            )
+            current = self.store.get_session(DEFAULT_RUNNER_ID)
+            return self._build_result(
+                issue=issue,
+                action="continued",
+                session_name=current.session_name if current is not None else request.session_name,
+                pane_target=current.pane_target if current is not None else None,
+            )
+
         request = self.executor.dispatch_slice(
             issue_key=issue.identifier,
             runner_id=DEFAULT_RUNNER_ID,
@@ -285,27 +306,18 @@ class ProjectRuntimeService:
         gate: SliceApplyGate | None = None,
     ) -> RuntimeSliceResult:
         result = self.executor.submit_slice_result(slice_id, payload, gate=gate)
+        session = self.store.get_session(DEFAULT_RUNNER_ID)
         finalized = (
             result.apply_status == "applied"
             and result.status == "success"
             and result.verified
             and result.next_slice is None
         )
-        session = self.store.get_session(DEFAULT_RUNNER_ID)
+        if result.apply_status == "applied" and session is not None:
+            self.executor.transport.kill_session(session.session_name)
+            self.store.clear_session(DEFAULT_RUNNER_ID)
         if finalized:
             self.repository.release_issue_lease(result.issue_key, DEFAULT_RUNNER_ID)
-            if session is not None:
-                self.store.upsert_session(
-                    runner_id=session.runner_id,
-                    issue_key=session.issue_key,
-                    session_name=session.session_name,
-                    pane_target=session.pane_target,
-                    transport=session.transport,
-                    heartbeat_at=session.heartbeat_at,
-                    last_result_at=result.submitted_at,
-                    state="idle",
-                    metadata=session.metadata,
-                )
         return RuntimeSliceResult(
             project_key=self.registration.project_key,
             runner_id=DEFAULT_RUNNER_ID,
@@ -487,6 +499,8 @@ def _serialize_project(project: ProjectRegistration) -> dict[str, Any]:
         "owner_chat_id": project.owner_chat_id,
         "owner_thread_id": project.owner_thread_id,
         "execution_thread_id": execution_thread_id,
+        "feature_lane": metadata.get("feature_lane") if isinstance(metadata.get("feature_lane"), dict) else None,
+        "reconciliation": metadata.get("reconciliation") if isinstance(metadata.get("reconciliation"), dict) else None,
         "metadata": project.metadata,
     }
 

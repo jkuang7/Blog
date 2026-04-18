@@ -10,7 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.main import _seed_kanban_state_for_background_runner, stop_all_loop_sessions, stop_loop_session
+from src.main import (
+    _seed_kanban_state_for_background_runner,
+    start_loop_session,
+    stop_all_loop_sessions,
+    stop_loop_session,
+)
+from src.orx_control import OrxControlError
 from src.runner_control import RunnerControlPlane
 from src.runner_state import build_runner_state_paths_for_root, read_json, write_json
 
@@ -48,6 +54,36 @@ def _fake_issue_snapshot(project_root: Path, *, identifier: str, title: str, sta
 
 
 class StopRunnerControlsTests(unittest.TestCase):
+    def test_start_loop_session_exits_nonzero_for_background_managed_start_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            project_root = tmp_root / "worktree"
+            project_root.mkdir(parents=True, exist_ok=True)
+            tmux_instance = MagicMock()
+            tmux_instance.list_sessions.return_value = []
+
+            with (
+                patch("src.main.get_tmux_config", return_value=None),
+                patch("src.main.ensure_runner_prompt_install", return_value=None),
+                patch("src.main.TmuxClient", return_value=tmux_instance),
+                patch("src.main.resolve_target_project_root", return_value=project_root),
+                patch(
+                    "src.main._seed_kanban_state_for_background_runner",
+                    side_effect=OrxControlError("Dispatch through ORX first."),
+                ),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    start_loop_session(
+                        project="blog",
+                        runner_id="main",
+                        model="gpt-5.3-codex",
+                        reasoning_effort="high",
+                        attach=False,
+                    )
+
+            self.assertEqual(exc.exception.code, 1)
+            tmux_instance.create_session.assert_not_called()
+
     def test_stop_loop_session_clears_transient_locks_after_hard_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
@@ -114,7 +150,7 @@ class StopRunnerControlsTests(unittest.TestCase):
             self.assertFalse(paths_by_project["blog"].stop_file.exists())
             self.assertFalse(paths_by_project["blog"].active_lock.exists())
 
-    def test_create_loop_session_restarts_existing_tmux_session_before_spawn(self):
+    def test_create_loop_session_refuses_second_tmux_session_when_managed_runner_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_root = Path(tmp)
             project_root = tmp_root / "worktree"
@@ -147,7 +183,8 @@ class StopRunnerControlsTests(unittest.TestCase):
                     reasoning_effort="high",
                 )
 
-            tmux_instance.kill_session.assert_called_once_with("runner-blog")
+            tmux_instance.kill_session.assert_not_called()
+            tmux_instance.create_session.assert_not_called()
 
     def test_create_loop_session_stops_when_runner_not_prepared(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,10 +305,14 @@ class StopRunnerControlsTests(unittest.TestCase):
                 title="Fix status sync",
             )
             prepared = SimpleNamespace(snapshot=snapshot, phase="executing", worktree_path=project_root)
+            prepared_context = SimpleNamespace(
+                project_context={"execution_packet": {"issue_key": "PRO-12", "active_slice_id": "slice-1"}},
+                prepared_issue=prepared,
+                start_state="runnable",
+            )
 
             with (
-                patch("src.main.fetch_project_context", return_value={"issue": {"identifier": "PRO-12"}}),
-                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+                patch("src.main.prepare_managed_runner_context", return_value=prepared_context),
             ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
@@ -294,7 +335,7 @@ class StopRunnerControlsTests(unittest.TestCase):
             self.assertEqual(kanban_state["board"]["snapshot_count"], 1)
             self.assertEqual(kanban_state["loop"]["resume_source"], "orx_linear_context")
 
-    def test_seed_kanban_state_preserves_existing_active_issue(self):
+    def test_seed_kanban_state_overwrites_existing_active_issue_from_orx(self):
         with tempfile.TemporaryDirectory() as tmp:
             dev = Path(tmp)
             project_root = dev / "Repos" / "blog"
@@ -328,10 +369,14 @@ class StopRunnerControlsTests(unittest.TestCase):
                 title="Fix status sync",
             )
             prepared = SimpleNamespace(snapshot=snapshot, phase="executing", worktree_path=project_root)
+            prepared_context = SimpleNamespace(
+                project_context={"execution_packet": {"issue_key": "PRO-12", "active_slice_id": "slice-1"}},
+                prepared_issue=prepared,
+                start_state="runnable",
+            )
 
             with (
-                patch("src.main.fetch_project_context", return_value={"issue": {"identifier": "PRO-12"}}),
-                patch("src.main.prepare_linear_issue_context", return_value=prepared),
+                patch("src.main.prepare_managed_runner_context", return_value=prepared_context),
             ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
@@ -342,10 +387,10 @@ class StopRunnerControlsTests(unittest.TestCase):
 
             self.assertIsNotNone(issue)
             kanban_state = read_json(paths.kanban_state_json)
-            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-99")
+            self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
             self.assertEqual(kanban_state["board"]["last_known_status"], "In Progress")
 
-    def test_seed_kanban_state_replaces_stale_existing_active_issue_with_board_candidate(self):
+    def test_seed_kanban_state_replaces_stale_existing_active_issue_with_orx_issue(self):
         with tempfile.TemporaryDirectory() as tmp:
             dev = Path(tmp)
             project_root = dev / "Repos" / "blog"
@@ -380,11 +425,14 @@ class StopRunnerControlsTests(unittest.TestCase):
                 state_name="Inbox",
             )
             prepared = SimpleNamespace(snapshot=snapshot, phase="selecting", worktree_path=project_root)
+            prepared_context = SimpleNamespace(
+                project_context={"execution_packet": {"issue_key": "PRO-12", "active_slice_id": "slice-1"}},
+                prepared_issue=prepared,
+                start_state="runnable",
+            )
 
             with (
-                patch("src.main.fetch_project_context", return_value={"next_candidate": {"identifier": "PRO-12"}}),
-                patch("src.main.prepare_linear_issue_context", return_value=prepared),
-                patch("src.main._active_issue_requires_runtime_reset", return_value=True),
+                patch("src.main.prepare_managed_runner_context", return_value=prepared_context),
             ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
@@ -397,7 +445,7 @@ class StopRunnerControlsTests(unittest.TestCase):
             kanban_state = read_json(paths.kanban_state_json)
             self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
             self.assertEqual(kanban_state["board"]["last_known_status"], "Inbox")
-            self.assertEqual(kanban_state["loop"]["resume_source"], "runtime_recovery_reset")
+            self.assertEqual(kanban_state["loop"]["resume_source"], "orx_linear_context")
 
     def test_seed_kanban_state_clears_closeout_issue_that_still_needs_refine(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -469,11 +517,14 @@ class StopRunnerControlsTests(unittest.TestCase):
                 state_name="Inbox",
             )
             prepared = SimpleNamespace(snapshot=snapshot, phase="selecting", worktree_path=project_root)
+            prepared_context = SimpleNamespace(
+                project_context={"execution_packet": {"issue_key": "PRO-12", "active_slice_id": "slice-1"}},
+                prepared_issue=prepared,
+                start_state="runnable",
+            )
 
             with (
-                patch("src.main.fetch_project_context", return_value={"next_candidate": {"identifier": "PRO-12"}}),
-                patch("src.main.prepare_linear_issue_context", return_value=prepared),
-                patch("src.main._active_issue_requires_runtime_reset", return_value=True),
+                patch("src.main.prepare_managed_runner_context", return_value=prepared_context),
             ):
                 issue = _seed_kanban_state_for_background_runner(
                     dev=str(dev),
@@ -485,15 +536,15 @@ class StopRunnerControlsTests(unittest.TestCase):
             self.assertIsNotNone(issue)
             kanban_state = read_json(paths.kanban_state_json)
             self.assertEqual(kanban_state["active_issue"]["url"], "https://linear.app/jkprojects/issue/PRO-12")
-            self.assertEqual(kanban_state["loop"]["resume_source"], "runtime_recovery_reset")
+            self.assertEqual(kanban_state["loop"]["resume_source"], "orx_linear_context")
             refreshed_state = read_json(paths.state_file)
             refreshed_status = read_json(paths.runner_status_json)
             refreshed_exec = read_json(paths.exec_context_json)
-            self.assertEqual(refreshed_state["current_phase"], "discover")
-            self.assertEqual(refreshed_state["done_gate_status"], "pending")
-            self.assertEqual(refreshed_status["current_phase"], "discover")
-            self.assertEqual(refreshed_status["done_gate_status"], "pending")
-            self.assertEqual(refreshed_exec["phase"], "discover")
+            self.assertEqual(refreshed_state["current_phase"], "closeout")
+            self.assertEqual(refreshed_state["done_gate_status"], "failed")
+            self.assertEqual(refreshed_status["current_phase"], "closeout")
+            self.assertEqual(refreshed_status["done_gate_status"], "failed")
+            self.assertEqual(refreshed_exec["phase"], "closeout")
 
 
 if __name__ == "__main__":

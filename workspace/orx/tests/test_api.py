@@ -28,6 +28,35 @@ from tests.test_executor import FakeTmuxTransport
 from tests.test_proposal_materialization import FakeLinearClient
 
 
+class FlakyTmuxTransport(FakeTmuxTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.visible_limit_by_session: dict[str, int] = {}
+        self.visible_checks_by_session: dict[str, int] = {}
+
+    def expire_session_after(self, name: str, *, visible_checks: int) -> None:
+        self.visible_limit_by_session[name] = visible_checks
+        self.visible_checks_by_session.pop(name, None)
+
+    def has_session(self, name: str) -> bool:
+        if name not in self.sessions:
+            return False
+        limit = self.visible_limit_by_session.get(name)
+        if limit is None:
+            return True
+        checks = self.visible_checks_by_session.get(name, 0)
+        if checks >= limit:
+            self.sessions.pop(name, None)
+            return False
+        self.visible_checks_by_session[name] = checks + 1
+        return True
+
+    def kill_session(self, name: str) -> bool:
+        self.visible_checks_by_session.pop(name, None)
+        self.visible_limit_by_session.pop(name, None)
+        return super().kill_session(name)
+
+
 class ApiContractTests(unittest.TestCase):
     def test_cli_api_serve_with_max_requests_returns_http_response(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -248,6 +277,216 @@ class ApiContractTests(unittest.TestCase):
             self.assertIsNotNone(completed.completed_at)
             self.assertIn("complete", client.calls)
 
+    def test_runner_events_route_parks_project_for_orx_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = _api_server_fixture(temp_dir)
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            mirror = LinearMirrorRepository(storage)
+            try:
+                registered = _request(
+                    server,
+                    "POST",
+                    "/registry/projects",
+                    {
+                        "project_key": "alpha",
+                        "display_name": "Alpha",
+                        "repo_root": temp_dir,
+                        "owning_bot": "alpha_bot",
+                    },
+                )
+                self.assertTrue(registered["ok"])
+                mirror.upsert_issue(
+                    linear_id="issue-740",
+                    identifier="PRO-740",
+                    title="Runner event coverage",
+                    description="park for ORX review",
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_id="state-1",
+                    state_name="Backlog",
+                    state_type="unstarted",
+                    project_id="project-alpha",
+                    project_name="Alpha",
+                    source_updated_at="2026-04-16T12:30:00+00:00",
+                    metadata={"project_key": "alpha", "worktree_path": temp_dir},
+                )
+                dispatch = _request(
+                    server,
+                    "POST",
+                    "/dispatch/run",
+                    {
+                        "ingress_bot": "alpha_bot",
+                    },
+                )
+                self.assertTrue(dispatch["ok"])
+                event = _request(
+                    server,
+                    "POST",
+                    "/runner-events",
+                    {
+                        "project_key": "alpha",
+                        "event_kind": "result_missing",
+                        "final_summary": "Runner stopped after blocker",
+                        "transcript_excerpt": "blocked on missing context",
+                        "reason": "missing RUNNER_RESULT block",
+                    },
+                )
+                status = _request(server, "GET", "/control/status?project_key=alpha")
+            finally:
+                _stop_server(server)
+
+            self.assertTrue(event["ok"])
+            self.assertEqual(event["feature_lane"]["lane_state"], "awaiting_orx_review")
+            self.assertEqual(status["reconciliation"]["status"], "awaiting_orx_review")
+            self.assertEqual(status["reconciliation"]["action"], "blocked")
+            self.assertIsNone(status["active_issue_key"])
+            self.assertEqual(status["restart_context"]["start_state"], "awaiting_orx_review")
+
+    def test_resume_reviewed_route_restarts_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = _api_server_fixture(temp_dir)
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            mirror = LinearMirrorRepository(storage)
+            try:
+                _request(
+                    server,
+                    "POST",
+                    "/registry/projects",
+                    {
+                        "project_key": "alpha",
+                        "display_name": "Alpha",
+                        "repo_root": temp_dir,
+                        "owning_bot": "alpha_bot",
+                    },
+                )
+                mirror.upsert_issue(
+                    linear_id="issue-741",
+                    identifier="PRO-741R",
+                    title="Resume reviewed lane",
+                    description="resume after parked review",
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_id="state-1",
+                    state_name="Backlog",
+                    state_type="unstarted",
+                    project_id="project-alpha",
+                    project_name="Alpha",
+                    source_updated_at="2026-04-16T12:35:00+00:00",
+                    metadata={"project_key": "alpha", "worktree_path": temp_dir},
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/dispatch/run",
+                    {
+                        "ingress_bot": "alpha_bot",
+                    },
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/runner-events",
+                    {
+                        "project_key": "alpha",
+                        "event_kind": "result_missing",
+                        "issue_key": "PRO-741R",
+                        "final_summary": "Stopped before a structured result.",
+                        "reason": "missing RUNNER_RESULT block",
+                    },
+                )
+                resumed = _request(
+                    server,
+                    "POST",
+                    "/dispatch/resume-reviewed",
+                    {
+                        "project_key": "alpha",
+                        "next_slice": "Retry with the missing context added.",
+                    },
+                )
+                status = _request(server, "GET", "/control/status?project_key=alpha")
+            finally:
+                _stop_server(server)
+
+            self.assertTrue(resumed["ok"])
+            self.assertTrue(resumed["resumed"])
+            self.assertEqual(resumed["feature_lane"]["lane_state"], "executing")
+            self.assertIsNone(status["reconciliation"])
+            self.assertEqual(status["active_issue_key"], "PRO-741R")
+
+    def test_resume_reviewed_route_restores_parked_lane_when_runner_not_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transport = FlakyTmuxTransport()
+            server = _api_server_fixture(temp_dir, transport=transport)
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            mirror = LinearMirrorRepository(storage)
+            try:
+                _request(
+                    server,
+                    "POST",
+                    "/registry/projects",
+                    {
+                        "project_key": "alpha",
+                        "display_name": "Alpha",
+                        "repo_root": temp_dir,
+                        "owning_bot": "alpha_bot",
+                    },
+                )
+                mirror.upsert_issue(
+                    linear_id="issue-741-flaky",
+                    identifier="PRO-741F",
+                    title="Resume reviewed lane fails closed",
+                    description="resume after parked review",
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_id="state-1",
+                    state_name="Backlog",
+                    state_type="unstarted",
+                    project_id="project-alpha",
+                    project_name="Alpha",
+                    source_updated_at="2026-04-16T12:36:00+00:00",
+                    metadata={"project_key": "alpha", "worktree_path": temp_dir},
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/dispatch/run",
+                    {
+                        "ingress_bot": "alpha_bot",
+                    },
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/runner-events",
+                    {
+                        "project_key": "alpha",
+                        "event_kind": "result_missing",
+                        "issue_key": "PRO-741F",
+                        "final_summary": "Stopped before a structured result.",
+                        "reason": "missing RUNNER_RESULT block",
+                    },
+                )
+                transport.expire_session_after("runner-alpha", visible_checks=1)
+                resumed = _request(
+                    server,
+                    "POST",
+                    "/dispatch/resume-reviewed",
+                    {
+                        "project_key": "alpha",
+                        "next_slice": "Retry with the missing context added.",
+                    },
+                )
+                status = _request(server, "GET", "/control/status?project_key=alpha")
+            finally:
+                _stop_server(server)
+
+            self.assertTrue(resumed["ok"])
+            self.assertFalse(resumed["resumed"])
+            self.assertEqual(resumed["reason"], "runner_not_durable")
+            self.assertEqual(status["reconciliation"]["status"], "awaiting_orx_review")
+            self.assertEqual(status["restart_context"]["start_state"], "awaiting_orx_review")
+            self.assertIsNone(status["active_issue_key"])
+
     def test_proposals_endpoint_returns_durable_open_proposals(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             server = _api_server_fixture(temp_dir)
@@ -342,29 +581,7 @@ class ApiContractTests(unittest.TestCase):
                     "title": "API CRUD validation updated",
                 },
             )
-            mirror.upsert_issue(
-                linear_id=created["issue"]["linear_id"],
-                identifier=created["issue"]["identifier"],
-                title=updated["issue"]["title"],
-                description=created["issue"]["description"],
-                team_id="team-1",
-                team_name="Projects",
-                state_id=updated["issue"]["state_id"],
-                state_name=updated["issue"]["state_name"],
-                state_type=updated["issue"]["state_type"],
-                project_id=updated["issue"]["project_id"],
-                project_name=updated["issue"]["project_name"],
-                parent_linear_id=updated["issue"]["parent_id"],
-                parent_identifier=updated["issue"]["parent_identifier"],
-                assignee_id=None,
-                assignee_name=None,
-                labels=[],
-                metadata={},
-                source_updated_at="2026-04-17T03:00:00+00:00",
-                created_at="2026-04-17T03:00:00+00:00",
-                completed_at=None,
-                canceled_at=None,
-            )
+            mirrored = mirror.get_issue(identifier="PRO-501")
             archived = _request(
                 server,
                 "POST",
@@ -378,6 +595,8 @@ class ApiContractTests(unittest.TestCase):
             self.assertEqual(created["issue"]["title"], "API CRUD validation")
             self.assertEqual(fetched["issue"]["identifier"], "PRO-501")
             self.assertEqual(updated["issue"]["title"], "API CRUD validation updated")
+            self.assertIsNotNone(mirrored)
+            self.assertEqual(mirrored.title, "API CRUD validation updated")
             self.assertEqual(archived["issue"]["identifier"], "PRO-501")
             self.assertIsNone(mirror.get_issue(identifier="PRO-501"))
             self.assertEqual(deleted["issue"]["identifier"], "PRO-501")
@@ -524,6 +743,7 @@ class ApiContractTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["context"]["project"]["project_key"], "alpha")
             self.assertEqual(payload["context"]["runtime"]["active_issue_key"], "PRO-710")
+            self.assertEqual(payload["context"]["start_state"], "already_running")
             self.assertEqual(payload["context"]["issue"]["identifier"], "PRO-710")
             self.assertEqual(payload["context"]["continuity"]["issue_key"], "PRO-710")
             self.assertEqual(payload["context"]["continuity"]["resume_context"]["project_key"], "alpha")
@@ -1065,6 +1285,7 @@ def _api_server_fixture(
     *,
     linear_client: object | None = None,
     daemon_state: dict[str, object] | None = None,
+    transport: FakeTmuxTransport | None = None,
 ) -> OrxApiServer:
     storage = Storage(resolve_runtime_paths(temp_dir))
     storage.bootstrap()
@@ -1075,7 +1296,7 @@ def _api_server_fixture(
         display_name="Runner A",
         state="idle",
     )
-    transport = FakeTmuxTransport()
+    transport = transport or FakeTmuxTransport()
     executor = ExecutorService(
         storage=storage,
         repository=repository,

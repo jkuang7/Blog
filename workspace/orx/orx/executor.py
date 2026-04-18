@@ -24,6 +24,7 @@ from .tmux_client import TmuxClient
 
 
 SLICE_RESULT_STATUS = {"success", "blocked", "failed"}
+PLACEHOLDER_SLICE_SUMMARIES = {"...", "…", "tbd", "todo", "n/a", "placeholder"}
 
 
 class SliceResultValidationError(ValueError):
@@ -99,6 +100,7 @@ class ValidatedSliceResult:
 class TmuxTransport(Protocol):
     def has_session(self, name: str) -> bool: ...
     def create_session(self, name: str, cmd: str) -> str: ...
+    def kill_session(self, name: str) -> bool: ...
     def send_keys(self, session: str, text: str, *, enter: bool = True) -> bool: ...
     def capture_pane(self, session: str, *, lines: int = 50) -> str: ...
     def list_panes(self, session: str) -> list[str]: ...
@@ -307,6 +309,13 @@ class ExecutorStore:
             ).fetchone()
         return _row_to_slice_request(row) if row is not None else None
 
+    def delete_slice_request(self, slice_id: str) -> None:
+        with self.storage.session() as connection:
+            connection.execute(
+                "DELETE FROM slice_requests WHERE slice_id = ?",
+                (slice_id,),
+            )
+
     def store_slice_result(
         self,
         *,
@@ -410,9 +419,9 @@ class ExecutorService:
         *,
         startup_cwd: str | None = None,
     ) -> ExecutorSessionRecord:
-        self.ownership.claim_issue(issue_key, runner_id)
         existing = self.store.get_session(runner_id)
         if existing and existing.issue_key == issue_key and self.transport.has_session(existing.session_name):
+            self.ownership.claim_issue(issue_key, runner_id)
             return existing
 
         session_name, pane_target = self.runner_launcher.ensure_session(
@@ -420,6 +429,7 @@ class ExecutorService:
             repo_root=startup_cwd,
             runner_id=runner_id,
         )
+        self.ownership.claim_issue(issue_key, runner_id)
 
         return self.store.upsert_session(
             runner_id=runner_id,
@@ -503,7 +513,17 @@ class ExecutorService:
         resume_context: dict[str, Any] | None = None,
     ) -> SliceRequestRecord:
         startup_cwd = _request_repo_root(context or resume_context)
-        session = self.claim_session(issue_key, runner_id, startup_cwd=startup_cwd)
+        existing_session = self.store.get_session(runner_id)
+        session_name = (
+            existing_session.session_name
+            if existing_session is not None
+            else _runner_session_name(self.session_namespace or runner_id)
+        )
+        pane_target = (
+            existing_session.pane_target
+            if existing_session is not None
+            else f"{session_name}:0.0"
+        )
         durable_context = {}
         if context:
             durable_context.update(context)
@@ -519,13 +539,40 @@ class ExecutorService:
             "context": durable_context,
             "session_residency": "tmux",
         }
+        previous_continuity = self.continuity.get_state(issue_key, runner_id)
         record = self.store.create_slice_request(
             issue_key=issue_key,
             runner_id=runner_id,
-            session_name=session.session_name,
+            session_name=session_name,
             command_id=command_id,
             request=request,
         )
+        self.continuity.begin_slice(
+            issue_key=issue_key,
+            runner_id=runner_id,
+            objective=objective,
+            slice_goal=slice_goal,
+            acceptance=acceptance,
+            validation_plan=validation_plan,
+            blockers=blockers,
+            discovered_gaps=discovered_gaps,
+            idempotency_key=idempotency_key,
+            resume_context=durable_context,
+            active_slice_id=record.slice_id,
+            active_command_id=command_id,
+            session_name=session_name,
+            pane_target=pane_target,
+            transport="tmux-codex",
+        )
+        try:
+            session = self.claim_session(issue_key, runner_id, startup_cwd=startup_cwd)
+        except Exception:
+            self.store.delete_slice_request(record.slice_id)
+            if previous_continuity is None:
+                self.continuity.clear_state(issue_key, runner_id)
+            else:
+                self.continuity.restore_state(previous_continuity)
+            raise
         session = self.store.upsert_session(
             runner_id=session.runner_id,
             issue_key=session.issue_key,
@@ -541,23 +588,6 @@ class ExecutorService:
                 "active_slice_id": record.slice_id,
                 "objective": objective,
             },
-        )
-        self.continuity.begin_slice(
-            issue_key=issue_key,
-            runner_id=runner_id,
-            objective=objective,
-            slice_goal=slice_goal,
-            acceptance=acceptance,
-            validation_plan=validation_plan,
-            blockers=blockers,
-            discovered_gaps=discovered_gaps,
-            idempotency_key=idempotency_key,
-            resume_context=durable_context,
-            active_slice_id=record.slice_id,
-            active_command_id=command_id,
-            session_name=session.session_name,
-            pane_target=session.pane_target,
-            transport=session.transport,
         )
         return record
 
@@ -652,6 +682,9 @@ def validate_slice_result(payload: dict[str, Any]) -> ValidatedSliceResult:
         raise SliceResultValidationError(f"Unsupported slice result status: {status}")
 
     summary = _required_non_empty(payload.get("summary"), field_name="summary")
+    normalized_summary = " ".join(summary.lower().split())
+    if normalized_summary in PLACEHOLDER_SLICE_SUMMARIES:
+        raise SliceResultValidationError("Slice result summary must not be a placeholder.")
     verified = payload.get("verified")
     if not isinstance(verified, bool):
         raise SliceResultValidationError("Slice result verified field must be boolean.")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
@@ -251,6 +252,7 @@ class OrxApiService:
             parent_id=_optional_string(body, "parent_id"),
             project_id=_optional_string(body, "project_id"),
         )
+        self._mirror_linear_issue(issue, metadata=_issue_metadata_overrides(body))
         return {"ok": True, "issue": _serialize_linear_issue(issue)}
 
     def linear_issue_update_payload(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -260,6 +262,7 @@ class OrxApiService:
             description=_optional_string(body, "description"),
             state_id=_optional_string(body, "state_id"),
         )
+        self._mirror_linear_issue(issue, metadata=_issue_metadata_overrides(body))
         return {"ok": True, "issue": _serialize_linear_issue(issue)}
 
     def linear_issue_archive_payload(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -278,6 +281,43 @@ class OrxApiService:
         issue = self._linear_client().delete_issue(issue_ref=issue_ref)
         LinearMirrorRepository(self.storage).delete_issue(identifier=issue_ref)
         return {"ok": True, "issue": _serialize_linear_issue(issue)}
+
+    def _mirror_linear_issue(
+        self,
+        issue: LinearIssue,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        mirror = LinearMirrorRepository(self.storage)
+        existing = None if issue.identifier is None else mirror.get_issue(identifier=issue.identifier)
+        merged_metadata = dict(existing.metadata) if existing is not None else {}
+        if metadata:
+            merged_metadata.update(metadata)
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        mirror.upsert_issue(
+            linear_id=issue.linear_id,
+            identifier=issue.identifier,
+            title=issue.title,
+            description=issue.description,
+            team_id=issue.team_id,
+            team_name=issue.team_name,
+            state_id=issue.state_id,
+            state_name=issue.state_name,
+            state_type=issue.state_type,
+            priority=0 if existing is None else existing.priority,
+            project_id=issue.project_id,
+            project_name=issue.project_name,
+            parent_linear_id=issue.parent_id,
+            parent_identifier=issue.parent_identifier,
+            assignee_id=None if existing is None else existing.assignee_id,
+            assignee_name=None if existing is None else existing.assignee_name,
+            labels=[] if existing is None else list(existing.labels),
+            metadata=merged_metadata,
+            source_updated_at=now,
+            created_at=now if existing is None else existing.created_at,
+            completed_at=None if existing is None else existing.completed_at,
+            canceled_at=None if existing is None else existing.canceled_at,
+        )
 
     def register_project_payload(self, body: dict[str, Any]) -> dict[str, Any]:
         record = self.dispatch.register_project(
@@ -317,6 +357,38 @@ class OrxApiService:
             explicit_project_key=_optional_string(body, "project_key"),
         )
         return {"ok": True, "dispatch": _serialize_dispatch_result(result)}
+
+    def release_feature_lane_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.dispatch.release_feature_lane(
+            project_key=_required_string(body, "project_key"),
+            action=_required_string(body, "action"),
+            note=_optional_string(body, "note"),
+        )
+
+    def recover_failed_start_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.dispatch.recover_failed_start(
+            project_key=_required_string(body, "project_key"),
+        )
+
+    def resume_reviewed_lane_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.dispatch.resume_reviewed_lane(
+            project_key=_required_string(body, "project_key"),
+            next_slice=_optional_string(body, "next_slice"),
+        )
+
+    def runner_event_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.dispatch.submit_runner_event(
+            project_key=_required_string(body, "project_key"),
+            event_kind=_required_string(body, "event_kind"),
+            issue_key=_optional_string(body, "issue_key"),
+            final_summary=_optional_string(body, "final_summary"),
+            transcript_excerpt=_optional_string(body, "transcript_excerpt"),
+            raw_status=_optional_string(body, "raw_status"),
+            verification_ran=_optional_string_list(body.get("verification_ran"), field_name="verification_ran"),
+            verification_failed=_optional_string_list(body.get("verification_failed"), field_name="verification_failed"),
+            artifacts=_optional_string_list(body.get("artifacts"), field_name="artifacts"),
+            reason=_optional_string(body, "reason"),
+        )
 
     def dashboard_payload(self) -> dict[str, Any]:
         return self.dispatch.dashboard_payload()
@@ -664,6 +736,22 @@ class OrxApiHandler(BaseHTTPRequestHandler):
                 body = self._read_json()
                 self._write_json(HTTPStatus.OK, self.server.api.dispatch_run_payload(body))
                 return
+            if parsed.path == "/dispatch/release":
+                body = self._read_json()
+                self._write_json(HTTPStatus.OK, self.server.api.release_feature_lane_payload(body))
+                return
+            if parsed.path == "/dispatch/recover-failed-start":
+                body = self._read_json()
+                self._write_json(HTTPStatus.OK, self.server.api.recover_failed_start_payload(body))
+                return
+            if parsed.path == "/dispatch/resume-reviewed":
+                body = self._read_json()
+                self._write_json(HTTPStatus.OK, self.server.api.resume_reviewed_lane_payload(body))
+                return
+            if parsed.path == "/runner-events":
+                body = self._read_json()
+                self._write_json(HTTPStatus.OK, self.server.api.runner_event_payload(body))
+                return
             if parsed.path == "/slice-results":
                 body = self._read_json()
                 self._write_json(HTTPStatus.OK, self.server.api.submit_slice_result_payload(body))
@@ -986,6 +1074,8 @@ def _serialize_project(record: Any) -> dict[str, Any]:
         "owner_chat_id": record.owner_chat_id,
         "owner_thread_id": record.owner_thread_id,
         "execution_thread_id": execution_thread_id,
+        "feature_lane": metadata.get("feature_lane") if isinstance(metadata.get("feature_lane"), dict) else None,
+        "reconciliation": metadata.get("reconciliation") if isinstance(metadata.get("reconciliation"), dict) else None,
         "metadata": record.metadata,
     }
 
@@ -1014,6 +1104,9 @@ def _serialize_dispatch_result(result: Any) -> dict[str, Any]:
         "issue_key": result.issue_key,
         "issue_title": result.issue_title,
         "project_key": result.project_key,
+        "feature_key": result.feature_key,
+        "lane_state": result.lane_state,
+        "release_required": result.release_required,
         "owning_bot": result.owning_bot,
         "assigned_bot": result.assigned_bot,
         "assignment_action": result.assignment_action,
@@ -1085,6 +1178,14 @@ def _optional_object(value: Any, *, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} must be a JSON object")
     return value
+
+
+def _issue_metadata_overrides(body: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(_optional_object(body.get("metadata"), field_name="metadata"))
+    project_key = _optional_string(body, "project_key")
+    if project_key:
+        metadata["project_key"] = project_key
+    return metadata
 
 
 def _optional_string_list(value: Any, *, field_name: str) -> list[str]:

@@ -78,6 +78,8 @@ class CodexHandoffInterpreter:
                         "Interpret the factual execution handoff and choose one action from: "
                         "continue, blocked, reroute, replan, needs_human_help, complete. "
                         "Do not invent workflow outside the given issue. "
+                        "Use the runner transcript excerpt and changed-file diff as supporting evidence, "
+                        "but keep ORX authoritative for workflow decisions. "
                         "If follow-up tickets are needed, include compact follow_ups with title, why, goal, "
                         "scope_in, and acceptance."
                     ),
@@ -91,6 +93,8 @@ class CodexHandoffInterpreter:
                                 "issue": context.get("issue"),
                                 "latest_handoff": context.get("latest_handoff"),
                                 "continuity": context.get("continuity"),
+                                "transcript_excerpt": context.get("transcript_excerpt"),
+                                "worktree": context.get("worktree"),
                                 "slice_result": context.get("slice_result"),
                             },
                             sort_keys=True,

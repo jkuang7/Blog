@@ -3,7 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.orx_control import build_issue_execution_brief, prepare_linear_issue_context
+from src.orx_control import (
+    OrxControlError,
+    build_issue_execution_brief,
+    prepare_linear_issue_context,
+    prepare_managed_runner_context,
+)
 
 
 class PrepareLinearIssueContextTests(unittest.TestCase):
@@ -128,6 +133,60 @@ Make the picker describe ORX queue state in operator-facing language.
         self.assertIn("Use the packet worktree.", brief["scope_in"])
         self.assertIn("Do not auto-merge to main.", brief["scope_out"])
         self.assertIn("Grouped leaves share one packet worktree.", brief["success_criteria"])
+
+    def test_prepare_managed_runner_context_requires_runnable_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dev = Path(tmp)
+            repo_root = dev / "workspace" / "tmux-codex"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            project_context = {
+                "project": {
+                    "project_key": "tmux-codex",
+                    "display_name": "tmux-codex",
+                    "repo_root": str(repo_root),
+                },
+                "start_state": "runnable",
+                "issue": {
+                    "identifier": "PRO-102",
+                    "title": "New runner live smoke",
+                    "description": "Smoke this issue from ORX.",
+                    "project_name": "tmux-codex",
+                    "state_type": "backlog",
+                },
+                "execution_packet": {
+                    "issue_key": "PRO-102",
+                    "active_slice_id": "slice-123",
+                },
+            }
+
+            with (
+                patch("src.orx_control.fetch_project_context", return_value=project_context),
+                patch("src.orx_control.ensure_issue_worktree") as ensure_worktree,
+                patch("src.orx_control.update_linear_issue", return_value=None),
+            ):
+                prepared = prepare_managed_runner_context(
+                    dev=str(dev),
+                    project_key="tmux-codex",
+                    runner_id="main",
+                )
+
+            ensure_worktree.assert_called_once()
+            self.assertEqual(prepared.start_state, "runnable")
+            self.assertEqual(prepared.prepared_issue.snapshot["identifier"], "PRO-102")
+
+    def test_prepare_managed_runner_context_rejects_non_runnable_start_state(self) -> None:
+        with patch(
+            "src.orx_control.fetch_project_context",
+            return_value={"start_state": "no_work", "remediation": "Dispatch through ORX first."},
+        ):
+            with self.assertRaises(OrxControlError) as exc:
+                prepare_managed_runner_context(
+                    dev="/tmp/dev",
+                    project_key="tmux-codex",
+                    runner_id="main",
+                )
+
+        self.assertIn("Dispatch through ORX first.", str(exc.exception))
 
 
 if __name__ == "__main__":

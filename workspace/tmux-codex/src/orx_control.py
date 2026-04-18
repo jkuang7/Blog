@@ -37,6 +37,15 @@ class PreparedIssueContext:
     linear_url: str | None
 
 
+@dataclass(frozen=True)
+class PreparedRunnerContext:
+    """Strict ORX-managed runtime bootstrap payload."""
+
+    project_context: dict[str, Any]
+    prepared_issue: PreparedIssueContext
+    start_state: str
+
+
 def orx_api_url() -> str:
     return os.environ.get("ORX_API_URL", ORX_API_URL_DEFAULT).rstrip("/")
 
@@ -57,6 +66,45 @@ def fetch_execution_packet(*, project_key: str) -> dict[str, Any] | None:
     if not isinstance(packet, dict):
         raise OrxControlError(f"ORX returned invalid execution packet for {project_key}.")
     return packet
+
+
+def prepare_managed_runner_context(
+    *,
+    dev: str,
+    project_key: str,
+    runner_id: str = "main",
+    update_issue_metadata: bool = True,
+) -> PreparedRunnerContext:
+    project_context = fetch_project_context(project_key=project_key)
+    start_state = _as_text(project_context.get("start_state")) or "no_work"
+    if start_state not in {"runnable", "already_running"}:
+        remediation = _as_text(project_context.get("remediation")) or (
+            f"ORX reported `{start_state}` for {project_key}."
+        )
+        raise OrxControlError(remediation)
+
+    issue = project_context.get("issue")
+    if not isinstance(issue, dict):
+        raise OrxControlError(f"ORX context for {project_key} is missing the active issue.")
+    packet = project_context.get("execution_packet")
+    if not isinstance(packet, dict):
+        raise OrxControlError(f"ORX context for {project_key} is missing the execution packet.")
+    if not _is_execution_packet(packet):
+        raise OrxControlError(f"ORX context for {project_key} returned an incomplete execution packet.")
+
+    prepared = prepare_linear_issue_context(
+        dev=dev,
+        project_key=project_key,
+        project_context=project_context,
+        issue=issue,
+        runner_id=runner_id,
+        update_issue_metadata=update_issue_metadata,
+    )
+    return PreparedRunnerContext(
+        project_context=project_context,
+        prepared_issue=prepared,
+        start_state=start_state,
+    )
 
 
 def fetch_dashboard() -> dict[str, Any]:
@@ -119,6 +167,45 @@ def submit_slice_result(
     if not isinstance(result, dict):
         raise OrxControlError(f"ORX returned invalid slice result response for {project_key}.")
     return result
+
+
+def submit_runner_event(
+    *,
+    project_key: str,
+    event_kind: str,
+    issue_key: str | None = None,
+    final_summary: str | None = None,
+    transcript_excerpt: str | None = None,
+    raw_status: str | None = None,
+    verification_ran: list[str] | None = None,
+    verification_failed: list[str] | None = None,
+    artifacts: list[str] | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "project_key": project_key,
+        "event_kind": event_kind,
+    }
+    if issue_key is not None:
+        body["issue_key"] = issue_key
+    if final_summary is not None:
+        body["final_summary"] = final_summary
+    if transcript_excerpt is not None:
+        body["transcript_excerpt"] = transcript_excerpt
+    if raw_status is not None:
+        body["raw_status"] = raw_status
+    if verification_ran is not None:
+        body["verification_ran"] = verification_ran
+    if verification_failed is not None:
+        body["verification_failed"] = verification_failed
+    if artifacts is not None:
+        body["artifacts"] = artifacts
+    if reason is not None:
+        body["reason"] = reason
+    response = _request_json("POST", "/runner-events", body)
+    if not isinstance(response, dict):
+        raise OrxControlError(f"ORX returned invalid runner event response for {project_key}.")
+    return response
 
 
 def prepare_linear_issue_context(
@@ -585,6 +672,10 @@ def _required_text(value: Any, *, field_name: str) -> str:
     if not text:
         raise OrxControlError(f"Missing required field: {field_name}")
     return text
+
+
+def _is_execution_packet(payload: dict[str, Any]) -> bool:
+    return bool(_as_text(payload.get("issue_key")) and _as_text(payload.get("active_slice_id")))
 
 
 def _as_text(value: Any) -> str:

@@ -13,8 +13,7 @@ from pathlib import Path
 from .menu import SessionMenu
 from .orx_control import (
     OrxControlError,
-    fetch_project_context,
-    prepare_linear_issue_context,
+    prepare_managed_runner_context,
 )
 from .runner_graph import run_runner_build_graph_command
 from .runctl import (
@@ -383,52 +382,34 @@ def _seed_kanban_state_for_background_runner(
     selected_issue: dict[str, object] | None = None
     selected_phase = "selecting"
     effective_root = project_root
-    try:
-        project_context = fetch_project_context(project_key=project)
-    except OrxControlError as exc:
-        print(f"Runner ORX sync failed for {project}: {exc}")
-        project_context = {}
-    issue_payload = None
-    if isinstance(project_context, dict):
-        primary = project_context.get("issue")
-        fallback = project_context.get("next_candidate")
-        if isinstance(primary, dict):
-            issue_payload = primary
-        elif isinstance(fallback, dict):
-            issue_payload = fallback
-    if isinstance(issue_payload, dict):
-        try:
-            prepared = prepare_linear_issue_context(
-                dev=dev,
-                project_key=project,
-                project_context=project_context,
-                issue=issue_payload,
-                runner_id=runner_id,
-            )
-        except OrxControlError as exc:
-            print(f"Runner issue bootstrap failed for {project}: {exc}")
-        else:
-            effective_root = prepared.worktree_path
-            selected_issue = dict(prepared.snapshot)
-            selected_phase = prepared.phase
-            execution_packet = (
-                project_context.get("execution_packet")
-                if isinstance(project_context.get("execution_packet"), dict)
-                else None
-            )
-            if execution_packet:
-                selected_issue["execution_packet"] = execution_packet
-                selected_issue["execution_model"] = str(
-                    execution_packet.get("execution_model") or selected_issue.get("execution_model") or ""
-                ).strip() or None
-                selected_issue["execution_reasoning_effort"] = str(
-                    execution_packet.get("execution_reasoning_effort")
-                    or selected_issue.get("execution_reasoning_effort")
-                    or ""
-                ).strip() or None
-                selected_issue["latest_handoff"] = str(
-                    execution_packet.get("latest_handoff") or selected_issue.get("latest_handoff") or ""
-                ).strip() or None
+    prepared_context = prepare_managed_runner_context(
+        dev=dev,
+        project_key=project,
+        runner_id=runner_id,
+    )
+    project_context = prepared_context.project_context
+    prepared = prepared_context.prepared_issue
+    effective_root = prepared.worktree_path
+    selected_issue = dict(prepared.snapshot)
+    selected_phase = prepared.phase
+    execution_packet = (
+        project_context.get("execution_packet")
+        if isinstance(project_context.get("execution_packet"), dict)
+        else None
+    )
+    if execution_packet:
+        selected_issue["execution_packet"] = execution_packet
+        selected_issue["execution_model"] = str(
+            execution_packet.get("execution_model") or selected_issue.get("execution_model") or ""
+        ).strip() or None
+        selected_issue["execution_reasoning_effort"] = str(
+            execution_packet.get("execution_reasoning_effort")
+            or selected_issue.get("execution_reasoning_effort")
+            or ""
+        ).strip() or None
+        selected_issue["latest_handoff"] = str(
+            execution_packet.get("latest_handoff") or selected_issue.get("latest_handoff") or ""
+        ).strip() or None
 
     paths = build_runner_state_paths_for_root(
         project_root=effective_root,
@@ -439,13 +420,6 @@ def _seed_kanban_state_for_background_runner(
     kanban_state = read_json(paths.kanban_state_json)
     if not isinstance(kanban_state, dict):
         kanban_state = {"project": project, "mode": "ticket_native", "version": 1}
-    existing_active_issue = (
-        kanban_state.get("active_issue")
-        if isinstance(kanban_state.get("active_issue"), dict)
-        else None
-    )
-    existing_active_issue_url = str((existing_active_issue or {}).get("url") or "").strip() or None
-
     active_checkout = kanban_state.get("active_checkout")
     if not isinstance(active_checkout, dict):
         active_checkout = {}
@@ -470,17 +444,10 @@ def _seed_kanban_state_for_background_runner(
     if not isinstance(board, dict):
         board = {}
         kanban_state["board"] = board
-    runtime_reset_existing_issue = False
-    if existing_active_issue_url and _active_issue_requires_runtime_reset(paths=paths, issue_url=existing_active_issue_url):
-        kanban_state["active_issue"] = None
-        kanban_state["phase"] = "selecting"
-        loop_state["resume_source"] = "runtime_recovery_reset"
-        runtime_reset_existing_issue = True
-        _reset_runner_runtime_for_reselection(paths=paths)
 
     board["source"] = "orx_linear"
     board["snapshot_count"] = 1 if selected_issue else 0
-    if selected_issue and (runtime_reset_existing_issue or not existing_active_issue_url):
+    if selected_issue:
         _sync_selected_issue_snapshot(
             dev=dev,
             project=project,
@@ -494,13 +461,7 @@ def _seed_kanban_state_for_background_runner(
             selected_issue.get("state_name") or selected_issue.get("state_type") or ""
         ).strip() or None
         kanban_state["phase"] = "executing"
-        loop_state["resume_source"] = (
-            "runtime_recovery_reset" if runtime_reset_existing_issue else "orx_linear_context"
-        )
-    elif selected_issue:
-        board["last_known_status"] = str(
-            selected_issue.get("state_name") or selected_issue.get("state_type") or ""
-        ).strip() or None
+        loop_state["resume_source"] = "orx_linear_context"
     else:
         kanban_state["active_issue"] = None
         kanban_state["phase"] = "selecting"
@@ -648,10 +609,16 @@ def start_loop_session(
     auto_setup: bool = False,
 ) -> None:
     """Create a Codex CLI runner, optionally attaching to tmux."""
+    def fail_start(*lines: str) -> None:
+        for line in lines:
+            if line:
+                print(line)
+        if not attach:
+            raise SystemExit(1)
+
     prompt_error = ensure_runner_prompt_install()
     if prompt_error:
-        print("Command install check failed")
-        print(f"Error: {prompt_error}")
+        fail_start("Command install check failed", f"Error: {prompt_error}")
         return
 
     config = get_tmux_config()
@@ -665,15 +632,19 @@ def start_loop_session(
         project_root_override=project_root_override,
     )
     if not project_root.exists():
-        print(f"Missing project directory: {project_root}")
+        fail_start(f"Missing project directory: {project_root}")
         return
 
-    selected_issue = _seed_kanban_state_for_background_runner(
-        dev=dev,
-        project=project,
-        runner_id=runner_id,
-        project_root=project_root,
-    )
+    try:
+        selected_issue = _seed_kanban_state_for_background_runner(
+            dev=dev,
+            project=project,
+            runner_id=runner_id,
+            project_root=project_root,
+        )
+    except OrxControlError as exc:
+        fail_start(f"Managed runner start blocked for {project}: {exc}")
+        return
     if selected_issue:
         packet_model = str(selected_issue.get("execution_model") or "").strip()
         packet_effort = str(selected_issue.get("execution_reasoning_effort") or "").strip()
@@ -710,6 +681,8 @@ def start_loop_session(
         )
     )
     if not ready:
+        if not attach:
+            raise SystemExit(1)
         return
 
     session_name, paths, script = _prepare_loop_runner(
@@ -724,17 +697,16 @@ def start_loop_session(
     existing = tmux.list_sessions()
     if session_name in existing:
         print(f"Runner already exists: {session_name}")
-        print("Restarting existing runner to apply current launcher...")
-        if not tmux.kill_session(session_name):
-            print(f"Error: failed to stop existing session {session_name}")
-            return
+        print("Managed ORX runner is already active; refusing to start a second session.")
+        if attach:
+            tmux.attach_session(session_name)
+        return
 
     print(f"Starting runner {session_name}...", end="", flush=True)
     try:
         tmux.create_session(session_name, script)
     except RuntimeError as e:
-        print(" failed")
-        print(f"Error: {e}")
+        fail_start(" failed", f"Error: {e}")
         return
 
     print(" ready")

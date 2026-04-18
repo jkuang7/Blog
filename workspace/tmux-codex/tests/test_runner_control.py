@@ -196,7 +196,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
         self.assertEqual(derived["control"]["run"]["issue_url"], "https://github.com/jkuang7/blog/issues/9")
 
-    def test_reconcile_yields_non_executable_recovered_run_to_ready_board_issue(self) -> None:
+    def test_reconcile_keeps_non_executable_recovered_run_instead_of_switching_locally(self) -> None:
         state, kanban_state = self._active_state()
         kanban_state["active_issue"]["complexity"] = "XL"
         control = RunnerControlPlane(self.paths)
@@ -234,10 +234,10 @@ class RunnerControlPlaneTests(unittest.TestCase):
         kanban_state["phase"] = "selecting"
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
-        self.assertEqual(derived["control"]["diagnostics"]["metrics"]["stale_run_yielded"], 1)
+        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
+        self.assertEqual(derived["control"]["diagnostics"]["metrics"]["stale_run_yielded"], 2)
 
-    def test_reconcile_yields_non_executable_active_issue_without_completing_old_run(self) -> None:
+    def test_reconcile_keeps_non_executable_active_issue_without_switching_locally(self) -> None:
         state, kanban_state = self._active_state()
         control = RunnerControlPlane(self.paths)
         control.import_github_item(
@@ -283,7 +283,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         kanban_state["active_issue"]["complexity"] = "XL"
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
         conn = sqlite3.connect(self.paths.control_db)
         previous_status = conn.execute(
             """
@@ -300,10 +300,10 @@ class RunnerControlPlaneTests(unittest.TestCase):
             """
         ).fetchone()[0]
         conn.close()
-        self.assertEqual(previous_status, "paused")
-        self.assertEqual(previous_lease, 0)
+        self.assertEqual(previous_status, "refining")
+        self.assertEqual(previous_lease, 1)
 
-    def test_reconcile_yields_active_issue_when_ready_condition_requires_enhance(self) -> None:
+    def test_reconcile_keeps_active_issue_when_ready_condition_requires_enhance(self) -> None:
         state, kanban_state = self._active_state()
         control = RunnerControlPlane(self.paths)
         control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
@@ -334,7 +334,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
 
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
 
     def test_active_refinement_ticket_does_not_ping_pong_to_peer_candidate(self) -> None:
         state, kanban_state = self._active_state()
@@ -383,7 +383,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
         self.assertNotIn("stale_run_yielded", derived["control"]["diagnostics"]["metrics"])
 
-    def test_active_issue_in_closeout_with_enhance_required_yields_to_board(self) -> None:
+    def test_active_issue_in_closeout_with_enhance_required_does_not_switch_to_peer_snapshot(self) -> None:
         state, kanban_state = self._active_state()
         state["current_phase"] = "closeout"
         state["done_gate_status"] = "failed"
@@ -449,7 +449,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         conn.close()
 
         first = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
-        self.assertEqual(first["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/12")
+        self.assertEqual(first["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
         self.assertEqual(first["control"]["diagnostics"]["metrics"]["stale_run_yielded"], 1)
         conn = sqlite3.connect(self.paths.control_db)
         paused_status = conn.execute(
@@ -461,7 +461,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
             """
         ).fetchone()[0]
         conn.close()
-        self.assertEqual(paused_status, "paused")
+        self.assertEqual(paused_status, "running")
 
     def test_resume_run_override_restores_exact_run(self) -> None:
         state, kanban_state = self._active_state()
@@ -477,7 +477,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/9")
         self.assertEqual(derived["phase"], "executing")
 
-    def test_idle_reconcile_selects_local_executable_issue_before_parent_tracker(self) -> None:
+    def test_idle_reconcile_does_not_select_local_issue_without_orx_active_context(self) -> None:
         state = default_runner_state("blog", "main")
         state["project_root"] = str(self.project_root)
         state["git_branch"] = "main"
@@ -515,10 +515,10 @@ class RunnerControlPlaneTests(unittest.TestCase):
 
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/21")
-        self.assertEqual(derived["control"]["diagnostics"]["metrics"]["selection_count"], 1)
+        self.assertIsNone(derived["active_issue"])
+        self.assertNotIn("selection_count", derived["control"]["diagnostics"]["metrics"])
 
-    def test_idle_selection_skips_feature_snapshot_that_has_children(self) -> None:
+    def test_idle_selection_does_not_promote_child_snapshot_without_orx_active_context(self) -> None:
         state = default_runner_state("blog", "main")
         state["project_root"] = str(self.project_root)
         state["git_branch"] = "main"
@@ -556,7 +556,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
 
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/41")
+        self.assertIsNone(derived["active_issue"])
 
     def test_active_issue_upsert_preserves_imported_board_metadata(self) -> None:
         state, kanban_state = self._active_state()
@@ -588,7 +588,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         self.assertEqual(payload["priority"], "P1")
         self.assertEqual(payload["parent"], "https://github.com/jkuang7/blog/issues/8")
 
-    def test_idle_selection_skips_blocked_snapshot_and_keeps_ticket_metadata(self) -> None:
+    def test_idle_selection_keeps_ticket_metadata_without_promoting_local_snapshot(self) -> None:
         state = default_runner_state("blog", "main")
         state["project_root"] = str(self.project_root)
         state["git_branch"] = "main"
@@ -628,9 +628,10 @@ class RunnerControlPlaneTests(unittest.TestCase):
 
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/31")
-        self.assertEqual(derived["active_issue"]["parent"], "https://github.com/jkuang7/blog/issues/28")
-        self.assertEqual(derived["active_issue"]["resume_from"], "blog@issue-31")
+        self.assertIsNone(derived["active_issue"])
+        stored = control._issue_snapshot("https://github.com/jkuang7/blog/issues/31")
+        assert stored is not None
+        self.assertEqual(stored["issue_url"], "https://github.com/jkuang7/blog/issues/31")
 
     def test_import_github_item_preserves_ticket_relations_and_routing(self) -> None:
         control = RunnerControlPlane(self.paths)
@@ -684,7 +685,7 @@ class RunnerControlPlaneTests(unittest.TestCase):
         self.assertEqual(payload["branch"], "feature/issue-41")
         self.assertEqual(payload["merge_into"], "main")
 
-    def test_idle_selection_prefers_ready_child_imported_from_github_metadata(self) -> None:
+    def test_idle_selection_keeps_imported_child_metadata_without_promoting_local_snapshot(self) -> None:
         state = default_runner_state("blog", "main")
         state["project_root"] = str(self.project_root)
         state["git_branch"] = "main"
@@ -749,9 +750,12 @@ class RunnerControlPlaneTests(unittest.TestCase):
 
         derived = control.reconcile(state=state, kanban_state=kanban_state, enable_pending_exists=False)
 
-        self.assertEqual(derived["active_issue"]["url"], "https://github.com/jkuang7/blog/issues/51")
-        self.assertEqual(derived["active_issue"]["parent"], "https://github.com/jkuang7/blog/issues/50")
-        self.assertEqual(derived["active_issue"]["resume_from"], "implementation")
+        self.assertIsNone(derived["active_issue"])
+        stored = control._issue_snapshot("https://github.com/jkuang7/blog/issues/51")
+        assert stored is not None
+        payload = stored["payload"]
+        self.assertEqual(payload["parent"], "https://github.com/jkuang7/blog/issues/50")
+        self.assertEqual(payload["resume_from"], "implementation")
 
     def test_diagnostics_include_replay_and_failure_classification(self) -> None:
         state, kanban_state = self._active_state()

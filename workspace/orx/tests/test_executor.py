@@ -22,6 +22,9 @@ class FakeTmuxTransport:
         self.sessions[name] = {"cmd": cmd, "pane": f"%{len(self.sessions) + 1}"}
         return self.sessions[name]["pane"]  # type: ignore[return-value]
 
+    def kill_session(self, name: str) -> bool:
+        return self.sessions.pop(name, None) is not None
+
     def send_keys(self, session: str, text: str, *, enter: bool = True) -> bool:
         self.sent.append((session, text))
         return True
@@ -185,6 +188,45 @@ class ExecutorServiceTests(unittest.TestCase):
             )
             self.assertEqual(result.status, "success")
             self.assertEqual(result.artifacts, ("tests/test_executor.py",))
+
+    def test_submit_slice_result_rejects_placeholder_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            repository = OrxRepository(storage)
+            repository.upsert_runner(
+                "runner-a",
+                transport="tmux-codex",
+                display_name="Runner A",
+                state="idle",
+            )
+            transport = FakeTmuxTransport()
+            service = ExecutorService(
+                storage=storage,
+                repository=repository,
+                ownership=OwnershipService(repository),
+                transport=transport,
+                runner_launcher=FakeRunnerLauncher(transport),
+            )
+            request = service.dispatch_slice(
+                issue_key="PRO-9",
+                runner_id="runner-a",
+                objective="Reject placeholder summaries",
+                acceptance=["placeholder result is refused"],
+            )
+
+            with self.assertRaises(SliceResultValidationError):
+                service.submit_slice_result(
+                    request.slice_id,
+                    {
+                        "status": "success",
+                        "summary": "...",
+                        "verified": False,
+                        "next_slice": None,
+                        "artifacts": [],
+                        "metrics": {},
+                    },
+                )
 
     def test_submit_slice_result_marks_duplicate_payload_as_duplicate_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

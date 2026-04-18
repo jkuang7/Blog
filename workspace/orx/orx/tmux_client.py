@@ -45,6 +45,9 @@ class TmuxClient:
             raise RuntimeError("tmux returned no pane id")
         return pane_id
 
+    def kill_session(self, name: str) -> bool:
+        return self._run("kill-session", "-t", name).returncode == 0
+
     def send_keys(self, session: str, text: str, *, enter: bool = True) -> bool:
         use_buffer = "\n" in text or len(text) > 512
         target = f"{session}:0.0"

@@ -104,6 +104,39 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_run_parser.add_argument("--project-key")
     dispatch_run_parser.set_defaults(handler=_handle_dispatch_run)
 
+    dispatch_release_parser = dispatch_subparsers.add_parser(
+        "release-lane",
+        help="Apply an explicit HIL release decision to a reserved feature lane.",
+    )
+    dispatch_release_parser.add_argument("--project-key", required=True)
+    dispatch_release_parser.add_argument(
+        "--action",
+        required=True,
+        choices=(
+            "keep_reserved",
+            "merge_to_main_and_release",
+            "cherry_pick_and_release",
+            "discard_and_release",
+        ),
+    )
+    dispatch_release_parser.add_argument("--note")
+    dispatch_release_parser.set_defaults(handler=_handle_dispatch_release_lane)
+
+    dispatch_recover_failed_start_parser = dispatch_subparsers.add_parser(
+        "recover-failed-start",
+        help="Repair a stranded failed managed-start state and clear any partial control-plane residue.",
+    )
+    dispatch_recover_failed_start_parser.add_argument("--project-key", required=True)
+    dispatch_recover_failed_start_parser.set_defaults(handler=_handle_dispatch_recover_failed_start)
+
+    dispatch_resume_reviewed_parser = dispatch_subparsers.add_parser(
+        "resume-reviewed",
+        help="Resume a lane parked in awaiting_orx_review after ORX or HIL resolves the blocker.",
+    )
+    dispatch_resume_reviewed_parser.add_argument("--project-key", required=True)
+    dispatch_resume_reviewed_parser.add_argument("--next-slice")
+    dispatch_resume_reviewed_parser.set_defaults(handler=_handle_dispatch_resume_reviewed)
+
     dispatch_dashboard_parser = dispatch_subparsers.add_parser(
         "dashboard",
         help="Show cross-project ORX runtime and session status.",
@@ -456,6 +489,42 @@ def _handle_dispatch_run(args: argparse.Namespace) -> dict[str, Any]:
                 "ingress_thread_id": args.ingress_thread_id,
                 "issue_key": args.issue_key,
                 "project_key": args.project_key,
+            }
+        ),
+    }
+
+
+def _handle_dispatch_release_lane(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "command": "dispatch release-lane",
+        **_build_api_service(args).release_feature_lane_payload(
+            {
+                "project_key": args.project_key,
+                "action": args.action,
+                "note": args.note,
+            }
+        ),
+    }
+
+
+def _handle_dispatch_recover_failed_start(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "command": "dispatch recover-failed-start",
+        **_build_api_service(args).recover_failed_start_payload(
+            {
+                "project_key": args.project_key,
+            }
+        ),
+    }
+
+
+def _handle_dispatch_resume_reviewed(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "command": "dispatch resume-reviewed",
+        **_build_api_service(args).resume_reviewed_lane_payload(
+            {
+                "project_key": args.project_key,
+                "next_slice": args.next_slice,
             }
         ),
     }
