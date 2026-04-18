@@ -1163,8 +1163,52 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertIsNotNone(refreshed)
             assert refreshed is not None
             self.assertEqual(refreshed.resume_context["design_state"], "approved")
-            self.assertTrue(refreshed.resume_context["ui_evidence_required"])
+            self.assertEqual(refreshed.resume_context["contract_state"], "pending")
+            self.assertFalse(refreshed.resume_context["ui_evidence_required"])
             self.assertEqual(refreshed.resume_context["design_reference"], ".codex/stitch/run-1/DESIGN.md")
+
+            contract_review = service.submit_slice_result(
+                project_key="alpha",
+                slice_id=refreshed.active_slice_id,  # type: ignore[arg-type]
+                payload={
+                    "status": "success",
+                    "summary": "Updated the /ui-contracts candidate to match the approved design.",
+                    "verified": False,
+                    "next_slice": None,
+                    "artifacts": [".codex/stitch/run-1/after/contract/dashboard.png"],
+                    "contract_artifacts": [".codex/stitch/run-1/after/contract/dashboard.png"],
+                    "contract_reference": ".codex/stitch/run-1/after/contract/dashboard.png",
+                    "contract_review_requested": True,
+                    "verification_surface": "none",
+                    "metrics": {"step": 2},
+                },
+            )
+
+            self.assertEqual(contract_review.status, "awaiting_orx_review")
+            self.assertFalse(contract_review.finalized)
+            registration = registry.get_project("alpha")
+            self.assertIsNotNone(registration)
+            assert registration is not None
+            self.assertEqual(registration.metadata["feature_lane"]["release_action"], "contract_review_required")
+            self.assertEqual(registration.metadata["reconciliation"]["review_kind"], "contract_review_required")
+            self.assertEqual(registration.metadata["reconciliation"]["contract_state"], "pending")
+
+            resumed_contract = service.resume_reviewed_lane(
+                project_key="alpha",
+                next_slice="Encode the accepted contract into shared owners and verify it with Playwright.",
+            )
+
+            self.assertTrue(resumed_contract["resumed"])
+            refreshed = runtime.continuity.get_state("PRO-741", "main")
+            self.assertIsNotNone(refreshed)
+            assert refreshed is not None
+            self.assertEqual(refreshed.resume_context["design_state"], "approved")
+            self.assertEqual(refreshed.resume_context["contract_state"], "approved")
+            self.assertTrue(refreshed.resume_context["ui_evidence_required"])
+            self.assertEqual(
+                refreshed.resume_context["contract_reference"],
+                ".codex/stitch/run-1/after/contract/dashboard.png",
+            )
 
     def test_submit_slice_result_blocks_ui_logic_closeout_without_playwright(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

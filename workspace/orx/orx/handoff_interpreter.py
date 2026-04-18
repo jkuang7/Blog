@@ -44,12 +44,15 @@ def interpret_slice_handoff(
     touched_paths = tuple(_clean_list(payload.get("touched_paths")))
     artifacts = tuple(_clean_list(payload.get("artifacts")))
     design_artifacts = tuple(_clean_list(payload.get("design_artifacts")))
+    contract_artifacts = tuple(_clean_list(payload.get("contract_artifacts")))
     owner_mismatch = _clean_line(payload.get("owner_mismatch"))
     scope_mismatch = _clean_line(payload.get("scope_mismatch"))
     needs_human_help = bool(payload.get("needs_human_help"))
     verification_surface = _clean_line(payload.get("verification_surface")) or None
     design_review_requested = bool(payload.get("design_review_requested"))
+    contract_review_requested = bool(payload.get("contract_review_requested"))
     design_reference = _clean_line(payload.get("design_reference")) or None
+    contract_reference = _clean_line(payload.get("contract_reference")) or None
     next_slice_hint = _clean_line(payload.get("next_slice"))
     next_step_hint = _clean_line(payload.get("next_step_hint"))
     continuity_next_slice = _clean_line(getattr(continuity, "next_slice", None))
@@ -154,14 +157,18 @@ def interpret_slice_handoff(
         "touched_paths": list(touched_paths),
         "artifacts": list(artifacts),
         "design_artifacts": list(design_artifacts),
+        "contract_artifacts": list(contract_artifacts),
         "owner_mismatch": owner_mismatch,
         "scope_mismatch": scope_mismatch,
         "needs_human_help": needs_human_help,
         "verification_surface": verification_surface,
         "design_review_requested": design_review_requested,
+        "contract_review_requested": contract_review_requested,
         "design_reference": design_reference,
+        "contract_reference": contract_reference,
         "ui_mode": ui_routing.ui_mode,
         "design_state": ui_routing.design_state,
+        "contract_state": ui_routing.contract_state,
         "ui_evidence_required": ui_routing.ui_evidence_required,
         "next_slice": next_slice,
         "next_step_hint": interpreted_next_direction,
@@ -196,8 +203,10 @@ def interpret_slice_handoff(
             "scope_mismatch": scope_mismatch,
             "ui_mode": ui_routing.ui_mode,
             "design_state": ui_routing.design_state,
+            "contract_state": ui_routing.contract_state,
             "ui_evidence_required": ui_routing.ui_evidence_required,
             "design_reference": design_reference or ui_routing.design_reference,
+            "contract_reference": contract_reference or ui_routing.contract_reference,
             "verification_surface": verification_surface,
         },
         payload=normalized_payload,

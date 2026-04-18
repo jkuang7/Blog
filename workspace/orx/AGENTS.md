@@ -16,6 +16,7 @@
 - Treat execution packets as the only live objective source for ORX-managed work.
 - Keep Linear tickets stateless enough for medium-tier execution and update their mutable handoff sections through ORX.
 - Preserve revision- and dedupe-safety on slice results, handoffs, and follow-up creation.
+- For visual work, keep the control-plane gate order explicit: design review first, then `/ui-contracts` contract review, then implementation closeout with live UI evidence.
 
 ## Avoid
 

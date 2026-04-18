@@ -60,5 +60,7 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 
 ## Stitch-First Visual Work
 
-- For UI-affecting work, use the `stitch-first-ui` skill instead of freestyling visual changes in code first.
+- For UI-affecting work that materially changes layout, hierarchy, spacing, theming, responsiveness, modal/page composition, or reusable visual grammar, start via `/ui` instead of freestyling code first.
+- Treat `/ui` as the required trigger for new shared visual patterns, major shared-owner changes, and missing visual states that need a real baseline before implementation.
+- Copy-only changes, logic-only UI fixes, and structure-preserving visual repairs with an already-known target may skip `/ui`, but still need live verification when the surface is risky.
 - Keep detailed Stitch workflow, prompts, and artifact rules in the skill, not here.

@@ -978,12 +978,17 @@ class GlobalDispatchService:
         review_resume_updates: dict[str, Any] = {
             "ui_mode": fresh_ui_routing.ui_mode,
             "design_state": fresh_ui_routing.design_state,
+            "contract_state": fresh_ui_routing.contract_state,
             "ui_evidence_required": fresh_ui_routing.ui_evidence_required,
-            "design_reference": fresh_ui_routing.design_reference,
         }
+        if fresh_ui_routing.design_reference is not None:
+            review_resume_updates["design_reference"] = fresh_ui_routing.design_reference
+        if fresh_ui_routing.contract_reference is not None:
+            review_resume_updates["contract_reference"] = fresh_ui_routing.contract_reference
         if reconciliation is not None and reconciliation.get("review_kind") == "design_review_required":
             review_resume_updates["design_state"] = "approved"
-            review_resume_updates["ui_evidence_required"] = True
+            review_resume_updates["contract_state"] = "pending"
+            review_resume_updates["ui_evidence_required"] = False
             design_reference = _normalize_optional_text(reconciliation.get("design_reference"))
             if design_reference is None:
                 artifacts = _normalize_text_list(reconciliation.get("design_artifacts"))
@@ -991,6 +996,17 @@ class GlobalDispatchService:
                     design_reference = artifacts[0]
             if design_reference is not None:
                 review_resume_updates["design_reference"] = design_reference
+        if reconciliation is not None and reconciliation.get("review_kind") == "contract_review_required":
+            review_resume_updates["design_state"] = "approved"
+            review_resume_updates["contract_state"] = "approved"
+            review_resume_updates["ui_evidence_required"] = True
+            contract_reference = _normalize_optional_text(reconciliation.get("contract_reference"))
+            if contract_reference is None:
+                artifacts = _normalize_text_list(reconciliation.get("contract_artifacts"))
+                if artifacts:
+                    contract_reference = artifacts[0]
+            if contract_reference is not None:
+                review_resume_updates["contract_reference"] = contract_reference
         if next_slice is not None and next_slice.strip():
             continuity = runtime.continuity.apply_handoff_interpretation(
                 issue_key=issue.identifier,
@@ -1543,10 +1559,13 @@ class GlobalDispatchService:
                     artifacts=_normalize_text_list(payload.get("artifacts")),
                     ui_mode=interpreted.payload.get("ui_mode"),
                     design_state=ui_gate_decision.design_state,
+                    contract_state=ui_gate_decision.contract_state,
                     design_reference=ui_gate_decision.design_reference,
+                    contract_reference=ui_gate_decision.contract_reference,
                     review_kind=ui_gate_decision.review_kind,
                     verification_surface=ui_gate_decision.verification_surface,
                     design_artifacts=list(ui_gate_decision.design_artifacts),
+                    contract_artifacts=list(ui_gate_decision.contract_artifacts),
                 ),
             )
             if interpreted.action in {"blocked", "reroute", "replan", "needs_human_help"} or ui_gate_decision.gate_required:
@@ -2630,8 +2649,10 @@ def _build_execution_packet(
         "ui_mode": ui_routing.ui_mode,
         "ui_reason": ui_routing.ui_reason,
         "design_state": ui_routing.design_state,
+        "contract_state": ui_routing.contract_state,
         "ui_evidence_required": ui_routing.ui_evidence_required,
         "design_reference": ui_routing.design_reference,
+        "contract_reference": ui_routing.contract_reference,
         "latest_handoff": latest_handoff,
         "latest_handoff_revision": latest_handoff_revision(issue.description),
         "continuity_revision": None if continuity is None else getattr(continuity, "updated_at", None),
@@ -2902,10 +2923,13 @@ def _reconciliation_payload(
     artifacts: list[str] | tuple[str, ...] | None,
     ui_mode: str | None = None,
     design_state: str | None = None,
+    contract_state: str | None = None,
     design_reference: str | None = None,
+    contract_reference: str | None = None,
     review_kind: str | None = None,
     verification_surface: str | None = None,
     design_artifacts: list[str] | tuple[str, ...] | None = None,
+    contract_artifacts: list[str] | tuple[str, ...] | None = None,
     checkpoint_created: bool | None = None,
     updated_at: str | None = None,
 ) -> dict[str, Any] | None:
@@ -2926,10 +2950,13 @@ def _reconciliation_payload(
         "artifacts": _normalize_text_list(artifacts),
         "ui_mode": _normalize_optional_text(ui_mode),
         "design_state": _normalize_optional_text(design_state),
+        "contract_state": _normalize_optional_text(contract_state),
         "design_reference": _normalize_optional_text(design_reference),
+        "contract_reference": _normalize_optional_text(contract_reference),
         "review_kind": _normalize_optional_text(review_kind),
         "verification_surface": _normalize_optional_text(verification_surface),
         "design_artifacts": _normalize_text_list(design_artifacts),
+        "contract_artifacts": _normalize_text_list(contract_artifacts),
         "updated_at": _normalize_optional_text(updated_at) or datetime.now(UTC).isoformat(timespec="seconds"),
     }
     if not any(
@@ -2949,10 +2976,13 @@ def _reconciliation_payload(
             normalized["artifacts"],
             normalized["ui_mode"],
             normalized["design_state"],
+            normalized["contract_state"],
             normalized["design_reference"],
+            normalized["contract_reference"],
             normalized["review_kind"],
             normalized["verification_surface"],
             normalized["design_artifacts"],
+            normalized["contract_artifacts"],
         )
     ):
         return None

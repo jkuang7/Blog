@@ -11,8 +11,9 @@ from .metadata import METADATA_END, METADATA_START
 
 UI_MODE_VALUES = {"none", "logic", "visual"}
 DESIGN_STATE_VALUES = {"none", "pending", "approved"}
+CONTRACT_STATE_VALUES = {"none", "pending", "approved"}
 VERIFICATION_SURFACE_VALUES = {"none", "cli", "playwright", "mixed"}
-REVIEW_KIND_VALUES = {"standard", "design_review_required", "ui_evidence_missing"}
+REVIEW_KIND_VALUES = {"standard", "design_review_required", "contract_review_required", "ui_evidence_missing"}
 
 _TEXT_ONLY_KEYWORDS = (
     "copy",
@@ -96,8 +97,10 @@ class UiRoutingDecision:
     ui_mode: str
     ui_reason: str
     design_state: str
+    contract_state: str
     ui_evidence_required: bool
     design_reference: str | None
+    contract_reference: str | None
 
 
 @dataclass(frozen=True)
@@ -106,10 +109,14 @@ class UiGateDecision:
     review_kind: str
     reason: str
     design_state: str
+    contract_state: str
     design_reference: str | None
     design_artifacts: tuple[str, ...]
+    contract_reference: str | None
+    contract_artifacts: tuple[str, ...]
     verification_surface: str
     design_review_requested: bool
+    contract_review_requested: bool
 
 
 def classify_ui_routing(
@@ -121,7 +128,9 @@ def classify_ui_routing(
     resume = resume_context if isinstance(resume_context, dict) else {}
     explicit_mode = _normalize_ui_mode(metadata.get("ui_mode")) or _normalize_ui_mode(resume.get("ui_mode"))
     design_reference = _clean_line(resume.get("design_reference")) or _clean_line(metadata.get("design_reference"))
+    contract_reference = _clean_line(resume.get("contract_reference")) or _clean_line(metadata.get("contract_reference"))
     design_state = _normalize_design_state(resume.get("design_state")) or _normalize_design_state(metadata.get("design_state"))
+    contract_state = _normalize_contract_state(resume.get("contract_state")) or _normalize_contract_state(metadata.get("contract_state"))
     if explicit_mode is not None:
         ui_mode = explicit_mode
         ui_reason = f"Using explicit issue metadata ui_mode `{ui_mode}`."
@@ -131,17 +140,29 @@ def classify_ui_routing(
     if ui_mode == "visual":
         if design_state is None:
             design_state = "pending"
+        if design_state == "approved":
+            if contract_state is None:
+                contract_state = "pending"
+        else:
+            contract_state = "none"
+            contract_reference = None
     else:
         design_state = "none"
         design_reference = None
+        contract_state = "none"
+        contract_reference = None
 
-    ui_evidence_required = ui_mode == "logic" or (ui_mode == "visual" and design_state == "approved")
+    ui_evidence_required = ui_mode == "logic" or (
+        ui_mode == "visual" and design_state == "approved" and contract_state == "approved"
+    )
     return UiRoutingDecision(
         ui_mode=ui_mode,
         ui_reason=ui_reason,
         design_state=design_state,
+        contract_state=contract_state,
         ui_evidence_required=ui_evidence_required,
         design_reference=design_reference,
+        contract_reference=contract_reference,
     )
 
 
@@ -152,9 +173,17 @@ def evaluate_ui_gate(
     interpreted_action: str,
 ) -> UiGateDecision:
     design_artifacts = tuple(_clean_list(payload.get("design_artifacts")))
+    contract_artifacts = tuple(_clean_list(payload.get("contract_artifacts")))
     artifacts = tuple(_clean_list(payload.get("artifacts")))
     design_reference = routing.design_reference or next(iter(design_artifacts), None) or next(iter(artifacts), None)
+    contract_reference = (
+        routing.contract_reference
+        or _clean_line(payload.get("contract_reference"))
+        or next(iter(contract_artifacts), None)
+        or next(iter(artifacts), None)
+    )
     design_review_requested = bool(payload.get("design_review_requested"))
+    contract_review_requested = bool(payload.get("contract_review_requested"))
     verification_surface = _normalize_verification_surface(payload.get("verification_surface"))
     if verification_surface is None:
         verification_surface = _infer_verification_surface(
@@ -178,10 +207,41 @@ def evaluate_ui_gate(
             review_kind="design_review_required",
             reason=reason,
             design_state="pending",
+            contract_state=routing.contract_state,
             design_reference=design_reference,
             design_artifacts=design_artifacts or artifacts,
+            contract_reference=contract_reference,
+            contract_artifacts=contract_artifacts,
             verification_surface=verification_surface,
             design_review_requested=design_review_requested,
+            contract_review_requested=contract_review_requested,
+        )
+
+    if routing.ui_mode == "visual" and routing.design_state == "approved" and routing.contract_state == "pending" and interpreted_action not in {
+        "blocked",
+        "reroute",
+        "replan",
+        "needs_human_help",
+    }:
+        if contract_review_requested and contract_artifacts:
+            reason = "Visual work produced a /ui-contracts candidate and now requires contract review before owner or app promotion."
+        elif contract_artifacts:
+            reason = "Visual work cannot continue until ORX reviews the /ui-contracts contract candidate."
+        else:
+            reason = "Visual work requires a /ui-contracts contract-prep slice before implementation can continue."
+        return UiGateDecision(
+            gate_required=True,
+            review_kind="contract_review_required",
+            reason=reason,
+            design_state=routing.design_state,
+            contract_state="pending",
+            design_reference=design_reference,
+            design_artifacts=design_artifacts,
+            contract_reference=contract_reference,
+            contract_artifacts=contract_artifacts or artifacts,
+            verification_surface=verification_surface,
+            design_review_requested=design_review_requested,
+            contract_review_requested=contract_review_requested,
         )
 
     if routing.ui_evidence_required and interpreted_action == "complete" and verification_surface not in {
@@ -193,10 +253,14 @@ def evaluate_ui_gate(
             review_kind="ui_evidence_missing",
             reason="UI closeout requires Playwright evidence before ORX can mark the issue complete.",
             design_state=routing.design_state,
+            contract_state=routing.contract_state,
             design_reference=design_reference,
             design_artifacts=design_artifacts,
+            contract_reference=contract_reference,
+            contract_artifacts=contract_artifacts,
             verification_surface=verification_surface,
             design_review_requested=design_review_requested,
+            contract_review_requested=contract_review_requested,
         )
 
     return UiGateDecision(
@@ -204,10 +268,14 @@ def evaluate_ui_gate(
         review_kind="standard",
         reason="No UI-specific review gate is active for this slice.",
         design_state=routing.design_state,
+        contract_state=routing.contract_state,
         design_reference=design_reference,
         design_artifacts=design_artifacts,
+        contract_reference=contract_reference,
+        contract_artifacts=contract_artifacts,
         verification_surface=verification_surface,
         design_review_requested=design_review_requested,
+        contract_review_requested=contract_review_requested,
     )
 
 
@@ -269,6 +337,13 @@ def _normalize_ui_mode(value: Any) -> str | None:
 def _normalize_design_state(value: Any) -> str | None:
     text = _normalize_simple(value)
     if text in DESIGN_STATE_VALUES:
+        return text
+    return None
+
+
+def _normalize_contract_state(value: Any) -> str | None:
+    text = _normalize_simple(value)
+    if text in CONTRACT_STATE_VALUES:
         return text
     return None
 

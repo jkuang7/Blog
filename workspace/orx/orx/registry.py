@@ -1199,7 +1199,9 @@ def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
     updated_at = _normalize_optional(value.get("updated_at"))
     ui_mode = _normalize_optional(value.get("ui_mode"))
     design_state = _normalize_optional(value.get("design_state"))
+    contract_state = _normalize_optional(value.get("contract_state"))
     design_reference = _normalize_optional(value.get("design_reference"))
+    contract_reference = _normalize_optional(value.get("contract_reference"))
     review_kind = _normalize_optional(value.get("review_kind"))
     verification_surface = _normalize_optional(value.get("verification_surface"))
     changed_files_raw = value.get("changed_files")
@@ -1224,6 +1226,10 @@ def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
     design_artifacts = []
     if isinstance(design_artifacts_raw, list):
         design_artifacts = [item for item in (_normalize_optional(entry) for entry in design_artifacts_raw) if item]
+    contract_artifacts_raw = value.get("contract_artifacts")
+    contract_artifacts = []
+    if isinstance(contract_artifacts_raw, list):
+        contract_artifacts = [item for item in (_normalize_optional(entry) for entry in contract_artifacts_raw) if item]
     if not any(
         (
             status,
@@ -1241,10 +1247,13 @@ def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
             artifacts,
             ui_mode,
             design_state,
+            contract_state,
             design_reference,
+            contract_reference,
             review_kind,
             verification_surface,
             design_artifacts,
+            contract_artifacts,
         )
     ):
         return None
@@ -1265,10 +1274,13 @@ def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
         "artifacts": artifacts,
         "ui_mode": ui_mode,
         "design_state": design_state,
+        "contract_state": contract_state,
         "design_reference": design_reference,
+        "contract_reference": contract_reference,
         "review_kind": review_kind,
         "verification_surface": verification_surface,
         "design_artifacts": design_artifacts,
+        "contract_artifacts": contract_artifacts,
         "updated_at": updated_at,
     }
 

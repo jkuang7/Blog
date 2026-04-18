@@ -53,7 +53,68 @@ class UiPolicyTests(unittest.TestCase):
 
         self.assertEqual(routing.ui_mode, "visual")
         self.assertEqual(routing.design_state, "pending")
+        self.assertEqual(routing.contract_state, "none")
         self.assertFalse(routing.ui_evidence_required)
+
+    def test_classify_visual_request_after_design_approval_requires_contract_review(self) -> None:
+        routing = classify_ui_routing(
+            issue=_issue(title="Redesign the dashboard layout and visual hierarchy"),
+            resume_context={
+                "design_state": "approved",
+                "design_reference": ".codex/stitch/run-1/DESIGN.md",
+            },
+        )
+
+        self.assertEqual(routing.ui_mode, "visual")
+        self.assertEqual(routing.design_state, "approved")
+        self.assertEqual(routing.contract_state, "pending")
+        self.assertEqual(routing.design_reference, ".codex/stitch/run-1/DESIGN.md")
+        self.assertFalse(routing.ui_evidence_required)
+
+    def test_evaluate_contract_candidate_requires_contract_review(self) -> None:
+        gate = evaluate_ui_gate(
+            routing=classify_ui_routing(
+                issue=_issue(title="Redesign the dashboard layout and visual hierarchy"),
+                resume_context={
+                    "design_state": "approved",
+                    "design_reference": ".codex/stitch/run-1/DESIGN.md",
+                },
+            ),
+            payload={
+                "contract_artifacts": [".codex/stitch/run-1/after/contract/dashboard.png"],
+                "contract_reference": ".codex/stitch/run-1/after/contract/dashboard.png",
+                "contract_review_requested": True,
+                "verification_surface": "none",
+            },
+            interpreted_action="complete",
+        )
+
+        self.assertTrue(gate.gate_required)
+        self.assertEqual(gate.review_kind, "contract_review_required")
+        self.assertEqual(gate.design_state, "approved")
+        self.assertEqual(gate.contract_state, "pending")
+        self.assertEqual(gate.contract_reference, ".codex/stitch/run-1/after/contract/dashboard.png")
+
+    def test_visual_closeout_requires_playwright_only_after_contract_approval(self) -> None:
+        gate = evaluate_ui_gate(
+            routing=classify_ui_routing(
+                issue=_issue(title="Redesign the dashboard layout and visual hierarchy"),
+                resume_context={
+                    "design_state": "approved",
+                    "contract_state": "approved",
+                    "contract_reference": ".codex/stitch/run-1/after/contract/dashboard.png",
+                },
+            ),
+            payload={
+                "verification_surface": "cli",
+                "verification_ran": ["pnpm test"],
+            },
+            interpreted_action="complete",
+        )
+
+        self.assertTrue(gate.gate_required)
+        self.assertEqual(gate.review_kind, "ui_evidence_missing")
+        self.assertEqual(gate.contract_state, "approved")
 
     def test_evaluate_logic_closeout_requires_playwright(self) -> None:
         gate = evaluate_ui_gate(
