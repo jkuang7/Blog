@@ -153,6 +153,77 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertEqual(assignment.bot.bot_identity, "BentoBoxThreeBot")
             self.assertEqual(assignment.project.assigned_bot, "BentoBoxThreeBot")
 
+    def test_assign_project_bot_skips_stale_affinity_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+
+            registry.upsert_project(
+                project_key="create-t3-jian",
+                display_name="create-t3-jian",
+                repo_root="/tmp/create-t3-jian",
+                runtime_home="/tmp/runtime-create-t3-jian",
+            )
+            registry.upsert_bot(
+                bot_identity="BerryRamenBot",
+                default_display_name="create-t3-jian",
+                telegram_chat_id=101,
+            )
+            registry.upsert_bot(
+                bot_identity="BentoBoxThreeBot",
+                default_display_name="validation-os",
+                telegram_chat_id=102,
+            )
+            with storage.session() as connection:
+                connection.execute(
+                    "UPDATE bot_registry SET last_heartbeat_at = ? WHERE bot_identity = ?",
+                    ("2026-04-16T00:00:00+00:00", "BerryRamenBot"),
+                )
+
+            assignment = registry.assign_project_bot(project_key="create-t3-jian")
+
+            self.assertIsNotNone(assignment)
+            assert assignment is not None
+            self.assertEqual(assignment.bot.bot_identity, "BentoBoxThreeBot")
+            self.assertEqual(assignment.project.assigned_bot, "BentoBoxThreeBot")
+
+    def test_assign_project_bot_does_not_reuse_stale_current_bot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+
+            registry.upsert_project(
+                project_key="validation-os",
+                display_name="validation-os",
+                repo_root="/tmp/validation-os",
+                runtime_home="/tmp/runtime-validation-os",
+                owning_bot="BentoBoxThreeBot",
+            )
+            registry.upsert_bot(
+                bot_identity="BentoBoxThreeBot",
+                default_display_name="validation-os",
+                telegram_chat_id=101,
+            )
+            registry.upsert_bot(
+                bot_identity="BlastRadiusBot",
+                default_display_name="tmux-codex",
+                telegram_chat_id=102,
+            )
+            with storage.session() as connection:
+                connection.execute(
+                    "UPDATE bot_registry SET last_heartbeat_at = ?, assigned_project_key = NULL, assignment_id = NULL, availability_state = 'available' WHERE bot_identity = ?",
+                    ("2026-04-16T00:00:00+00:00", "BentoBoxThreeBot"),
+                )
+
+            assignment = registry.assign_project_bot(project_key="validation-os")
+
+            self.assertIsNotNone(assignment)
+            assert assignment is not None
+            self.assertEqual(assignment.bot.bot_identity, "BlastRadiusBot")
+            self.assertEqual(assignment.project.assigned_bot, "BlastRadiusBot")
+
     def test_deregister_project_removes_registry_entry_and_notifications(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             storage = Storage(resolve_runtime_paths(temp_dir))
@@ -537,6 +608,80 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertIn("alpha_bot", second.ingress_message)
             self.assertIn("PRO-620", second.ingress_message)
             self.assertIsNone(second.runtime)
+
+    def test_dispatch_with_explicit_project_returns_already_running_for_active_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=FakeTmuxTransport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            service.register_bot(
+                bot_identity="BentoBoxThreeBot",
+                default_display_name="validation-os",
+                telegram_chat_id=101,
+            )
+            service.register_bot(
+                bot_identity="BerryRamenBot",
+                default_display_name="create-t3-jian",
+                telegram_chat_id=102,
+            )
+            service.register_project(
+                project_key="validation-os",
+                display_name="validation-os",
+                repo_root="/tmp/validation-os",
+                metadata={"linear_team_id": "team-validation"},
+            )
+            mirror.upsert_issue(
+                linear_id="lin-validation-active",
+                identifier="PRO-621",
+                title="Validation task",
+                description="Already in progress",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Todo",
+                state_type="unstarted",
+                priority=1,
+                project_id="project-validation",
+                project_name="validation-os",
+                source_updated_at="2026-04-16T12:00:00+00:00",
+                metadata={"project_key": "validation-os"},
+            )
+
+            first = service.dispatch_run(
+                ingress_bot="BerryRamenBot",
+                explicit_project_key="validation-os",
+                explicit_issue_key="PRO-621",
+            )
+            notifications_before = registry.list_pending_notifications(
+                project_key="validation-os",
+                owning_bot="BentoBoxThreeBot",
+            )
+            second = service.dispatch_run(
+                ingress_bot="observer_bot",
+                explicit_project_key="validation-os",
+            )
+            notifications_after = registry.list_pending_notifications(
+                project_key="validation-os",
+                owning_bot="BentoBoxThreeBot",
+            )
+
+            self.assertEqual(first.decision, "dispatched")
+            self.assertEqual(second.decision, "already-running")
+            self.assertEqual(second.project_key, "validation-os")
+            self.assertEqual(second.issue_key, "PRO-621")
+            self.assertTrue(second.handoff_required)
+            self.assertEqual(second.assigned_bot, "BentoBoxThreeBot")
+            self.assertEqual(second.assignment_action, "active")
+            self.assertIsNone(second.notification_id)
+            self.assertIsNone(second.runtime)
+            self.assertEqual(len(notifications_before), 1)
+            self.assertEqual(len(notifications_after), 1)
 
     def test_submit_slice_result_can_continue_same_issue_then_drain_next_ticket(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1093,6 +1238,78 @@ class GlobalDispatchTests(unittest.TestCase):
             self.assertIsNotNone(mirrored)
             assert mirrored is not None
             self.assertEqual(mirrored.state_type, "unstarted")
+
+    def test_runner_event_ignores_stale_terminal_signal_after_feature_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            storage.bootstrap()
+            registry = ProjectRegistry(storage)
+            service = GlobalDispatchService(
+                storage=storage,
+                registry=registry,
+                transport_factory=FakeTmuxTransport,
+            )
+            mirror = LinearMirrorRepository(storage)
+
+            repo_root = Path(temp_dir) / "alpha-repo"
+            repo_root.mkdir(parents=True, exist_ok=True)
+            service.register_project(
+                project_key="alpha",
+                display_name="Alpha",
+                repo_root=str(repo_root),
+                owning_bot="alpha_bot",
+            )
+            issue = mirror.upsert_issue(
+                linear_id="lin-alpha-complete",
+                identifier="PRO-744",
+                title="Feature already completed",
+                description="Late runner events should be ignored once the lane is waiting for release.",
+                team_id="team-1",
+                team_name="Projects",
+                state_name="Done",
+                state_type="completed",
+                priority=1,
+                project_id="project-alpha",
+                project_name="Alpha",
+                source_updated_at="2026-04-16T12:17:00+00:00",
+                metadata={"project_key": "alpha", "worktree_path": str(repo_root)},
+                completed_at="2026-04-16T12:18:00+00:00",
+            )
+            registry.set_project_feature_lane(
+                project_key="alpha",
+                lane={
+                    "feature_key": issue.identifier,
+                    "packet_key": issue.identifier,
+                    "lane_state": "awaiting_hil_release",
+                    "release_required": True,
+                    "last_issue_key": issue.identifier,
+                    "last_issue_title": issue.title,
+                    "merge_target": "main",
+                    "merge_strategy": "hil_merge_to_main",
+                    "release_action": None,
+                    "release_note": None,
+                    "updated_at": "2026-04-16T12:18:00+00:00",
+                },
+            )
+
+            event = service.submit_runner_event(
+                project_key="alpha",
+                event_kind="interrupted",
+                issue_key="PRO-744",
+                final_summary="Late cleanup event should not reopen review.",
+                reason="stale late runner event",
+            )
+
+            self.assertTrue(event["ok"])
+            self.assertTrue(event["ignored"])
+            self.assertEqual(event["reason"], "feature_already_completed")
+            self.assertEqual(event["feature_lane"]["lane_state"], "awaiting_hil_release")
+            self.assertIsNone(event["reconciliation"])
+            mirrored = mirror.get_issue(identifier="PRO-744")
+            self.assertIsNotNone(mirrored)
+            assert mirrored is not None
+            self.assertEqual(mirrored.completed_at, "2026-04-16T12:18:00+00:00")
+            self.assertNotIn("Latest Handoff", mirrored.description)
 
     def test_resume_reviewed_lane_continues_same_issue_with_new_slice_goal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

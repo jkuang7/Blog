@@ -247,6 +247,18 @@ impl App {
         else {
             return Ok(());
         };
+        let default_display_name = orx_config
+            .default_display_name
+            .as_deref()
+            .unwrap_or(self.shared.bot_identity.as_str());
+        orx_client
+            .register_bot(
+                &self.shared.bot_identity,
+                default_display_name,
+                orx_config.owner_chat_id,
+                orx_config.owner_thread_id,
+            )
+            .await?;
         let notifications = orx_client
             .poll_notifications(&self.shared.bot_identity, 20)
             .await?;

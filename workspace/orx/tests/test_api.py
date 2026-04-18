@@ -342,6 +342,79 @@ class ApiContractTests(unittest.TestCase):
             self.assertIsNone(status["active_issue_key"])
             self.assertEqual(status["restart_context"]["start_state"], "awaiting_orx_review")
 
+    def test_runner_events_route_ignores_stale_event_for_completed_feature_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = _api_server_fixture(temp_dir)
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            mirror = LinearMirrorRepository(storage)
+            try:
+                _request(
+                    server,
+                    "POST",
+                    "/registry/projects",
+                    {
+                        "project_key": "alpha",
+                        "display_name": "Alpha",
+                        "repo_root": temp_dir,
+                        "owning_bot": "alpha_bot",
+                    },
+                )
+                issue = mirror.upsert_issue(
+                    linear_id="issue-740-complete",
+                    identifier="PRO-740C",
+                    title="Completed feature lane",
+                    description="late runner event should be ignored",
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_id="state-1",
+                    state_name="Done",
+                    state_type="completed",
+                    project_id="project-alpha",
+                    project_name="Alpha",
+                    source_updated_at="2026-04-16T12:31:00+00:00",
+                    metadata={"project_key": "alpha", "worktree_path": temp_dir},
+                    completed_at="2026-04-16T12:32:00+00:00",
+                )
+                service = server.api.dispatch
+                service.registry.set_project_feature_lane(
+                    project_key="alpha",
+                    lane={
+                        "feature_key": issue.identifier,
+                        "packet_key": issue.identifier,
+                        "lane_state": "awaiting_hil_release",
+                        "release_required": True,
+                        "last_issue_key": issue.identifier,
+                        "last_issue_title": issue.title,
+                        "merge_target": "main",
+                        "merge_strategy": "hil_merge_to_main",
+                        "release_action": None,
+                        "release_note": None,
+                        "updated_at": "2026-04-16T12:32:00+00:00",
+                    },
+                )
+                event = _request(
+                    server,
+                    "POST",
+                    "/runner-events",
+                    {
+                        "project_key": "alpha",
+                        "event_kind": "interrupted",
+                        "issue_key": "PRO-740C",
+                        "final_summary": "Late cleanup event should be ignored.",
+                    },
+                )
+                status = _request(server, "GET", "/control/status?project_key=alpha")
+            finally:
+                _stop_server(server)
+
+            self.assertTrue(event["ok"])
+            self.assertTrue(event["ignored"])
+            self.assertEqual(event["reason"], "feature_already_completed")
+            self.assertEqual(event["feature_lane"]["lane_state"], "awaiting_hil_release")
+            self.assertIsNone(event["reconciliation"])
+            self.assertEqual(status["restart_context"]["start_state"], "awaiting_hil_release")
+            self.assertIsNone(status["reconciliation"])
+
     def test_resume_reviewed_route_restarts_lane(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             server = _api_server_fixture(temp_dir)
@@ -756,6 +829,88 @@ class ApiContractTests(unittest.TestCase):
             self.assertEqual(payload["context"]["recovery"]["action"], "resume")
             self.assertTrue(payload["context"]["drift"]["ok"])
             self.assertEqual(payload["context"]["project"]["execution_thread_id"], 202)
+
+    def test_dispatch_run_endpoint_short_circuits_active_explicit_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = _api_server_fixture(temp_dir)
+            storage = Storage(resolve_runtime_paths(temp_dir))
+            mirror = LinearMirrorRepository(storage)
+            try:
+                _request(
+                    server,
+                    "POST",
+                    "/registry/bots",
+                    {
+                        "bot_identity": "BentoBoxThreeBot",
+                        "default_display_name": "validation-os",
+                        "telegram_chat_id": 101,
+                    },
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/registry/bots",
+                    {
+                        "bot_identity": "BerryRamenBot",
+                        "default_display_name": "create-t3-jian",
+                        "telegram_chat_id": 102,
+                    },
+                )
+                _request(
+                    server,
+                    "POST",
+                    "/registry/projects",
+                    {
+                        "project_key": "validation-os",
+                        "display_name": "validation-os",
+                        "repo_root": "/tmp/validation-os",
+                        "metadata": {"linear_team_id": "team-validation"},
+                    },
+                )
+                mirror.upsert_issue(
+                    linear_id="issue-711",
+                    identifier="PRO-711",
+                    title="Validation task",
+                    description="Persist enough to resume after a crash",
+                    team_id="team-1",
+                    team_name="Projects",
+                    state_id="state-1",
+                    state_name="Todo",
+                    state_type="unstarted",
+                    project_id="project-validation",
+                    project_name="validation-os",
+                    source_updated_at="2026-04-16T13:05:00+00:00",
+                    metadata={"project_key": "validation-os"},
+                )
+                first = _request(
+                    server,
+                    "POST",
+                    "/dispatch/run",
+                    {
+                        "ingress_bot": "BerryRamenBot",
+                        "project_key": "validation-os",
+                        "issue_key": "PRO-711",
+                    },
+                )
+                second = _request(
+                    server,
+                    "POST",
+                    "/dispatch/run",
+                    {
+                        "ingress_bot": "observer_bot",
+                        "project_key": "validation-os",
+                    },
+                )
+                notifications = _request(server, "GET", "/notifications?bot=BentoBoxThreeBot")
+            finally:
+                _stop_server(server)
+
+            self.assertEqual(first["dispatch"]["decision"], "dispatched")
+            self.assertEqual(second["dispatch"]["decision"], "already-running")
+            self.assertEqual(second["dispatch"]["assigned_bot"], "BentoBoxThreeBot")
+            self.assertEqual(second["dispatch"]["assignment_action"], "active")
+            self.assertIsNone(second["dispatch"]["notification_id"])
+            self.assertEqual(len(notifications["notifications"]), 1)
 
     def test_slice_results_rewrite_latest_handoff_and_create_follow_up_issue(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

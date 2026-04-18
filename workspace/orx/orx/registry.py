@@ -13,6 +13,7 @@ from .storage import Storage
 
 
 UNASSIGNED_BOT = "unassigned"
+BOT_HEARTBEAT_STALE_SECONDS = 180
 
 
 @dataclass(frozen=True)
@@ -506,6 +507,7 @@ class ProjectRegistry:
                 if (
                     bot_row is not None
                     and str(bot_row["availability_state"]) in {"available", "assigned"}
+                    and _bot_row_is_fresh(bot_row, now=now)
                     and (bot_assigned_project is None or bot_assigned_project == normalized_project)
                 ):
                     assignment_id = bot_row["assignment_id"] or project_row["updated_at"] or uuid.uuid4().hex
@@ -572,7 +574,7 @@ class ProjectRegistry:
             project_display_name = _normalize_project_display_name(project_row["display_name"])
             project_key_alias = _normalize_project_display_name(normalized_project)
             if project_display_name is not None or project_key_alias is not None:
-                candidate = connection.execute(
+                candidates = connection.execute(
                     """
                     SELECT *
                     FROM bot_registry
@@ -592,11 +594,14 @@ class ProjectRegistry:
                         project_display_name or "",
                         project_key_alias or "",
                     ),
-                ).fetchone()
-                if candidate is not None:
-                    candidate_name = _normalize_project_display_name(candidate["default_display_name"])
-                    if candidate_name not in {project_display_name, project_key_alias}:
-                        candidate = None
+                ).fetchall()
+                for row in candidates:
+                    if not _bot_row_is_fresh(row, now=now):
+                        continue
+                    candidate_name = _normalize_project_display_name(row["default_display_name"])
+                    if candidate_name in {project_display_name, project_key_alias}:
+                        candidate = row
+                        break
             if candidate is None and preferred is not None:
                 candidate = connection.execute(
                     """
@@ -608,16 +613,22 @@ class ProjectRegistry:
                     """,
                     (preferred,),
                 ).fetchone()
+                if candidate is not None and not _bot_row_is_fresh(candidate, now=now):
+                    candidate = None
             if candidate is None:
-                candidate = connection.execute(
+                candidates = connection.execute(
                     """
                     SELECT * FROM bot_registry
                     WHERE availability_state = 'available'
                       AND (assigned_project_key IS NULL OR assigned_project_key = '')
                     ORDER BY COALESCE(last_heartbeat_at, updated_at) DESC, bot_identity ASC
-                    LIMIT 1
+                    LIMIT 20
                     """
-                ).fetchone()
+                ).fetchall()
+                for row in candidates:
+                    if _bot_row_is_fresh(row, now=now):
+                        candidate = row
+                        break
             if candidate is None:
                 return None
 
@@ -1264,3 +1275,29 @@ def _normalize_reconciliation(value: Any) -> dict[str, Any] | None:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _bot_row_is_fresh(row: Any, *, now: str) -> bool:
+    heartbeat = _normalize_optional(row["last_heartbeat_at"])
+    if heartbeat is None:
+        return False
+    heartbeat_at = _parse_timestamp(heartbeat)
+    now_at = _parse_timestamp(now)
+    if heartbeat_at is None or now_at is None:
+        return False
+    return (now_at - heartbeat_at).total_seconds() <= BOT_HEARTBEAT_STALE_SECONDS
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

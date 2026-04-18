@@ -218,6 +218,17 @@ class GlobalDispatchService:
                     )
                     if lane_blocked is not None:
                         return lane_blocked
+                    active_runs = self._active_runs(
+                        ingress_bot=ingress_bot,
+                        explicit_project_key=requested_registration.project_key,
+                    )
+                    if active_runs:
+                        return self._already_running_result(
+                            ingress_bot=ingress_bot,
+                            registration=active_runs[0][0],
+                            active_issue=active_runs[0][1],
+                            session_name=active_runs[0][2],
+                        )
             issue = self._select_issue(
                 explicit_issue_key=explicit_issue_key,
                 explicit_project_key=explicit_project_key,
@@ -238,28 +249,11 @@ class GlobalDispatchService:
                 if active_runs:
                     if len(active_runs) == 1:
                         registration, active_issue, session_name = active_runs[0]
-                        handoff_required = ingress_bot.strip() != registration.owning_bot.strip()
-                        return DispatchRunResult(
-                            decision="already-running",
-                            issue_key=active_issue.identifier,
-                            issue_title=active_issue.title,
-                            project_key=registration.project_key,
-                            feature_key=_feature_key_from_issue(active_issue),
-                            lane_state=_lane_state(registration) or "executing",
-                            release_required=_lane_release_required(registration),
-                            owning_bot=registration.owning_bot,
-                            assigned_bot=registration.assigned_bot,
-                            assignment_action="active",
-                            handoff_required=handoff_required,
-                            ingress_message=_active_run_message(
-                                registration=registration,
-                                issue=active_issue,
-                                session_name=session_name,
-                                handoff_required=handoff_required,
-                            ),
-                            owner_message=None,
-                            runtime=None,
-                            notification_id=None,
+                        return self._already_running_result(
+                            ingress_bot=ingress_bot,
+                            registration=registration,
+                            active_issue=active_issue,
+                            session_name=session_name,
                         )
                     return DispatchRunResult(
                         decision="already-running",
@@ -496,6 +490,38 @@ class GlobalDispatchService:
                 ),
             )
         return None
+
+    def _already_running_result(
+        self,
+        *,
+        ingress_bot: str,
+        registration: ProjectRegistration,
+        active_issue: MirroredIssueRecord,
+        session_name: str | None,
+    ) -> DispatchRunResult:
+        handoff_required = ingress_bot.strip() != registration.owning_bot.strip()
+        return DispatchRunResult(
+            decision="already-running",
+            issue_key=active_issue.identifier,
+            issue_title=active_issue.title,
+            project_key=registration.project_key,
+            feature_key=_feature_key_from_issue(active_issue),
+            lane_state=_lane_state(registration) or "executing",
+            release_required=_lane_release_required(registration),
+            owning_bot=registration.owning_bot,
+            assigned_bot=registration.assigned_bot,
+            assignment_action="active",
+            handoff_required=handoff_required,
+            ingress_message=_active_run_message(
+                registration=registration,
+                issue=active_issue,
+                session_name=session_name,
+                handoff_required=handoff_required,
+            ),
+            owner_message=None,
+            runtime=None,
+            notification_id=None,
+        )
 
     def _record_launch_failure(
         self,
@@ -1107,6 +1133,21 @@ class GlobalDispatchService:
             resolved_issue_key = lane.get("last_issue_key")
         issue = self.mirror.get_issue(identifier=resolved_issue_key) if resolved_issue_key is not None else None
         session = runtime.store.get_session(DEFAULT_RUNNER_ID)
+        stale_reason = _stale_runner_event_reason(issue=issue, lane=lane)
+        if stale_reason is not None:
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": stale_reason,
+                "project": _serialize_project(registration),
+                "feature_lane": lane,
+                "reconciliation": _project_reconciliation(registration),
+                "issue_key": resolved_issue_key,
+                "active_issue_key": active_issue_key,
+                "has_active_slice": bool(continuity and continuity.active_slice_id),
+                "active_slice_id": None if continuity is None else continuity.active_slice_id,
+                "active_request_present": active_request is not None,
+            }
         submitted_at = datetime.now(UTC).isoformat(timespec="seconds")
         event_status = _runner_event_status(event_kind=event_kind, raw_status=raw_status)
         if continuity is not None and resolved_issue_key is not None:
@@ -2777,6 +2818,18 @@ def _feature_lane_payload(
         "release_note": release_note,
         "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
+
+
+def _stale_runner_event_reason(
+    *,
+    issue: MirroredIssueRecord | None,
+    lane: dict[str, Any] | None,
+) -> str | None:
+    if issue is not None and issue.completed_at is not None:
+        return "feature_already_completed"
+    if lane is not None and lane.get("lane_state") == "awaiting_hil_release":
+        return "feature_waiting_for_hil_release"
+    return None
 
 
 def _project_feature_lane(project: ProjectRegistration) -> dict[str, Any] | None:
