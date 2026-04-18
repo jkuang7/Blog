@@ -11,7 +11,9 @@ Applies to everything under `/Users/jian/Dev` unless a deeper `AGENTS.md` overri
 
 - `workspace/*` is owned by the parent `Dev` repo.
 - Do not create nested `.git` repos under `workspace/`.
-- Work directly on `main` or the branch already checked out by default; do not require a separate worktree unless the user explicitly asks for one.
+- Use the canonical repo checkout by default.
+- Work directly on `main` unless the repo is already on an intentional branch for the current task.
+- Do not create, require, or plan around separate worktrees unless the user explicitly asks for one.
 
 ## Task Start
 

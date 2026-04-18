@@ -20,6 +20,11 @@
 /Repos/**
 /worktrees/
 /worktrees/**
+/.codex/
+/.playwright-mcp/
+/.restore/
+/.restore-backups/
+/.repo-archives/
 
 # runtime and generated content
 /.DS_Store
