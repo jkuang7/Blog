@@ -5,7 +5,15 @@ plan_mode_reasoning_effort = "high"
 notify = [ "/Users/jian/Dev/workspace/hooks/notify-codex.sh" ]
 
 [tui]
-notifications = [ "agent-turn-complete", "approval-requested" ]
+notifications = [
+  "agent-turn-complete",
+  "approval-requested",
+  "input-requested",
+  "user-input-requested",
+  "question-asked",
+  "question-requested",
+  "question.asked",
+]
 notification_method = "auto"
 
 [projects."/Volumes/Kingston/Dev"]

@@ -5,7 +5,6 @@ mod commands;
 mod config;
 mod limits;
 mod models;
-mod orx;
 mod render;
 mod store;
 mod telegram;

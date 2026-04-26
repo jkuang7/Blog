@@ -1,33 +1,147 @@
 #!/bin/bash
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
-parse_profile_args "$@"
-if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
-  set -- "${PROFILE_ARGS_REST[@]}"
-else
-  set --
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE="${TELECODEX_PROFILE:-default}"
+if [[ "${1:-}" == "--profile" && -n "${2:-}" ]]; then
+  PROFILE="$2"
+  shift 2
 fi
 
+profile_key() {
+  printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' | tr -cd 'A-Z0-9_'
+}
+
+load_env() {
+  if [[ -f "$REPO_ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/.env"
+    set +a
+  fi
+}
+
+pid_is_live() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1
+}
+
 load_env
-render_config
-build_binary
 
-export_runtime_env
+PROFILE_UPPER="$(profile_key "$PROFILE")"
+PROFILE_ROOT="$REPO_ROOT/.telecodex/profiles/$PROFILE"
+DATA_DIR="$PROFILE_ROOT/data"
+RUNTIME_DIR="$PROFILE_ROOT/runtime"
+TMP_DIR="$PROFILE_ROOT/tmp"
+LOG_DIR="$PROFILE_ROOT/logs"
+LOCK_DIR="$PROFILE_ROOT/run.lock"
+LOCK_PID="$LOCK_DIR/pid"
+CONFIG_PATH="$RUNTIME_DIR/telecodex.toml"
+BIN_PATH="$REPO_ROOT/target/release/telecodex"
 
-existing_pid="$(acquire_profile_lock || true)"
-if [[ -n "${existing_pid:-}" ]] && pid_is_live "$existing_pid"; then
-  echo "run-foreground: profile $TELECODEX_PROFILE already running (pid $existing_pid)" >&2
+mkdir -p "$DATA_DIR" "$RUNTIME_DIR" "$TMP_DIR" "$LOG_DIR"
+
+TOKEN_ENV="${PROFILE_UPPER}_TELEGRAM_BOT_TOKEN"
+TOKEN_VALUE="${!TOKEN_ENV:-}"
+if [[ -z "$TOKEN_VALUE" && "$PROFILE" == "runner" ]]; then
+  TOKEN_ENV="TELEGRAM_BOT_TOKEN"
+  TOKEN_VALUE="${TELEGRAM_BOT_TOKEN:-}"
+fi
+if [[ -z "$TOKEN_VALUE" && "$PROFILE" == "default" && "${TELECODEX_ENABLE_DEFAULT:-0}" == "1" ]]; then
+  TOKEN_ENV="TELEGRAM_BOT_TOKEN"
+  TOKEN_VALUE="${TELEGRAM_BOT_TOKEN:-}"
+fi
+if [[ -z "$TOKEN_VALUE" ]]; then
+  echo "run-foreground: profile $PROFILE has no enabled Telegram token; exiting"
   exit 0
 fi
 
+ADMIN_IDS="${TELEGRAM_ALLOWED_USER_ID:-${TELECODEX_ADMIN_ID:-6943633503}}"
+DEFAULT_CWD="${TELECODEX_DEFAULT_CWD:-/Users/jian/Dev/workspace/telecodex}"
+CODEX_BINARY="${CODEX_BINARY:-codex}"
+CODEX_BINARY="$(command -v "$CODEX_BINARY" 2>/dev/null || printf '%s' "$CODEX_BINARY")"
+DEFAULT_MODEL="${CODEX_MODEL:-gpt-5.4}"
+DEFAULT_REASONING="${CODEX_REASONING_EFFORT:-medium}"
+DEFAULT_SANDBOX="${CODEX_SANDBOX:-danger-full-access}"
+DEFAULT_APPROVAL="${CODEX_APPROVAL:-never}"
+
+cat > "$CONFIG_PATH" <<EOF_CONFIG
+db_path = "$DATA_DIR/telecodex.sqlite3"
+startup_admin_ids = [$ADMIN_IDS]
+poll_timeout_seconds = 30
+edit_debounce_ms = 900
+max_text_chunk = 3500
+tmp_dir = "$TMP_DIR"
+
+[telegram]
+bot_token_env = "$TOKEN_ENV"
+api_base = "https://api.telegram.org"
+use_message_drafts = true
+auto_create_topics = false
+forum_sync_topics_per_poll = 2
+stale_topic_action = "none"
+
+[codex]
+binary = "$CODEX_BINARY"
+default_cwd = "$DEFAULT_CWD"
+default_model = "$DEFAULT_MODEL"
+default_reasoning_effort = "$DEFAULT_REASONING"
+default_sandbox = "$DEFAULT_SANDBOX"
+default_approval = "$DEFAULT_APPROVAL"
+default_search_mode = "disabled"
+import_desktop_history = true
+import_cli_history = true
+seed_workspaces = ["/Users/jian/Dev/workspace/telecodex"]
+default_add_dirs = ["/Users/jian/Dev"]
+EOF_CONFIG
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  existing_pid="$(cat "$LOCK_PID" 2>/dev/null || true)"
+  if pid_is_live "$existing_pid"; then
+    echo "run-foreground: profile $PROFILE already running (pid $existing_pid)"
+    exit 0
+  fi
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR"
+fi
+
+child_pid=""
+
 cleanup() {
-  clear_profile_lock
+  rm -rf "$LOCK_DIR"
 }
 
-trap cleanup EXIT INT TERM
+terminate_child() {
+  local signal="${1:-TERM}"
+  if [[ -n "${child_pid:-}" ]] && pid_is_live "$child_pid"; then
+    kill "-$signal" "$child_pid" >/dev/null 2>&1 || true
+    for _ in {1..20}; do
+      if ! pid_is_live "$child_pid"; then
+        wait "$child_pid" >/dev/null 2>&1 || true
+        return
+      fi
+      sleep 0.25
+    done
+    kill -KILL "$child_pid" >/dev/null 2>&1 || true
+    wait "$child_pid" >/dev/null 2>&1 || true
+  fi
+}
 
+on_signal() {
+  terminate_child TERM
+  cleanup
+  exit 143
+}
+
+trap cleanup EXIT
+trap on_signal INT TERM
+
+if [[ ! -x "$BIN_PATH" || "$REPO_ROOT/src" -nt "$BIN_PATH" ]]; then
+  cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"
+fi
+
+cd "$REPO_ROOT"
 "$BIN_PATH" "$CONFIG_PATH" &
 child_pid=$!
-record_profile_lock_child "$child_pid"
+printf '%s\n' "$child_pid" > "$LOCK_PID"
 wait "$child_pid"

@@ -821,6 +821,13 @@ fn normalize_path(path: PathBuf) -> PathBuf {
             return PathBuf::from(rest);
         }
     }
+    #[cfg(unix)]
+    {
+        let raw = path.as_os_str().to_string_lossy();
+        if let Some(rest) = raw.strip_prefix("/private/var/") {
+            return PathBuf::from(format!("/var/{rest}"));
+        }
+    }
     path
 }
 
@@ -1080,13 +1087,14 @@ mod tests {
         )
         .unwrap();
 
-        let expected_main = normalize_path(fs::canonicalize(&main_repo).unwrap());
-        let resolved_main = normalize_path(fs::canonicalize(environment_identity_for_cwd(&main_repo)).unwrap());
-        let resolved_worktree =
-            normalize_path(fs::canonicalize(environment_identity_for_cwd(&worktree)).unwrap());
-
-        assert_eq!(resolved_main, expected_main);
-        assert_eq!(resolved_worktree, expected_main);
+        assert_eq!(
+            environment_identity_for_cwd(&main_repo),
+            normalize_path(main_repo.clone())
+        );
+        assert_eq!(
+            environment_identity_for_cwd(&worktree),
+            normalize_path(main_repo)
+        );
     }
 
     #[test]

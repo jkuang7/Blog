@@ -14,12 +14,6 @@ LINES_HEALTH = 50
 LINES_FULL = 500
 
 
-_ORX_SESSION_PROJECT_RE = re.compile(
-    r"^orx-(?P<project>[a-z0-9][a-z0-9-]*)-(?P<issue>[a-z0-9][a-z0-9-]*-\d+)-(?P<runner>[a-z0-9][a-z0-9-]*)$",
-    re.IGNORECASE,
-)
-
-
 class TmuxClient:
     """Wrapper for tmux operations using dedicated socket."""
 
@@ -59,10 +53,8 @@ class TmuxClient:
 
         sessions = [s.strip() for s in result.stdout.strip().split("\n") if s.strip()]
 
-        # Filter by prefix if provided
         if prefix:
-            allowed_prefixes = [f"{prefix}-", "runner-"]
-            sessions = [s for s in sessions if any(s.startswith(allowed) for allowed in allowed_prefixes)]
+            sessions = [s for s in sessions if s.startswith(f"{prefix}-")]
 
         # Sort: prefix-N numerically first, then others alphabetically
         sort_prefix = prefix or "codex"
@@ -151,7 +143,7 @@ class TmuxClient:
         use_buffer = force_buffer or "\n" in text or len(text) > 512
 
         if use_buffer:
-            buffer_name = f"cl-runner-{int(time.time() * 1000)}-{os.getpid()}"
+            buffer_name = f"cl-buffer-{int(time.time() * 1000)}-{os.getpid()}"
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
                 tmp.write(text)
                 tmp_path = tmp.name
@@ -274,10 +266,3 @@ class TmuxClient:
         if result.returncode != 0:
             return None
         return result.stdout.strip()
-
-
-def _orx_session_project(session_name: str) -> str | None:
-    match = _ORX_SESSION_PROJECT_RE.match(session_name.strip())
-    if match is None:
-        return None
-    return match.group("project")

@@ -1,4 +1,3 @@
-import io
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -29,11 +28,10 @@ class CreateSessionTests(unittest.TestCase):
         workflow_overrides = session_profile_overrides(["continuous workflow"])
         self.assertIn('model="gpt-5.4"', workflow_overrides)
 
-    def test_create_session_checks_runner_prompt_install_before_launch(self):
+    def test_create_session_creates_and_attaches_tmux_session(self):
         tmux_instance = MagicMock()
 
         with (
-            patch("src.main.ensure_runner_prompt_install", return_value=None) as ensure_prompts,
             patch("src.main.get_tmux_config", return_value=None),
             patch("src.main.TmuxClient", return_value=tmux_instance),
             patch("src.main.os.getcwd", return_value="/tmp/project"),
@@ -41,7 +39,6 @@ class CreateSessionTests(unittest.TestCase):
         ):
             create_session([])
 
-        ensure_prompts.assert_called_once_with()
         tmux_instance.create_session.assert_called_once()
         tmux_instance.attach.assert_called_once()
 
@@ -49,7 +46,6 @@ class CreateSessionTests(unittest.TestCase):
         tmux_instance = MagicMock()
 
         with (
-            patch("src.main.ensure_runner_prompt_install", return_value=None),
             patch("src.main.get_tmux_config", return_value=None),
             patch("src.main.TmuxClient", return_value=tmux_instance),
             patch("src.main.os.getcwd", return_value="/tmp/project"),
@@ -66,7 +62,6 @@ class CreateSessionTests(unittest.TestCase):
         tmux_instance = MagicMock()
 
         with (
-            patch("src.main.ensure_runner_prompt_install", return_value=None),
             patch("src.main.get_tmux_config", return_value=None),
             patch("src.main.TmuxClient", return_value=tmux_instance),
             patch("src.main.os.getcwd", return_value="/tmp/project"),
@@ -77,27 +72,6 @@ class CreateSessionTests(unittest.TestCase):
         created_command = tmux_instance.create_session.call_args[0][1]
         self.assertNotIn('model="gpt-5.4"', created_command)
         self.assertNotIn('model_reasoning_effort="high"', created_command)
-
-    def test_create_session_stops_when_runner_prompt_install_cannot_be_repaired(self):
-        tmux_instance = MagicMock()
-        stdout = io.StringIO()
-
-        with (
-            patch(
-                "src.main.ensure_runner_prompt_install",
-                return_value="Installed runner prompt is not linked to canonical source.",
-            ),
-            patch("src.main.get_tmux_config", return_value=None),
-            patch("src.main.TmuxClient", return_value=tmux_instance),
-            patch("sys.stdout", stdout),
-        ):
-            create_session([])
-
-        tmux_instance.create_session.assert_not_called()
-        tmux_instance.attach.assert_not_called()
-        output = stdout.getvalue()
-        self.assertIn("Command install check failed", output)
-        self.assertIn("not linked to canonical source", output)
 
 
 if __name__ == "__main__":

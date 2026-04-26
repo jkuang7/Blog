@@ -63,16 +63,6 @@ impl TelegramClient {
         Ok(())
     }
 
-    pub async fn set_my_name(&self, name: &str) -> Result<()> {
-        #[derive(Serialize)]
-        struct Payload<'a> {
-            name: &'a str,
-        }
-
-        let _: bool = self.post("setMyName", Some(&Payload { name })).await?;
-        Ok(())
-    }
-
     pub async fn send_message(&self, request: SendMessage) -> Result<Message> {
         self.post("sendMessage", Some(&request)).await
     }

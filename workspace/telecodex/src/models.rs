@@ -70,15 +70,9 @@ pub struct SessionRecord {
     pub search_mode: SearchMode,
     pub add_dirs: Vec<PathBuf>,
     pub busy: bool,
-    pub state: SessionState,
-    pub state_detail: Option<String>,
-    pub last_status_message_id: Option<i64>,
-    pub last_activity_at: Option<String>,
-    pub last_summary: Option<String>,
-    pub pending_turns: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TurnRequest {
     pub session_key: SessionKey,
     pub from_user_id: i64,
@@ -87,6 +81,7 @@ pub struct TurnRequest {
     pub attachments: Vec<LocalAttachment>,
     pub review_mode: Option<ReviewRequest>,
     pub override_search_mode: Option<SearchMode>,
+    pub automation: Option<AutomationTurn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,44 +93,120 @@ pub struct ReviewRequest {
     pub prompt: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutomationTurn {
+    pub generation_id: String,
+    pub step: AutomationStep,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AutomationStep {
+    Add,
+    Run,
+    Review,
+}
+
+impl AutomationStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Run => "run",
+            Self::Review => "review",
+        }
+    }
+}
+
+impl TryFrom<&str> for AutomationStep {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "add" => Ok(Self::Add),
+            "run" => Ok(Self::Run),
+            "review" => Ok(Self::Review),
+            other => anyhow::bail!("unsupported automation step {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunnerState {
+    Idle,
+    Running,
+    Reviewing,
+    Paused,
+    Blocked,
+    Stopping,
+}
+
+impl RunnerState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Reviewing => "reviewing",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
+            Self::Stopping => "stopping",
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::Reviewing | Self::Stopping)
+    }
+}
+
+impl TryFrom<&str> for RunnerState {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "running" => Ok(Self::Running),
+            "reviewing" => Ok(Self::Reviewing),
+            "paused" => Ok(Self::Paused),
+            "blocked" => Ok(Self::Blocked),
+            "stopping" => Ok(Self::Stopping),
+            other => anyhow::bail!("unsupported runner state {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunnerStateRecord {
+    pub automation_enabled: bool,
+    pub state: RunnerState,
+    pub controller_chat_id: Option<i64>,
+    pub controller_thread_id: Option<i64>,
+    pub active_codex_thread_id: Option<String>,
+    pub generation_id: Option<String>,
+    pub current_step: Option<AutomationStep>,
+    pub runner_scope_issue: Option<String>,
+    pub last_footer: Option<String>,
+    pub stop_requested: bool,
+    pub started_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct RunnerEventRecord {
+    pub id: i64,
+    pub key: SessionKey,
+    pub codex_thread_id: Option<String>,
+    pub event_kind: String,
+    pub text: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct TelegramMessageRef {
     pub chat_id: i64,
     pub message_id: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TelegramTranscriptDirection {
-    Inbound,
-    Outbound,
-}
-
-impl TelegramTranscriptDirection {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Inbound => "inbound",
-            Self::Outbound => "outbound",
-        }
-    }
-
-    pub fn from_db(value: &str) -> Self {
-        match value {
-            "outbound" => Self::Outbound,
-            _ => Self::Inbound,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TelegramTranscriptEntry {
-    pub telegram_message_id: Option<i64>,
-    pub direction: TelegramTranscriptDirection,
-    pub text: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
     Image,
     Text,
@@ -145,7 +216,7 @@ pub enum AttachmentKind {
     Document,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LocalAttachment {
     pub path: PathBuf,
     pub file_name: String,
@@ -154,77 +225,11 @@ pub struct LocalAttachment {
     pub transcript: Option<AttachmentTranscript>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AttachmentTranscript {
     #[allow(dead_code)]
     pub engine: String,
     pub text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionState {
-    Idle,
-    Planning,
-    Coding,
-    Running,
-    WaitingApproval,
-    Blocked,
-    Interrupted,
-    Completed,
-    Failed,
-}
-
-impl SessionState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Planning => "planning",
-            Self::Coding => "coding",
-            Self::Running => "running",
-            Self::WaitingApproval => "waiting_approval",
-            Self::Blocked => "blocked",
-            Self::Interrupted => "interrupted",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-        }
-    }
-
-    pub fn from_db(value: &str) -> Self {
-        match value {
-            "planning" => Self::Planning,
-            "coding" => Self::Coding,
-            "running" => Self::Running,
-            "waiting_approval" => Self::WaitingApproval,
-            "blocked" => Self::Blocked,
-            "interrupted" => Self::Interrupted,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            _ => Self::Idle,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingTurnStatus {
-    Queued,
-    Running,
-}
-
-impl PendingTurnStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingTurnRecord {
-    pub id: i64,
-    pub request: TurnRequest,
-    pub chat_kind: String,
 }
 
 impl TurnRequest {

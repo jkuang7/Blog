@@ -21,15 +21,19 @@ pub enum BridgeCommand {
     New { title: Option<String> },
     Topic { title: Option<String> },
     Use { thread_id_prefix: String },
-    Review(ReviewRequest),
+    CodexReview(ReviewRequest),
+    RunnerAdd { context: String },
+    RunnerRun { issue: Option<String> },
+    RunnerReview { context: Option<String> },
+    LoopStatus,
+    LoopStop,
+    LoopClear,
     Cd { path: String },
     Pwd,
     Environments,
     Sessions,
     History,
     Status,
-    Add { request: String },
-    Kanban,
     Stop,
     Allow { user_id: i64 },
     Deny { user_id: i64 },
@@ -73,6 +77,15 @@ const UNSUPPORTED_COMMANDS: &[&str] = &[
 ];
 
 pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<ParsedInput> {
+    if command == "/plan" {
+        if let Some(context) = plan_add_context(args) {
+            return Ok(ParsedInput::Bridge(BridgeCommand::RunnerAdd {
+                context: context.to_string(),
+            }));
+        }
+        return Ok(ParsedInput::Forward(original_text.trim().to_string()));
+    }
+
     if FORWARDED_COMMANDS.contains(&command) {
         return Ok(ParsedInput::Forward(original_text.trim().to_string()));
     }
@@ -94,7 +107,19 @@ pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<P
         "/use" => BridgeCommand::Use {
             thread_id_prefix: required_arg(args, "/use <thread_id_prefix|latest>")?.to_string(),
         },
-        "/review" => BridgeCommand::Review(parse_review_args(args)?),
+        "/add" => BridgeCommand::RunnerAdd {
+            context: required_arg(args, "/add <context>")?.to_string(),
+        },
+        "/run" => BridgeCommand::RunnerRun {
+            issue: parse_optional_issue_scope(args)?,
+        },
+        "/review" => BridgeCommand::RunnerReview {
+            context: non_empty(args).map(ToOwned::to_owned),
+        },
+        "/loop_status" | "/loop-status" => BridgeCommand::LoopStatus,
+        "/loop_stop" | "/loop-stop" => BridgeCommand::LoopStop,
+        "/loop_clear" | "/loop-clear" => BridgeCommand::LoopClear,
+        "/codex_review" | "/codex-review" => BridgeCommand::CodexReview(parse_review_args(args)?),
         "/cd" => BridgeCommand::Cd {
             path: required_arg(args, "/cd <absolute_path>")?.to_string(),
         },
@@ -103,13 +128,6 @@ pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<P
         "/sessions" => BridgeCommand::Sessions,
         "/history" => BridgeCommand::History,
         "/status" => BridgeCommand::Status,
-        "/add" | "/enhance" => BridgeCommand::Add {
-            request: required_arg(args, "/add <feature request>")?.to_string(),
-        },
-        "/kanban" | "/run" | "/continuous-workflow" | "/continuous_workflow" => {
-            BridgeCommand::Kanban
-        }
-        ,
         "/stop" => BridgeCommand::Stop,
         "/allow" => BridgeCommand::Allow {
             user_id: parse_i64_arg(args, "/allow <tg_user_id>")?,
@@ -161,6 +179,15 @@ pub fn parse_command(command: &str, args: &str, original_text: &str) -> Result<P
         _ => return Ok(ParsedInput::Forward(original_text.trim().to_string())),
     };
     Ok(ParsedInput::Bridge(bridge))
+}
+
+fn plan_add_context(args: &str) -> Option<&str> {
+    let trimmed = args.trim();
+    let remainder = trimmed.strip_prefix("/add")?;
+    if remainder.is_empty() || !remainder.starts_with(char::is_whitespace) {
+        return None;
+    }
+    non_empty(remainder)
 }
 
 pub fn command_help(command: &str, args: &str) -> Option<CommandHelp> {
@@ -230,14 +257,29 @@ pub fn command_help(command: &str, args: &str) -> Option<CommandHelp> {
         "/history" => Some(text_help(
             "Usage: /history\n\nShows an interactive pager for messages from the selected Codex session.",
         )),
-        "/add" | "/enhance" => Some(text_help(
-            "Usage: /add <request>\n\nSend global intake to ORX. The request can decompose into one or more Linear tickets across projects before execution.",
-        )),
         "/add-dir" | "/add_dir" => Some(text_help(
             "Usage: /add-dir <absolute_path>\n\nExample:\n/add-dir /absolute/path/to/workspace",
         )),
+        "/add" => Some(text_help(
+            "Usage: /add <context>\n\nCreates Linear-controlled Todo work through a fresh Codex session.",
+        )),
+        "/run" => Some(text_help(
+            "Usage: /run [PRO-123]\n\nStarts or resumes the single Linear runner loop from this Telegram topic. Only Linear Todo issues are eligible; Backlog is ignored. Provide an issue key to restrict the loop to one Linear ticket.",
+        )),
         "/review" => Some(text_help(
-            "Usage: /review [--uncommitted] [--base <branch>] [--commit <sha>] [--title <title>] [prompt]\n\nExamples:\n/review\n/review --base main look for regressions\n/review --commit abc123 focus on bugs",
+            "Usage: /review [context]\n\nRuns runner review only for the current phase from the last /run result.",
+        )),
+        "/loop_status" | "/loop-status" => Some(text_help(
+            "Usage: /loop_status\n\nShows the current Telecodex runner controller state.",
+        )),
+        "/loop_stop" | "/loop-stop" => Some(text_help(
+            "Usage: /loop_stop\n\nStops the active runner turn and pauses the loop.",
+        )),
+        "/loop_clear" | "/loop-clear" => Some(text_help(
+            "Usage: /loop_clear\n\nClears stale runner state when no runner turn is active.",
+        )),
+        "/codex_review" | "/codex-review" => Some(text_help(
+            "Usage: /codex_review [--uncommitted] [--base <branch>] [--commit <sha>] [--title <title>] [prompt]\n\nExamples:\n/codex_review\n/codex_review --base main look for regressions\n/codex_review --commit abc123 focus on bugs",
         )),
         _ => None,
     }
@@ -247,7 +289,6 @@ pub fn default_bot_commands() -> Vec<BotCommand> {
     vec![
         bot_command("help", "Show Codex help"),
         bot_command("status", "Show status for this session"),
-        bot_command("add", "Create ORX/Linear work from a request"),
         bot_command("login", "Log in to Codex with device code"),
         bot_command("logout", "Remove stored Codex credentials"),
         bot_command("new", "Start a fresh Codex session in this topic"),
@@ -262,12 +303,16 @@ pub fn default_bot_commands() -> Vec<BotCommand> {
         bot_command("search", "Set web search mode"),
         bot_command("add_dir", "Add writable directory"),
         bot_command("limits", "Show latest Codex rate limits snapshot"),
-        bot_command("review", "Run codex review"),
+        bot_command("add", "Create Linear Todo tickets from context"),
+        bot_command("run", "Run eligible Linear Todo work"),
+        bot_command("review", "Review the current runner phase"),
+        bot_command("loop_status", "Show runner state"),
+        bot_command("loop_stop", "Stop the active runner"),
+        bot_command("loop_clear", "Clear stale runner state"),
+        bot_command("codex_review", "Run codex review"),
         bot_command("environments", "Show importable Codex environments"),
         bot_command("sessions", "List sessions in this chat"),
         bot_command("history", "Browse messages in the selected Codex session"),
-        bot_command("kanban", "Legacy alias for /run"),
-        bot_command("run", "Ask ORX to pick the next runnable Linear work and bot lane"),
         bot_command("copy", "Resend the last assistant reply"),
         bot_command("clear", "Start a fresh Codex session on the next turn"),
         bot_command("stop", "Stop the active turn"),
@@ -354,6 +399,28 @@ fn non_empty(value: &str) -> Option<&str> {
     } else {
         Some(trimmed)
     }
+}
+
+fn parse_optional_issue_scope(args: &str) -> Result<Option<String>> {
+    let Some(value) = non_empty(args) else {
+        return Ok(None);
+    };
+    let mut parts = value.split_whitespace();
+    let issue = parts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("/run [ISSUE-123]"))?;
+    if parts.next().is_some() {
+        bail!("/run accepts at most one optional Linear issue key, for example `/run PRO-123`");
+    }
+    let issue = issue.trim().to_ascii_uppercase();
+    if !issue
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        || !issue.contains('-')
+    {
+        bail!("invalid Linear issue key `{issue}`; expected format like `PRO-123`");
+    }
+    Ok(Some(issue))
 }
 
 fn bot_command(command: &str, description: &str) -> BotCommand {
@@ -448,11 +515,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_kanban_command() {
-        let parsed = parse_command("/kanban", "", "/kanban").unwrap();
+    fn parses_scoped_runner_command() {
+        let parsed = parse_command("/run", "pro-123", "/run pro-123").unwrap();
         match parsed {
-            ParsedInput::Bridge(BridgeCommand::Kanban) => {}
-            _ => panic!("unexpected kanban variant"),
+            ParsedInput::Bridge(BridgeCommand::RunnerRun { issue }) => {
+                assert_eq!(issue.as_deref(), Some("PRO-123"));
+            }
+            _ => panic!("unexpected run variant"),
         }
     }
 
@@ -477,8 +546,12 @@ mod tests {
     fn provides_review_help() {
         let help = command_help("/review", "").unwrap();
         assert!(help.text.contains("Usage: /review"));
-        assert!(help.text.contains("/review --base main"));
-        assert!(help.text.contains("/review --commit abc123"));
+        assert!(help.text.contains("runner review"));
+
+        let help = command_help("/codex_review", "").unwrap();
+        assert!(help.text.contains("Usage: /codex_review"));
+        assert!(help.text.contains("/codex_review --base main"));
+        assert!(help.text.contains("/codex_review --commit abc123"));
     }
 
     #[test]
@@ -486,7 +559,6 @@ mod tests {
         let cases = [
             ("/help", ParsedInputKind::Forward),
             ("/status", ParsedInputKind::Bridge),
-            ("/add fix the poller overlap", ParsedInputKind::Bridge),
             ("/login", ParsedInputKind::Bridge),
             ("/logout", ParsedInputKind::Bridge),
             ("/new test", ParsedInputKind::Bridge),
@@ -501,12 +573,16 @@ mod tests {
             ("/search on", ParsedInputKind::Bridge),
             ("/add_dir /workspace/shared", ParsedInputKind::Bridge),
             ("/limits", ParsedInputKind::Bridge),
-            ("/review --uncommitted", ParsedInputKind::Bridge),
+            ("/add create tickets", ParsedInputKind::Bridge),
+            ("/run", ParsedInputKind::Bridge),
+            ("/review", ParsedInputKind::Bridge),
+            ("/loop_status", ParsedInputKind::Bridge),
+            ("/loop_stop", ParsedInputKind::Bridge),
+            ("/loop_clear", ParsedInputKind::Bridge),
+            ("/codex_review --uncommitted", ParsedInputKind::Bridge),
             ("/environments", ParsedInputKind::Bridge),
             ("/sessions", ParsedInputKind::Bridge),
             ("/history", ParsedInputKind::Bridge),
-            ("/kanban", ParsedInputKind::Bridge),
-            ("/run", ParsedInputKind::Bridge),
             ("/copy", ParsedInputKind::Bridge),
             ("/clear", ParsedInputKind::Bridge),
             ("/stop", ParsedInputKind::Bridge),
@@ -545,6 +621,34 @@ mod tests {
                 assert_eq!(thread_id_prefix, "019ce672");
             }
             _ => panic!("unexpected use variant"),
+        }
+    }
+
+    #[test]
+    fn plan_add_routes_to_linear_intake() {
+        let parsed = parse_command(
+            "/plan",
+            "/add split telecodex and create-t3-jian work",
+            "/plan /add split telecodex and create-t3-jian work",
+        )
+        .unwrap();
+
+        match parsed {
+            ParsedInput::Bridge(BridgeCommand::RunnerAdd { context }) => {
+                assert_eq!(context, "split telecodex and create-t3-jian work");
+            }
+            other => panic!("unexpected parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_plan_still_forwards_to_codex() {
+        let parsed =
+            parse_command("/plan", "think through this", "/plan think through this").unwrap();
+
+        match parsed {
+            ParsedInput::Forward(text) => assert_eq!(text, "/plan think through this"),
+            other => panic!("unexpected parse result: {other:?}"),
         }
     }
 

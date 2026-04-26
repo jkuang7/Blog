@@ -15,7 +15,7 @@ from src.main import list_sessions
 class ListSessionsTests(unittest.TestCase):
     def test_list_sessions_attaches_regular_session_by_number(self):
         tmux_instance = MagicMock()
-        tmux_instance.list_sessions.return_value = ["codex-1", "codex-2", "runner-blog"]
+        tmux_instance.list_sessions.return_value = ["codex-1", "codex-2"]
 
         with (
             patch("src.main.get_tmux_config", return_value=None),
@@ -26,18 +26,21 @@ class ListSessionsTests(unittest.TestCase):
 
         tmux_instance.attach.assert_called_once_with("codex-1")
 
-    def test_list_sessions_attaches_runner_session_by_letter(self):
+    def test_list_sessions_rejects_letter_selector(self):
         tmux_instance = MagicMock()
-        tmux_instance.list_sessions.return_value = ["codex-1", "runner-blog", "runner-time-track"]
+        tmux_instance.list_sessions.return_value = ["codex-1", "codex-2"]
+        stdout = io.StringIO()
 
         with (
             patch("src.main.get_tmux_config", return_value=None),
             patch("src.main.TmuxClient", return_value=tmux_instance),
             patch("src.main.os.chdir"),
+            patch("sys.stdout", stdout),
         ):
             list_sessions("b")
 
-        tmux_instance.attach.assert_called_once_with("runner-time-track")
+        tmux_instance.attach.assert_not_called()
+        self.assertIn("Session selector not found: b", stdout.getvalue())
 
     def test_list_sessions_reports_invalid_selector_without_opening_menu(self):
         tmux_instance = MagicMock()

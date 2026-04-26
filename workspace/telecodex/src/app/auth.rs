@@ -1,4 +1,4 @@
-use super::io::send_markdown_with_shared_audit;
+use super::presentation::send_markdown_message;
 use super::*;
 use tokio::{sync::oneshot, time::timeout};
 
@@ -22,7 +22,8 @@ impl App {
         let pending = self.shared.pending_codex_login.lock().await.clone();
         match pending {
             Some(pending) => {
-                self.send_markdown_with_audit(
+                send_markdown_message(
+                    &self.shared.telegram,
                     chat_id,
                     thread_id,
                     &format_device_auth_message(&pending.prompt, true),
@@ -31,7 +32,8 @@ impl App {
                 .await?;
             }
             None => {
-                self.send_markdown_with_audit(
+                send_markdown_message(
+                    &self.shared.telegram,
                     chat_id,
                     thread_id,
                     &codex_login_required_message(),
@@ -57,7 +59,8 @@ impl App {
         }
 
         if let Some(message_text) = active_login_backoff_message(&self.shared).await {
-            self.send_markdown_with_audit(
+            send_markdown_message(
+                &self.shared.telegram,
                 message.chat.id,
                 message.message_thread_id,
                 &message_text,
@@ -68,7 +71,8 @@ impl App {
         }
 
         if let Some(pending) = self.shared.pending_codex_login.lock().await.clone() {
-            self.send_markdown_with_audit(
+            send_markdown_message(
+                &self.shared.telegram,
                 message.chat.id,
                 message.message_thread_id,
                 &format_device_auth_message(&pending.prompt, true),
@@ -134,7 +138,8 @@ impl App {
             prompt: prompt.clone(),
             cancel,
         });
-        self.send_markdown_with_audit(
+        send_markdown_message(
+            &self.shared.telegram,
             message.chat.id,
             message.message_thread_id,
             &format_device_auth_message(&prompt, false),
@@ -201,14 +206,14 @@ async fn run_device_auth_login(
             } else {
                 format!("Codex login completed.\n\n{}", status.detail)
             };
-            send_markdown_with_shared_audit(&shared, chat_id, thread_id, &body, None).await?;
+            send_markdown_message(&shared.telegram, chat_id, thread_id, &body, None).await?;
         }
         Err(error) => {
             if cancel.is_cancelled() || error.to_string().contains("cancelled") {
                 return Ok(());
             }
             let body = format!("Codex login failed.\n\n{error:#}");
-            send_markdown_with_shared_audit(&shared, chat_id, thread_id, &body, None).await?;
+            send_markdown_message(&shared.telegram, chat_id, thread_id, &body, None).await?;
         }
     }
     Ok(())
@@ -247,8 +252,8 @@ async fn handle_login_start_failure(
 ) -> Result<()> {
     maybe_start_login_backoff(shared, &error).await;
     let body = format_login_failure_message(&error, shared).await;
-    send_markdown_with_shared_audit(
-        shared,
+    send_markdown_message(
+        &shared.telegram,
         message.chat.id,
         message.message_thread_id,
         &body,

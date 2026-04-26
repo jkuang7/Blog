@@ -34,6 +34,18 @@ def pick(obj, *names):
             return value.strip()
     return ""
 
+def nested_pick(obj, *paths):
+    for path in paths:
+        current = obj
+        for part in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(part)
+        if isinstance(current, str) and current.strip():
+            return current.strip()
+    return ""
+
 event = pick(
     data,
     "event",
@@ -43,10 +55,25 @@ event = pick(
     "notification_type",
     "kind",
 )
-title = pick(data, "title")
-message = pick(data, "message", "subtitle")
+title = pick(data, "title") or nested_pick(
+    data,
+    ("question", "title"),
+    ("question", "header"),
+    ("request", "title"),
+)
+message = (
+    pick(data, "message", "subtitle")
+    or nested_pick(
+        data,
+        ("question", "prompt"),
+        ("question", "question"),
+        ("request", "prompt"),
+        ("request", "question"),
+    )
+)
 
 event_key = event.lower().replace("_", "-").replace("/", "-")
+text_haystack = " ".join(part for part in (event_key, title.lower(), message.lower()) if part)
 
 completion_events = {
     "agent-turn-complete",
@@ -59,16 +86,32 @@ attention_events = {
     "approval-required",
     "input-requested",
     "user-input-requested",
+    "question-asked",
+    "question-requested",
+    "question.asked",
 }
+
+looks_like_attention = any(
+    token in text_haystack
+    for token in (
+        "approval",
+        "question",
+        "select",
+        "selection",
+        "choose",
+        "input",
+        "waiting for your input",
+    )
+)
 
 if event_key in completion_events:
     print(f"notify\t{title or 'Codex Complete'}\t{message or 'Codex finished a task.'}")
-elif event_key in attention_events:
+elif event_key in attention_events or looks_like_attention:
     print(f"notify\t{title or 'Codex Needs Attention'}\t{message or 'Codex is waiting for your input.'}")
 elif not event_key:
     print(f"notify\t{title or 'Codex'}\t{message or 'Codex needs attention.'}")
 else:
-    print("skip\t\t")
+    print(f"notify\t{title or 'Codex'}\t{message or 'Codex activity needs review.'}")
 PY
 )
 

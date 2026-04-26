@@ -16,12 +16,10 @@ stale_topic_days = 30
 stale_topic_action = "close"
 
 [codex]
-binary = "/Users/jian/.nvm/versions/node/v23.11.0/bin/codex"
+binary = "codex"
 default_cwd = "/absolute/path/to/telecodex"
-default_model = "gpt-5.4-mini"
+default_model = "gpt-5.4"
 default_reasoning_effort = "medium"
-execution_model = "gpt-5.4"
-execution_reasoning_effort = "high"
 default_sandbox = "workspace-write"
 default_approval = "never"
 default_search_mode = "disabled"

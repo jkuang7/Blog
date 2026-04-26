@@ -1,83 +1,58 @@
 #!/bin/bash
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
-parse_profile_args "$@"
-if [[ ${#PROFILE_ARGS_REST[@]} -gt 0 ]]; then
-  set -- "${PROFILE_ARGS_REST[@]}"
-else
-  set --
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE="${TELECODEX_PROFILE:-default}"
+if [[ "${1:-}" == "--profile" && -n "${2:-}" ]]; then
+  PROFILE="$2"
 fi
 
-load_env
-render_config
-build_binary
-ensure_dirs
-export_runtime_env
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.env"
+  set +a
+fi
 
-if service_disabled; then
-  echo "self-heal: disabled ($TELECODEX_PROFILE)"
+profile_key() {
+  printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_' | tr -cd 'A-Z0-9_'
+}
+
+PROFILE_UPPER="$(profile_key "$PROFILE")"
+PROFILE_ROOT="$REPO_ROOT/.telecodex/profiles/$PROFILE"
+LOCK_PID="$PROFILE_ROOT/run.lock/pid"
+TOKEN_ENV="${PROFILE_UPPER}_TELEGRAM_BOT_TOKEN"
+TOKEN_VALUE="${!TOKEN_ENV:-}"
+if [[ -z "$TOKEN_VALUE" && "$PROFILE" == "runner" ]]; then
+  TOKEN_VALUE="${TELEGRAM_BOT_TOKEN:-}"
+fi
+if [[ -z "$TOKEN_VALUE" && "$PROFILE" == "default" && "${TELECODEX_ENABLE_DEFAULT:-0}" == "1" ]]; then
+  TOKEN_VALUE="${TELEGRAM_BOT_TOKEN:-}"
+fi
+if [[ -z "$TOKEN_VALUE" ]]; then
+  echo "self-heal: profile $PROFILE is not enabled"
   exit 0
 fi
 
-repair_needed=0
-service_needs_repair=0
-watchdog_needs_reinstall=0
-locked_pid="$(active_profile_lock_pid || true)"
-
-if [[ ! -f "$PLIST_PATH" ]]; then
-  echo "self-heal: missing launchd plist for $APP_LABEL"
-  repair_needed=1
-  service_needs_repair=1
-elif ! service_loaded "$APP_LABEL"; then
-  echo "self-heal: $APP_LABEL is not loaded"
-  repair_needed=1
-  service_needs_repair=1
-elif ! service_active "$APP_LABEL"; then
-  if pid_is_live "$locked_pid"; then
-    echo "self-heal: $APP_LABEL uses live profile lock pid $locked_pid"
-  else
-    echo "self-heal: $APP_LABEL is loaded but inactive"
-    repair_needed=1
-    service_needs_repair=1
-  fi
-elif [[ -z "$locked_pid" ]]; then
-  echo "self-heal: $APP_LABEL is active without a held profile lock"
-  repair_needed=1
-  service_needs_repair=1
-fi
-
-if [[ ! -f "$HEALTH_PLIST_PATH" ]] || ! service_loaded "$HEALTH_APP_LABEL"; then
-  echo "self-heal: watchdog agent needs reinstall for $HEALTH_APP_LABEL"
-  repair_needed=1
-  watchdog_needs_reinstall=1
-fi
-
-if ! telegram_bot_getme >/dev/null 2>&1; then
-  echo "self-heal: Telegram token check failed for profile $TELECODEX_PROFILE"
+if ! curl -fsS "https://api.telegram.org/bot${TOKEN_VALUE}/getMe" >/dev/null; then
+  echo "self-heal: Telegram token check failed for profile $PROFILE" >&2
   exit 1
 fi
 
-if ! telegram_webhook_info | grep -q '"url":""'; then
-  echo "self-heal: webhook is configured for profile $TELECODEX_PROFILE"
-  exit 1
+LABEL="dev.jian.telecodex"
+if [[ "$PROFILE" != "default" ]]; then
+  LABEL="dev.jian.telecodex-$PROFILE"
 fi
 
-if [[ "$repair_needed" -eq 1 ]]; then
-  if [[ "$watchdog_needs_reinstall" -eq 1 ]]; then
-    "$REPO_ROOT/bin/install-launchd" --profile "$TELECODEX_PROFILE"
-    launchctl kickstart -k "$(launchctl_domain)/$APP_LABEL"
-  elif [[ "$service_needs_repair" -eq 1 ]]; then
-    if ! service_loaded "$APP_LABEL"; then
-      launchctl bootstrap "$(launchctl_domain)" "$PLIST_PATH"
-      launchctl enable "$(launchctl_domain)/$APP_LABEL"
-    fi
-    launchctl kickstart -k "$(launchctl_domain)/$APP_LABEL"
-  fi
+locked_pid="$(cat "$LOCK_PID" 2>/dev/null || true)"
+if [[ -n "$locked_pid" ]] && kill -0 "$locked_pid" >/dev/null 2>&1; then
+  echo "self-heal: ok ($PROFILE, pid $locked_pid)"
+  exit 0
 fi
 
-if [[ -z "$locked_pid" ]]; then
-  clear_profile_lock
+DOMAIN="gui/$(id -u)"
+if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+  launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
 fi
 
-echo "self-heal: ok ($TELECODEX_PROFILE)"
+echo "self-heal: ok ($PROFILE)"

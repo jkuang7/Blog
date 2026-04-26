@@ -1,13 +1,7 @@
 use super::*;
-use crate::app::forum::{
-    BotNameSyncStatus, parse_bot_name_sync_status, project_only_display_name,
-    should_attempt_bot_name_sync,
-};
 use crate::config::SearchMode;
-use std::fs;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
-use tempfile::TempDir;
 
 fn sample_workspace() -> PathBuf {
     std::env::temp_dir()
@@ -31,31 +25,13 @@ fn sample_turn_workspace() -> TurnWorkspace {
 fn sample_defaults() -> SessionDefaults {
     SessionDefaults {
         cwd: sample_workspace(),
-        model: Some("gpt-5.4-mini".to_string()),
+        model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some("medium".to_string()),
         session_prompt: None,
         sandbox_mode: "workspace-write".to_string(),
         approval_policy: "never".to_string(),
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
-    }
-}
-
-fn sample_codex_config() -> crate::config::CodexConfig {
-    crate::config::CodexConfig {
-        binary: PathBuf::from("codex"),
-        default_cwd: sample_workspace(),
-        default_model: Some("gpt-5.4-mini".to_string()),
-        default_reasoning_effort: Some("medium".to_string()),
-        execution_model: Some("gpt-5.4".to_string()),
-        execution_reasoning_effort: Some("high".to_string()),
-        default_sandbox: "workspace-write".to_string(),
-        default_approval: "never".to_string(),
-        default_search_mode: SearchMode::Disabled,
-        default_add_dirs: vec![],
-        seed_workspaces: vec![],
-        import_desktop_history: true,
-        import_cli_history: true,
     }
 }
 
@@ -68,30 +44,7 @@ fn sample_turn_request(session_key: SessionKey) -> TurnRequest {
         attachments: vec![],
         review_mode: None,
         override_search_mode: None,
-    }
-}
-
-fn sample_config(db_path: PathBuf) -> crate::config::Config {
-    crate::config::Config {
-        telegram: crate::config::TelegramConfig {
-            bot_token: Some("test-token".to_string()),
-            bot_token_env: None,
-            api_base: "http://127.0.0.1:9".to_string(),
-            use_message_drafts: true,
-            primary_forum_chat_id: None,
-            auto_create_topics: false,
-            forum_sync_topics_per_poll: 2,
-            stale_topic_days: None,
-            stale_topic_action: crate::config::StaleTopicAction::None,
-        },
-        codex: sample_codex_config(),
-        orx: None,
-        db_path,
-        startup_admin_ids: vec![100],
-        poll_timeout_seconds: 30,
-        edit_debounce_ms: 900,
-        max_text_chunk: 3500,
-        tmp_dir: None,
+        automation: None,
     }
 }
 
@@ -140,249 +93,11 @@ fn enables_live_search_for_latest_queries() {
 }
 
 #[test]
-fn parses_bot_name_sync_status_from_orx_payload() {
-    let payload = serde_json::json!({
-        "bot": {
-            "desired_display_name": "alpha - fix lock drift",
-            "current_display_name": "alpha - stale state",
-            "name_sync_state": "pending",
-            "name_sync_retry_at": "2026-04-16T16:00:00+00:00"
-        }
-    });
-
-    let status = parse_bot_name_sync_status(&payload).expect("status");
-
-    assert_eq!(status.desired_name, "alpha - fix lock drift");
-    assert_eq!(status.current_name.as_deref(), Some("alpha - stale state"));
-    assert_eq!(status.sync_state.as_deref(), Some("pending"));
-    assert_eq!(
-        status.retry_at.map(|value| value.to_rfc3339()),
-        Some("2026-04-16T16:00:00+00:00".to_string())
-    );
-}
-
-#[test]
-fn skips_bot_name_sync_while_rate_limited() {
-    let status = BotNameSyncStatus {
-        desired_name: "alpha - fix lock drift".to_string(),
-        current_name: Some("alpha - stale state".to_string()),
-        sync_state: Some("rate_limited".to_string()),
-        retry_at: Some(
-            chrono::DateTime::parse_from_rfc3339("2026-04-16T16:00:00+00:00")
-                .unwrap()
-                .with_timezone(&chrono::Utc),
-        ),
-    };
-
-    let should_attempt = should_attempt_bot_name_sync(
-        &status,
-        chrono::DateTime::parse_from_rfc3339("2026-04-16T15:59:00+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
-
-    assert!(!should_attempt);
-}
-
-#[test]
-fn retries_bot_name_sync_after_rate_limit_expires() {
-    let status = BotNameSyncStatus {
-        desired_name: "alpha - fix lock drift".to_string(),
-        current_name: Some("alpha - stale state".to_string()),
-        sync_state: Some("rate_limited".to_string()),
-        retry_at: Some(
-            chrono::DateTime::parse_from_rfc3339("2026-04-16T16:00:00+00:00")
-                .unwrap()
-                .with_timezone(&chrono::Utc),
-        ),
-    };
-
-    let should_attempt = should_attempt_bot_name_sync(
-        &status,
-        chrono::DateTime::parse_from_rfc3339("2026-04-16T16:01:00+00:00")
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
-
-    assert!(should_attempt);
-}
-
-#[test]
-fn summarizes_orx_dispatch_for_reconciliation_lane() {
-    let payload = serde_json::json!({
-        "dispatch": {
-            "ingress_message": "Project `validation-os` is paused for ORX reconciliation after `PRO-740`.",
-            "project_key": "validation-os",
-            "lane_state": "awaiting_orx_review",
-            "feature_key": "PRO-740",
-        }
-    });
-
-    let summary = summarize_orx_dispatch(&payload);
-
-    assert!(summary.contains("paused for ORX reconciliation"));
-    assert!(
-        summary.contains("Reserved feature lane: `PRO-740` is waiting for ORX reconciliation.")
-    );
-    assert!(summary.contains("use the inline operator controls below"));
-}
-
-#[test]
-fn summarizes_orx_status_with_reconciliation_details() {
-    let payload = serde_json::json!({
-        "project": {
-            "project_key": "validation-os",
-            "feature_lane": {
-                "feature_key": "PRO-740",
-                "lane_state": "awaiting_orx_review"
-            },
-            "reconciliation": {
-                "status": "awaiting_orx_review",
-                "action": "needs_human_help",
-                "reason": "needs human help",
-                "review_kind": "design_review_required",
-                "ui_mode": "visual",
-                "design_state": "pending",
-                "design_reference": ".codex/stitch/run-1/DESIGN.md",
-                "verification_surface": "none",
-                "design_artifacts": [".codex/stitch/run-1/DESIGN.md"]
-            }
-        },
-        "active_issue_key": "PRO-740",
-        "queue_depth": 0
-    });
-
-    let summary = summarize_orx_status(&payload);
-
-    assert!(summary.contains("- feature lane: awaiting_orx_review (`PRO-740`)"));
-    assert!(
-        summary.contains(
-            "- reconciliation: awaiting_orx_review (needs_human_help) - needs human help"
-        )
-    );
-    assert!(summary.contains("- review gate: design_review_required"));
-    assert!(summary.contains("- ui mode: visual"));
-    assert!(summary.contains("- design state: pending"));
-    assert!(summary.contains("- design reference: .codex/stitch/run-1/DESIGN.md"));
-    assert!(summary.contains("- verification surface: none"));
-    assert!(summary.contains("- design artifacts: .codex/stitch/run-1/DESIGN.md"));
-}
-
-#[test]
-fn derives_project_only_display_name_from_issue_summary_name() {
-    assert_eq!(
-        project_only_display_name("tmux-codex - fix runner drift"),
-        Some("tmux-codex".to_string())
-    );
-    assert_eq!(project_only_display_name("tmux-codex"), None);
-}
-
-#[test]
 fn truncates_live_updates_to_single_chunk() {
     let text = "line one\n\nline two\n\nline three";
     let truncated = truncate_for_live_update(text, 16);
     assert!(truncated.len() <= 16);
     assert!(!truncated.is_empty());
-}
-
-#[test]
-fn execution_profile_detection_promotes_kanban_and_review_turns() {
-    let session_key = SessionKey::new(1, Some(2));
-    let mut planning = sample_turn_request(session_key);
-    planning.prompt =
-        "I'm treating this as a planning pass for the kanban control flow.".to_string();
-    assert!(should_use_execution_profile(&planning));
-
-    let mut kanban = sample_turn_request(session_key);
-    kanban.prompt = "/kanban".to_string();
-    assert!(should_use_execution_profile(&kanban));
-
-    let mut continue_kanban = sample_turn_request(session_key);
-    continue_kanban.prompt = "continue kanban".to_string();
-    assert!(should_use_execution_profile(&continue_kanban));
-
-    let mut review = sample_turn_request(session_key);
-    review.review_mode = Some(crate::models::ReviewRequest {
-        base: Some("main".to_string()),
-        commit: None,
-        uncommitted: true,
-        title: None,
-        prompt: None,
-    });
-    assert!(should_use_execution_profile(&review));
-
-    let normal = sample_turn_request(session_key);
-    assert!(!should_use_execution_profile(&normal));
-}
-
-#[test]
-fn execution_profile_upgrades_default_session_settings_for_coding_turns() {
-    let config = sample_codex_config();
-    let session = crate::models::SessionRecord {
-        id: 1,
-        key: SessionKey::new(1, Some(2)),
-        session_title: Some("Test".to_string()),
-        codex_thread_id: None,
-        force_fresh_thread: false,
-        updated_at: "2026-04-14T00:00:00Z".to_string(),
-        cwd: sample_workspace(),
-        model: Some("gpt-5.4-mini".to_string()),
-        reasoning_effort: Some("medium".to_string()),
-        session_prompt: None,
-        sandbox_mode: "workspace-write".to_string(),
-        approval_policy: "never".to_string(),
-        search_mode: SearchMode::Disabled,
-        add_dirs: vec![],
-        busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
-    };
-    let mut request = sample_turn_request(session.key);
-    request.prompt = "/kanban".to_string();
-
-    let runtime_session = apply_execution_profile(&session, &config, &request);
-
-    assert_eq!(runtime_session.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(runtime_session.reasoning_effort.as_deref(), Some("high"));
-}
-
-#[test]
-fn execution_profile_respects_manual_session_model_overrides() {
-    let config = sample_codex_config();
-    let session = crate::models::SessionRecord {
-        id: 1,
-        key: SessionKey::new(1, Some(2)),
-        session_title: Some("Test".to_string()),
-        codex_thread_id: None,
-        force_fresh_thread: false,
-        updated_at: "2026-04-14T00:00:00Z".to_string(),
-        cwd: sample_workspace(),
-        model: Some("gpt-5.3-codex".to_string()),
-        reasoning_effort: Some("low".to_string()),
-        session_prompt: None,
-        sandbox_mode: "workspace-write".to_string(),
-        approval_policy: "never".to_string(),
-        search_mode: SearchMode::Disabled,
-        add_dirs: vec![],
-        busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
-    };
-    let mut request = sample_turn_request(session.key);
-    request.prompt = "/kanban".to_string();
-
-    let runtime_session = apply_execution_profile(&session, &config, &request);
-
-    assert_eq!(runtime_session.model.as_deref(), Some("gpt-5.3-codex"));
-    assert_eq!(runtime_session.reasoning_effort.as_deref(), Some("low"));
 }
 
 #[test]
@@ -403,12 +118,6 @@ fn hides_sessions_overview_body_when_keyboard_is_available() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -441,12 +150,6 @@ fn builds_clickable_chat_sessions_keyboard() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -483,12 +186,6 @@ fn builds_topic_links_for_dashboard_root_sessions_keyboard() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let topic_session = crate::models::SessionRecord {
         id: 2,
@@ -506,12 +203,6 @@ fn builds_topic_links_for_dashboard_root_sessions_keyboard() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -555,12 +246,6 @@ fn session_environment_match_requires_same_title_and_cwd() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
 
     let same = CodexEnvironmentSummary {
@@ -598,12 +283,6 @@ fn forum_sync_preserves_manual_codex_binding() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let environment = crate::codex_history::CodexEnvironmentSummary {
         cwd: sample_workspace(),
@@ -636,12 +315,6 @@ fn forum_sync_seeds_unbound_environment_session() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let environment = crate::codex_history::CodexEnvironmentSummary {
         cwd: sample_workspace(),
@@ -674,12 +347,6 @@ fn forum_sync_preserves_fresh_thread_request() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let environment = crate::codex_history::CodexEnvironmentSummary {
         cwd: sample_workspace(),
@@ -692,49 +359,6 @@ fn forum_sync_preserves_fresh_thread_request() {
         super::forum::environment_sync_thread_binding(&session, &environment),
         None
     );
-}
-
-#[test]
-fn format_current_session_notice_is_concise() {
-    let session = crate::models::SessionRecord {
-        id: 1,
-        key: SessionKey::new(-1001234567890, Some(323)),
-        session_title: Some("Water meter".to_string()),
-        codex_thread_id: None,
-        force_fresh_thread: false,
-        updated_at: "2026-03-13T10:00:00Z".to_string(),
-        cwd: sample_workspace(),
-        model: None,
-        reasoning_effort: None,
-        session_prompt: None,
-        sandbox_mode: "workspace-write".to_string(),
-        approval_policy: "never".to_string(),
-        search_mode: SearchMode::Disabled,
-        add_dirs: vec![],
-        busy: false,
-        state: crate::models::SessionState::Planning,
-        state_detail: Some("Preparing Codex turn.".to_string()),
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: Some("Checked existing issue threads.".to_string()),
-        pending_turns: 1,
-    };
-    let chat = crate::telegram::Chat {
-        id: -1001234567890,
-        kind: "supergroup".to_string(),
-        is_forum: Some(true),
-        username: Some("varv_alarms_bot_chat".to_string()),
-        title: Some("Codex chat".to_string()),
-    };
-
-    let notice = format_current_session_notice(&session, &chat);
-
-    assert_eq!(
-        notice,
-        "**Current session:** Water meter\n- changed: Checked existing issue threads.\n- next: Preparing Codex turn."
-    );
-    assert!(!notice.contains("cwd"));
-    assert!(!notice.contains("last summary"));
 }
 
 #[test]
@@ -755,12 +379,6 @@ fn format_session_status_marks_unbound_codex_session() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -795,12 +413,6 @@ fn format_session_status_marks_fresh_codex_session() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -813,109 +425,6 @@ fn format_session_status_marks_fresh_codex_session() {
     let status = format_session_status(&session, &chat);
 
     assert!(status.contains("- codex session title: fresh"));
-}
-
-#[test]
-fn format_session_status_includes_local_runner_summary_when_present() {
-    let temp = TempDir::new().unwrap();
-    let cwd = temp.path().to_path_buf();
-    let runner_dir = cwd.join(".memory").join("runner");
-    fs::create_dir_all(&runner_dir).unwrap();
-    fs::write(
-        runner_dir.join("RUNNER_STATUS.json"),
-        r#"{
-            "runtime_policy": {"runner_mode": "exec", "task_source": "linear_orx"},
-            "current_phase": "verify",
-            "phase_status": "active",
-            "done_gate_status": "passed",
-            "next_task": "Finalize the kanban transition",
-            "next_task_reason": "Need the ticket-native loop next",
-            "current_goal": "Move runner state to ticket-native control",
-            "kanban": {
-                "phase": "selecting",
-                "continue_until": "board_complete_or_all_blocked",
-                "active_issue_url": "https://linear.app/jkprojects/issue/PRO-3"
-            }
-        }"#,
-    )
-    .unwrap();
-
-    let session = crate::models::SessionRecord {
-        id: 1,
-        key: SessionKey::new(-1001234567890, Some(323)),
-        session_title: Some("BentoBox".to_string()),
-        codex_thread_id: None,
-        force_fresh_thread: false,
-        updated_at: "2026-03-13T10:00:00Z".to_string(),
-        cwd,
-        model: None,
-        reasoning_effort: None,
-        session_prompt: None,
-        sandbox_mode: "workspace-write".to_string(),
-        approval_policy: "never".to_string(),
-        search_mode: SearchMode::Disabled,
-        add_dirs: vec![],
-        busy: false,
-        state: crate::models::SessionState::Running,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
-    };
-    let chat = crate::telegram::Chat {
-        id: -1001234567890,
-        kind: "supergroup".to_string(),
-        is_forum: Some(true),
-        username: Some("bentobox_bot_chat".to_string()),
-        title: Some("BentoBox".to_string()),
-    };
-
-    let status = format_session_status(&session, &chat);
-
-    assert!(status.contains("**Local runner:**"));
-    assert!(status.contains("- mode: `exec`"));
-    assert!(status.contains("- phase: `verify`"));
-    assert!(status.contains("- queue phase: `selecting`"));
-    assert!(status.contains("https://linear.app/jkprojects/issue/PRO-3"));
-}
-
-#[test]
-fn runner_notification_helpers_produce_stable_status_summary() {
-    let temp = TempDir::new().unwrap();
-    let cwd = temp.path().to_path_buf();
-    let runner_dir = cwd.join(".memory").join("runner");
-    fs::create_dir_all(&runner_dir).unwrap();
-    fs::write(
-        runner_dir.join("RUNNER_STATUS.json"),
-        r#"{
-            "project": "validation-os",
-            "runtime_policy": {"runner_mode": "exec", "task_source": "linear_orx"},
-            "current_phase": "execute",
-            "phase_status": "active",
-            "done_gate_status": "pending",
-            "next_task": "Implement the ticket-native runner",
-            "next_task_reason": "Need deterministic Telegram control",
-            "current_goal": "Ship the Telegram-driven infinite runner",
-            "kanban": {
-                "phase": "executing",
-                "continue_until": "board_complete_or_all_blocked",
-                "active_issue_url": "https://linear.app/jkprojects/issue/PRO-3"
-            }
-        }"#,
-    )
-    .unwrap();
-
-    let snapshot = runner_status_snapshot(&cwd).expect("runner snapshot");
-    let fingerprint = runner_notification_fingerprint(&snapshot).expect("runner fingerprint");
-    let text = format_runner_notification(&snapshot).expect("runner notification");
-
-    assert!(fingerprint.contains("execute"));
-    assert!(fingerprint.contains("executing"));
-    assert!(text.contains("Runner update for `validation-os`"));
-    assert!(text.contains("- phase: `execute`"));
-    assert!(text.contains("- queue phase: `executing`"));
-    assert!(text.contains("https://linear.app/jkprojects/issue/PRO-3"));
 }
 
 #[test]
@@ -1081,12 +590,6 @@ fn history_callback_matches_only_current_session_binding() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
 
     assert!(history_callback_matches_current_session(
@@ -1117,12 +620,6 @@ fn history_callback_rejects_unbound_fresh_session() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
 
     assert!(!history_callback_matches_current_session(
@@ -1149,12 +646,6 @@ fn formats_stale_history_page_for_rebound_topic() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
 
     let text = format_stale_history_page(&session, "019ce672-9445-7612-bc5e-c8243a0d1915");
@@ -1182,12 +673,6 @@ fn builds_import_button_for_seed_environment() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let chat = crate::telegram::Chat {
         id: -1001234567890,
@@ -1317,12 +802,6 @@ fn builds_clickable_codex_sessions_keyboard() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let summaries = vec![CodexThreadSummary {
         id: "019ce672-9445-7612-bc5e-c8243a0d1915".to_string(),
@@ -1462,12 +941,6 @@ fn keeps_audio_transcript_in_user_prompt_only() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let request = TurnRequest {
         session_key: session.key,
@@ -1486,6 +959,7 @@ fn keeps_audio_transcript_in_user_prompt_only() {
         }],
         review_mode: None,
         override_search_mode: None,
+        automation: None,
     };
 
     let runtime_request = prepare_runtime_request(&session, &request, &workspace);
@@ -1526,12 +1000,6 @@ fn keeps_non_transcribed_audio_paths_in_user_prompt() {
         search_mode: SearchMode::Disabled,
         add_dirs: vec![],
         busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
     };
     let request = TurnRequest {
         session_key: session.key,
@@ -1547,6 +1015,7 @@ fn keeps_non_transcribed_audio_paths_in_user_prompt() {
         }],
         review_mode: None,
         override_search_mode: None,
+        automation: None,
     };
 
     let runtime_request = prepare_runtime_request(&session, &request, &workspace);
@@ -1597,25 +1066,6 @@ fn parses_history_callback_payloads() {
 }
 
 #[test]
-fn parses_orx_operator_callback_payloads() {
-    assert_eq!(
-        parse_orx_operator_callback_data("orx:validation-os:ad"),
-        Some((
-            "validation-os".to_string(),
-            OrxOperatorDecision::ApproveDesign
-        ))
-    );
-    assert_eq!(
-        parse_orx_operator_callback_data("orx:validation-os:mr"),
-        Some((
-            "validation-os".to_string(),
-            OrxOperatorDecision::MergeAndRelease
-        ))
-    );
-    assert_eq!(parse_orx_operator_callback_data("apr:abc123:a"), None);
-}
-
-#[test]
 fn builds_approval_keyboard_buttons() {
     let keyboard = approval_keyboard(
         "token123",
@@ -1656,60 +1106,6 @@ fn builds_history_keyboard_buttons() {
     assert_eq!(
         keyboard.inline_keyboard[0][1].callback_data,
         Some("his:019ce672-9445-7612-bc5e-c8243a0d1915:2".to_string())
-    );
-}
-
-#[test]
-fn builds_orx_operator_keyboard_for_design_review() {
-    let keyboard = orx_operator_keyboard(
-        "validation-os",
-        Some("awaiting_orx_review"),
-        Some("design_review_required"),
-    )
-    .expect("orx operator keyboard");
-
-    assert_eq!(keyboard.inline_keyboard.len(), 1);
-    assert_eq!(
-        keyboard.inline_keyboard[0][0].callback_data,
-        Some("orx:validation-os:ad".to_string())
-    );
-}
-
-#[test]
-fn builds_orx_operator_keyboard_for_release_actions() {
-    let keyboard = orx_operator_keyboard("validation-os", Some("awaiting_hil_release"), None)
-        .expect("orx operator keyboard");
-
-    assert_eq!(keyboard.inline_keyboard.len(), 2);
-    assert_eq!(
-        keyboard.inline_keyboard[0][0].callback_data,
-        Some("orx:validation-os:mr".to_string())
-    );
-    assert_eq!(
-        keyboard.inline_keyboard[0][1].callback_data,
-        Some("orx:validation-os:kr".to_string())
-    );
-}
-
-#[test]
-fn builds_orx_operator_keyboard_from_status_payload() {
-    let payload = serde_json::json!({
-        "project": {
-            "project_key": "validation-os",
-            "feature_lane": {
-                "lane_state": "awaiting_orx_review"
-            },
-            "reconciliation": {
-                "review_kind": "ui_evidence_missing"
-            }
-        }
-    });
-
-    let keyboard = orx_operator_keyboard_for_payload(&payload).expect("orx operator keyboard");
-
-    assert_eq!(
-        keyboard.inline_keyboard[0][0].callback_data,
-        Some("orx:validation-os:ui".to_string())
     );
 }
 
@@ -1759,248 +1155,6 @@ fn derives_session_title_from_first_non_empty_line() {
 }
 
 #[test]
-fn derives_human_friendly_title_from_runner_dispatch_prompt() {
-    let title = derive_session_title_from_text(
-        "RUNNER_DISPATCH mode=run_execute project=tmux-codex runner_id=main\nLINEAR_ISSUE=PRO-102\nLINEAR_TITLE=New runner live smoke",
-    );
-    assert_eq!(title, Some("tmux-codex / PRO-102".to_string()));
-}
-
-#[test]
-fn summarizes_orx_intake_submission_with_human_readable_ticket_details() {
-    let payload = serde_json::json!({
-        "intake": {
-            "intake_key": "intake-123",
-            "status": "pending_approval",
-            "plan": {
-                "groups": [
-                    {
-                        "display_name": "tmux-codex",
-                        "items": [
-                            {
-                                "title": "Verify the ORX-backed runner picker and remove leftover task wording",
-                                "source_text": "tmux-codex: verify the ORX-backed runner picker and remove leftover task wording",
-                                "draft_ticket": {
-                                    "title": "Verify the ORX-backed runner picker and remove leftover task wording",
-                                    "why": "The runner picker still uses legacy task wording instead of ORX queue language.",
-                                    "goal": "Make the tmux-codex runner picker describe ORX queue state clearly.",
-                                    "scope": {
-                                        "in_scope": [
-                                            "Update the picker wording to match ORX queue semantics."
-                                        ],
-                                        "out_of_scope": [
-                                            "Unrelated tmux-codex cleanup."
-                                        ]
-                                    },
-                                    "requirements": [
-                                        "Use ORX queue language in the picker.",
-                                        "Keep the picker Linear-native."
-                                    ],
-                                    "acceptance_criteria": [
-                                        "Given the current picker wording",
-                                        "When the ticket is completed",
-                                        "Then the picker describes ORX queue state instead of legacy task counts."
-                                    ],
-                                    "technical_notes": [
-                                        "Routing mode: `explicit-project`",
-                                        "Routing rationale: Matched explicit project reference for `tmux-codex`."
-                                    ],
-                                    "dependencies_risks": [
-                                        "Avoid reintroducing local task-count language."
-                                    ],
-                                    "definition_of_done": [
-                                        "The picker wording is updated.",
-                                        "The change is verified."
-                                    ]
-                                },
-                                "routing_mode": "explicit-project",
-                                "rationale": "Matched explicit project reference for `tmux-codex`.",
-                                "needs_clarification": false
-                            }
-                        ]
-                    },
-                    {
-                        "display_name": "validation-os",
-                        "items": [
-                            {
-                                "title": "Audit ORX bot chat and thread routing for execution updates",
-                                "source_text": "validation-os: audit ORX bot chat and thread routing for execution updates",
-                                "draft_ticket": {
-                                    "title": "Audit ORX bot chat and thread routing for execution updates",
-                                    "why": "Execution updates need to land in the correct Telegram lane.",
-                                    "goal": "Tighten bot thread routing summaries for validation-os execution updates.",
-                                    "scope": {
-                                        "in_scope": [
-                                            "Audit current routing summaries."
-                                        ],
-                                        "out_of_scope": [
-                                            "Unrelated ORX cleanup."
-                                        ]
-                                    },
-                                    "requirements": [
-                                        "Keep updates in the correct execution lane."
-                                    ],
-                                    "acceptance_criteria": [
-                                        "Given the current routing summaries",
-                                        "When the ticket is completed",
-                                        "Then execution updates land in the right lane."
-                                    ],
-                                    "technical_notes": [
-                                        "Routing mode: `explicit-project`"
-                                    ],
-                                    "dependencies_risks": [
-                                        "Thread drift can confuse operators."
-                                    ],
-                                    "definition_of_done": [
-                                        "The routing summary is clarified."
-                                    ]
-                                },
-                                "routing_mode": "explicit-project",
-                                "rationale": "Matched explicit project reference for `validation-os`.",
-                                "needs_clarification": false
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-    });
-
-    let summary = summarize_orx_intake_submission(&payload);
-
-    assert!(summary.contains("I would create 2 Linear tickets across 2 projects."));
-    assert!(summary.contains("**Ticket 1 · tmux-codex**"));
-    assert!(
-        summary.contains("Verify the ORX-backed runner picker and remove leftover task wording")
-    );
-    assert!(summary.contains(
-        "Problem: The runner picker still uses legacy task wording instead of ORX queue language."
-    ));
-    assert!(
-        summary
-            .contains("Goal: Make the tmux-codex runner picker describe ORX queue state clearly.")
-    );
-    assert!(summary.contains("*Scope*"));
-    assert!(summary.contains("*Done when*"));
-    assert!(
-        summary.contains(
-            "Why here: Assigned here because the request explicitly mentioned tmux-codex."
-        )
-    );
-    assert!(summary.contains("**Ticket 2 · validation-os**"));
-    assert!(summary.contains("Review the draft tickets above"));
-    assert!(summary.contains("Reject"));
-}
-
-#[test]
-fn summarizes_orx_intake_submission_calls_out_clarification_items() {
-    let payload = serde_json::json!({
-        "intake": {
-            "intake_key": "intake-clarify",
-            "status": "clarification_required",
-            "plan": {
-                "groups": [
-                    {
-                        "display_name": "Clarification required",
-                        "items": [
-                            {
-                                "title": "Clarify which project owns the follow-up work",
-                                "source_text": "alpha and beta both need follow-up on this same change",
-                                "draft_ticket": {
-                                    "title": "Clarify which project owns the follow-up work",
-                                    "why": "alpha and beta both need follow-up on this same change",
-                                    "goal": "Resolve ownership before implementation starts.",
-                                    "scope": {
-                                        "in_scope": [
-                                            "Clarify the owning project."
-                                        ],
-                                        "out_of_scope": [
-                                            "Starting implementation before ownership is clear."
-                                        ]
-                                    },
-                                    "requirements": [
-                                        "Resolve the correct owner."
-                                    ],
-                                    "acceptance_criteria": [
-                                        "Given the current ambiguity",
-                                        "When clarification is complete",
-                                        "Then one project clearly owns the work."
-                                    ],
-                                    "technical_notes": [
-                                        "Routing mode: `clarification-required`"
-                                    ],
-                                    "dependencies_risks": [
-                                        "No default or explicit project match was available for this intake item."
-                                    ],
-                                    "definition_of_done": [
-                                        "The ticket has a single clear owner."
-                                    ]
-                                },
-                                "routing_mode": "clarification-required",
-                                "rationale": "No default or explicit project match was available for this intake item.",
-                                "needs_clarification": true
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-    });
-
-    let summary = summarize_orx_intake_submission(&payload);
-
-    assert!(summary.contains("**Ticket 1 · Clarification required**"));
-    assert!(summary.contains("*Risks*"));
-    assert!(
-        summary.contains(
-            "Why here: ORX could not confidently map this request to a single project yet."
-        )
-    );
-    assert!(summary.contains("Clarification is required before ORX can create tickets in Linear."));
-}
-
-#[test]
-fn format_session_status_normalizes_existing_runner_dispatch_title() {
-    let session = crate::models::SessionRecord {
-        id: 1,
-        key: SessionKey::new(6943633503, None),
-        session_title: Some(
-            "RUNNER_DISPATCH mode=run_execute project=tmux-codex runner_id=main\nLINEAR_ISSUE=PRO-102"
-                .to_string(),
-        ),
-        codex_thread_id: Some("thread-1".to_string()),
-        force_fresh_thread: false,
-        updated_at: "2026-04-16T23:20:48Z".to_string(),
-        cwd: sample_workspace(),
-        model: None,
-        reasoning_effort: None,
-        session_prompt: None,
-        sandbox_mode: "workspace-write".to_string(),
-        approval_policy: "never".to_string(),
-        search_mode: SearchMode::Disabled,
-        add_dirs: vec![],
-        busy: false,
-        state: crate::models::SessionState::Idle,
-        state_detail: None,
-        last_status_message_id: None,
-        last_activity_at: None,
-        last_summary: None,
-        pending_turns: 0,
-    };
-    let chat = crate::telegram::Chat {
-        id: 6943633503,
-        kind: "private".to_string(),
-        is_forum: None,
-        username: Some("BlastRadiusBot".to_string()),
-        title: None,
-    };
-
-    let status = format_session_status(&session, &chat);
-    assert!(status.contains("**Current Telegram session:** tmux-codex / PRO-102"));
-    assert!(!status.contains("RUNNER_DISPATCH mode=run_execute"));
-}
-
-#[test]
 fn truncates_long_session_titles() {
     let title = derive_session_title_from_text(
         "Check a very long session title so the Telegram layout stays readable and does not break",
@@ -2017,9 +1171,6 @@ fn detects_commands_that_use_session_context() {
     )));
     assert!(command_uses_session_context(&ParsedInput::Bridge(
         BridgeCommand::Copy
-    )));
-    assert!(command_uses_session_context(&ParsedInput::Bridge(
-        BridgeCommand::Kanban
     )));
     assert!(!command_uses_session_context(&ParsedInput::Bridge(
         BridgeCommand::Sessions
@@ -2044,7 +1195,7 @@ fn detects_commands_that_require_codex_auth() {
         BridgeCommand::History
     )));
     assert!(parsed_input_requires_codex_auth(&ParsedInput::Bridge(
-        BridgeCommand::Review(crate::models::ReviewRequest {
+        BridgeCommand::CodexReview(crate::models::ReviewRequest {
             base: None,
             commit: None,
             uncommitted: true,
@@ -2052,11 +1203,11 @@ fn detects_commands_that_require_codex_auth() {
             prompt: None,
         })
     )));
+    assert!(parsed_input_requires_codex_auth(&ParsedInput::Bridge(
+        BridgeCommand::RunnerRun { issue: None }
+    )));
     assert!(!parsed_input_requires_codex_auth(&ParsedInput::Bridge(
         BridgeCommand::Pwd
-    )));
-    assert!(parsed_input_requires_codex_auth(&ParsedInput::Bridge(
-        BridgeCommand::Kanban
     )));
     assert!(!parsed_input_requires_codex_auth(&ParsedInput::Bridge(
         BridgeCommand::Login
@@ -2130,55 +1281,4 @@ async fn upload_failure_marks_turn_failed_and_cleanup_still_runs() {
             .iter()
             .any(|message| message.contains("upload failed"))
     );
-}
-
-#[tokio::test]
-async fn resume_recovered_sessions_starts_workers_for_interrupted_sessions() {
-    let tmp = NamedTempFile::new().unwrap();
-    let store = Store::open(tmp.path(), &[100], &sample_defaults()).unwrap();
-    let session = store
-        .ensure_session(SessionKey::new(42, Some(7)), 100, &sample_defaults())
-        .unwrap();
-    let request = sample_turn_request(session.key);
-
-    store.set_session_busy(session.key, true).unwrap();
-    store
-        .enqueue_pending_turn(session.id, &request, "private")
-        .unwrap();
-    let claimed = store.claim_next_pending_turn(session.key).unwrap().unwrap();
-    assert_eq!(claimed.request.prompt, "hello");
-
-    let recovered_sessions = store.recover_interrupted_work().unwrap();
-    assert_eq!(recovered_sessions, vec![session.key]);
-
-    let app = App {
-        shared: Arc::new(AppShared {
-            config: sample_config(tmp.path().to_path_buf()),
-            store,
-            telegram: crate::telegram::TelegramClient::new(
-                "test-token".to_string(),
-                "http://127.0.0.1:9".to_string(),
-            ),
-            codex: crate::codex::CodexRunner::new(PathBuf::from("/usr/bin/true")),
-            orx: None,
-            bot_username: Some("testbot".to_string()),
-            bot_identity: "testbot".to_string(),
-            service_user_id: 100,
-            handy_model_dir: None,
-            session_defaults: sample_defaults(),
-            limits_cache: Mutex::new(None),
-            history_page_cache: Mutex::new(HistoryPageCache::default()),
-            pending_approvals: Mutex::new(HashMap::new()),
-            pending_intake_approvals: Mutex::new(HashMap::new()),
-            pending_codex_login: Mutex::new(None),
-            codex_login_backoff_until: Mutex::new(None),
-            recovered_sessions,
-        }),
-        workers: Arc::new(Mutex::new(HashMap::new())),
-    };
-
-    app.resume_recovered_sessions().await.unwrap();
-
-    let workers = app.workers.lock().await;
-    assert!(workers.contains_key(&session.key));
 }

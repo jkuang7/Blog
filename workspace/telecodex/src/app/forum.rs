@@ -1,24 +1,13 @@
 use super::presentation::{
-    ForumEnvironmentBindingKey, environment_topic_name, format_runner_notification,
-    runner_notification_fingerprint, runner_status_snapshot, session_environment_binding_key,
+    ForumEnvironmentBindingKey, environment_topic_name, session_environment_binding_key,
     session_matches_environment,
 };
 use super::support::{
     forum_sync_cooldown_active, forum_sync_cooldown_key, forum_sync_error_key,
     is_forum_topic_not_modified, is_invalid_forum_topic_error, normalize_forum_sync_issue,
-    prefer_primary_environment_session, runner_watch_enabled_key, runner_watch_state_key,
-    telegram_retry_after,
+    prefer_primary_environment_session, telegram_retry_after,
 };
 use super::*;
-use serde_json::Value;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BotNameSyncStatus {
-    pub desired_name: String,
-    pub current_name: Option<String>,
-    pub sync_state: Option<String>,
-    pub retry_at: Option<chrono::DateTime<chrono::Utc>>,
-}
 
 pub(super) fn environment_sync_thread_binding<'a>(
     session: &crate::models::SessionRecord,
@@ -28,70 +17,6 @@ pub(super) fn environment_sync_thread_binding<'a>(
         return None;
     }
     environment.latest_thread_id.as_deref()
-}
-
-pub(super) fn parse_bot_name_sync_status(payload: &Value) -> Option<BotNameSyncStatus> {
-    let bot = payload.get("bot")?;
-    let desired_name = bot
-        .get("desired_display_name")
-        .and_then(Value::as_str)?
-        .trim()
-        .to_string();
-    if desired_name.is_empty() {
-        return None;
-    }
-    let retry_at = bot
-        .get("name_sync_retry_at")
-        .and_then(Value::as_str)
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&chrono::Utc));
-    Some(BotNameSyncStatus {
-        desired_name,
-        current_name: bot
-            .get("current_display_name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        sync_state: bot
-            .get("name_sync_state")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        retry_at,
-    })
-}
-
-pub(super) fn should_attempt_bot_name_sync(
-    status: &BotNameSyncStatus,
-    now: chrono::DateTime<chrono::Utc>,
-) -> bool {
-    if status.current_name.as_deref() == Some(status.desired_name.as_str())
-        && status.sync_state.as_deref() == Some("synced")
-    {
-        return false;
-    }
-    !matches!(
-        (status.sync_state.as_deref(), status.retry_at),
-        (Some("rate_limited"), Some(retry_at)) if retry_at > now
-    )
-}
-
-pub(super) fn bot_name_sync_retry_at(retry_after: u64) -> String {
-    (chrono::Utc::now() + chrono::Duration::seconds(retry_after as i64 + 1)).to_rfc3339()
-}
-
-pub(super) fn project_only_display_name(desired_name: &str) -> Option<String> {
-    let project_name = desired_name
-        .split_once(" - ")
-        .map(|(project_name, _)| project_name)
-        .unwrap_or(desired_name)
-        .trim();
-    if project_name.is_empty() || project_name == desired_name.trim() {
-        return None;
-    }
-    Some(project_name.to_string())
 }
 
 impl App {
@@ -236,152 +161,6 @@ impl App {
     pub(super) async fn poll_background_maintenance(&self) -> Result<()> {
         self.sync_primary_forum_topics().await?;
         self.cleanup_stale_forum_topics().await?;
-        self.poll_runner_watch_notifications().await?;
-        self.poll_orx_notifications().await?;
-        Ok(())
-    }
-
-    pub(super) async fn poll_orx_notifications(&self) -> Result<()> {
-        let (Some(orx_client), Some(orx_config)) =
-            (self.shared.orx.as_ref(), self.shared.config.orx.as_ref())
-        else {
-            return Ok(());
-        };
-        let default_display_name = orx_config
-            .default_display_name
-            .as_deref()
-            .unwrap_or(self.shared.bot_identity.as_str());
-        orx_client
-            .register_bot(
-                &self.shared.bot_identity,
-                default_display_name,
-                orx_config.owner_chat_id,
-                orx_config.owner_thread_id,
-            )
-            .await?;
-        let notifications = orx_client
-            .poll_notifications(&self.shared.bot_identity, 20)
-            .await?;
-        let mut delivered_ids = Vec::new();
-        for notification in notifications {
-            let body = summarize_orx_notification(&notification);
-            let target_chat_id = notification
-                .payload
-                .get("target_chat_id")
-                .and_then(Value::as_i64)
-                .or(orx_config.owner_chat_id)
-                .ok_or_else(|| anyhow!("orx.owner_chat_id is required to deliver notifications"))?;
-            let target_thread_id = notification
-                .payload
-                .get("target_thread_id")
-                .and_then(Value::as_i64)
-                .or(orx_config.owner_thread_id);
-            self.send_notification(target_chat_id, target_thread_id, &body).await?;
-            delivered_ids.push(notification.notification_id);
-        }
-        if !delivered_ids.is_empty() {
-            orx_client.acknowledge_notifications(&delivered_ids).await?;
-        }
-        let bot_status = orx_client.bot_status(&self.shared.bot_identity).await?;
-        if let Some(name_status) = parse_bot_name_sync_status(&bot_status) {
-            if should_attempt_bot_name_sync(&name_status, chrono::Utc::now()) {
-                match self.shared.telegram.set_my_name(&name_status.desired_name).await {
-                    Ok(()) => {
-                        orx_client
-                            .sync_bot_name(
-                                &self.shared.bot_identity,
-                                Some(&name_status.desired_name),
-                                None,
-                                "synced",
-                                None,
-                            )
-                            .await?;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            "failed to sync Telegram display name for {}: {error:#}",
-                            self.shared.bot_identity
-                        );
-                        let sync_state = if let Some(retry_after) = telegram_retry_after(&error) {
-                            let retry_at = bot_name_sync_retry_at(retry_after);
-                            let fallback_display_name =
-                                project_only_display_name(&name_status.desired_name);
-                            let fallback_is_current = fallback_display_name
-                                .as_deref()
-                                .zip(name_status.current_name.as_deref())
-                                .is_some_and(|(fallback, current)| fallback == current);
-                            let _ = orx_client
-                                .sync_bot_name(
-                                    &self.shared.bot_identity,
-                                    None,
-                                    fallback_display_name.as_deref(),
-                                    if fallback_is_current {
-                                        "synced"
-                                    } else {
-                                        "rate_limited"
-                                    },
-                                    if fallback_is_current {
-                                        None
-                                    } else {
-                                        Some(retry_at.as_str())
-                                    },
-                                )
-                                .await;
-                            if fallback_is_current {
-                                "synced"
-                            } else {
-                                "rate_limited"
-                            }
-                        } else {
-                            let _ = orx_client
-                                .sync_bot_name(
-                                    &self.shared.bot_identity,
-                                    None,
-                                    None,
-                                    "failed",
-                                    None,
-                                )
-                                .await;
-                            "failed"
-                        };
-                        tracing::warn!(
-                            "bot display-name sync for {} recorded as {sync_state}",
-                            self.shared.bot_identity
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) async fn poll_runner_watch_notifications(&self) -> Result<()> {
-        for session in self.shared.store.list_all_sessions()? {
-            let enabled_key = runner_watch_enabled_key(session.key);
-            if self.shared.store.bot_state_value(&enabled_key)?.as_deref() != Some("1") {
-                continue;
-            }
-            let Some(snapshot) = runner_status_snapshot(&session.cwd) else {
-                continue;
-            };
-            let Some(fingerprint) = runner_notification_fingerprint(&snapshot) else {
-                continue;
-            };
-            let state_key = runner_watch_state_key(session.key);
-            if self.shared.store.bot_state_value(&state_key)?.as_deref() == Some(fingerprint.as_str()) {
-                continue;
-            }
-            let Some(body) = format_runner_notification(&snapshot) else {
-                continue;
-            };
-            self.send_status(
-                session.key.chat_id,
-                Some(session.key.thread_id).filter(|value| *value != 0),
-                &body,
-            )
-            .await?;
-            self.shared.store.save_bot_state(&state_key, &fingerprint)?;
-        }
         Ok(())
     }
 

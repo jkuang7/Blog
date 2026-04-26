@@ -11,10 +11,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::{
     config::{CodexConfig, SearchMode},
     models::{
-        PendingTurnRecord, PendingTurnStatus, SessionKey, SessionRecord, SessionState,
-        TelegramTranscriptDirection, TelegramTranscriptEntry, TurnRequest, UserRecord, UserRole,
+        AutomationStep, RunnerState, RunnerStateRecord, SessionKey, SessionRecord, TurnRequest,
+        UserRecord, UserRole,
     },
 };
+
+#[cfg(test)]
+use crate::models::RunnerEventRecord;
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -173,8 +176,8 @@ impl Store {
         conn.execute(
             "INSERT INTO sessions(
                 chat_id, thread_id, session_title, codex_thread_id, force_fresh_thread, cwd, model, reasoning_effort, session_prompt, sandbox_mode, approval_policy,
-                search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, state, state_detail, last_status_message_id, last_activity_at, last_summary, created_at, updated_at
-             ) VALUES (?1, ?2, NULL, NULL, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, 'idle', NULL, NULL, ?12, NULL, ?12, ?12)",
+                search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, created_at, updated_at
+             ) VALUES (?1, ?2, NULL, NULL, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, ?12, ?12)",
             params![
                 key.chat_id,
                 key.thread_id,
@@ -199,8 +202,7 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         conn.query_row(
             "SELECT id, chat_id, thread_id, session_title, codex_thread_id, force_fresh_thread, cwd, model, reasoning_effort, session_prompt, sandbox_mode, approval_policy,
-                    search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, updated_at, state, state_detail, last_status_message_id, last_activity_at, last_summary,
-                    (SELECT COUNT(*) FROM pending_turns WHERE session_id = sessions.id)
+                    search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, updated_at
              FROM sessions
              WHERE chat_id = ?1 AND thread_id = ?2",
             params![key.chat_id, key.thread_id],
@@ -214,27 +216,12 @@ impl Store {
         let conn = self.conn.lock().expect("store mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, chat_id, thread_id, session_title, codex_thread_id, force_fresh_thread, cwd, model, reasoning_effort, session_prompt, sandbox_mode, approval_policy,
-                    search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, updated_at, state, state_detail, last_status_message_id, last_activity_at, last_summary,
-                    (SELECT COUNT(*) FROM pending_turns WHERE session_id = sessions.id)
+                    search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, updated_at
              FROM sessions
              WHERE chat_id = ?1
              ORDER BY updated_at DESC, id DESC",
         )?;
         let rows = stmt.query_map(params![chat_id], map_session)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
-    }
-
-    pub fn list_all_sessions(&self) -> Result<Vec<SessionRecord>> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT id, chat_id, thread_id, session_title, codex_thread_id, force_fresh_thread, cwd, model, reasoning_effort, session_prompt, sandbox_mode, approval_policy,
-                    search_mode, add_dirs_json, creator_user_id, busy, last_assistant_text, updated_at, state, state_detail, last_status_message_id, last_activity_at, last_summary,
-                    (SELECT COUNT(*) FROM pending_turns WHERE session_id = sessions.id)
-             FROM sessions
-             ORDER BY updated_at DESC, id DESC",
-        )?;
-        let rows = stmt.query_map([], map_session)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -313,7 +300,7 @@ impl Store {
         self.update_session_field(
             key,
             "UPDATE sessions
-             SET codex_thread_id = NULL, force_fresh_thread = 1, busy = 0, last_assistant_text = NULL, state = 'idle', state_detail = NULL, last_summary = NULL, updated_at = ?3
+             SET codex_thread_id = NULL, force_fresh_thread = 1, busy = 0, last_assistant_text = NULL, updated_at = ?3
              WHERE chat_id = ?1 AND thread_id = ?2",
             params![key.chat_id, key.thread_id, now_string()],
         )
@@ -400,152 +387,6 @@ impl Store {
         Ok(session.add_dirs)
     }
 
-    pub fn set_session_runtime_state(
-        &self,
-        key: SessionKey,
-        state: SessionState,
-        detail: Option<&str>,
-        summary: Option<&str>,
-    ) -> Result<()> {
-        self.update_session_field(
-            key,
-            "UPDATE sessions
-             SET state = ?3,
-                 state_detail = ?4,
-                 last_summary = COALESCE(?5, last_summary),
-                 last_activity_at = ?6,
-                 updated_at = ?6
-             WHERE chat_id = ?1 AND thread_id = ?2",
-            params![
-                key.chat_id,
-                key.thread_id,
-                state.as_str(),
-                detail,
-                summary,
-                now_string()
-            ],
-        )
-    }
-
-    pub fn set_session_last_status_message(
-        &self,
-        key: SessionKey,
-        message_id: Option<i64>,
-    ) -> Result<()> {
-        self.update_session_field(
-            key,
-            "UPDATE sessions
-             SET last_status_message_id = ?3, last_activity_at = ?4, updated_at = ?4
-             WHERE chat_id = ?1 AND thread_id = ?2",
-            params![key.chat_id, key.thread_id, message_id, now_string()],
-        )
-    }
-
-    pub fn enqueue_pending_turn(
-        &self,
-        session_id: i64,
-        request: &TurnRequest,
-        chat_kind: &str,
-    ) -> Result<i64> {
-        let request_json = serde_json::to_string(request)?;
-        let now = now_string();
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
-            "INSERT INTO pending_turns(session_id, request_json, chat_kind, status, enqueued_at, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-            params![session_id, request_json, chat_kind, PendingTurnStatus::Queued.as_str(), now],
-        )?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn claim_next_pending_turn(&self, key: SessionKey) -> Result<Option<PendingTurnRecord>> {
-        let mut conn = self.conn.lock().expect("store mutex poisoned");
-        let tx = conn.transaction()?;
-        let row = tx
-            .query_row(
-                "SELECT p.id, p.request_json, p.chat_kind
-                 FROM pending_turns p
-                 JOIN sessions s ON s.id = p.session_id
-                 WHERE s.chat_id = ?1 AND s.thread_id = ?2 AND p.status = 'queued'
-                 ORDER BY p.id ASC
-                 LIMIT 1",
-                params![key.chat_id, key.thread_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((id, request_json, chat_kind)) = row else {
-            tx.commit()?;
-            return Ok(None);
-        };
-        tx.execute(
-            "UPDATE pending_turns SET status = ?2, started_at = ?3 WHERE id = ?1",
-            params![id, PendingTurnStatus::Running.as_str(), now_string()],
-        )?;
-        tx.commit()?;
-        let request = serde_json::from_str(&request_json)?;
-        Ok(Some(PendingTurnRecord {
-            id,
-            request,
-            chat_kind,
-        }))
-    }
-
-    pub fn complete_pending_turn(&self, pending_turn_id: i64) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
-            "DELETE FROM pending_turns WHERE id = ?1",
-            params![pending_turn_id],
-        )?;
-        Ok(())
-    }
-
-    pub fn recover_interrupted_work(&self) -> Result<Vec<SessionKey>> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let now = now_string();
-        let mut keys = Vec::new();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT s.chat_id, s.thread_id
-             FROM sessions s
-             LEFT JOIN pending_turns p ON p.session_id = s.id
-             WHERE s.busy = 1 OR p.status = 'running'",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(SessionKey {
-                chat_id: row.get(0)?,
-                thread_id: row.get(1)?,
-            })
-        })?;
-        for row in rows {
-            keys.push(row?);
-        }
-        conn.execute(
-            "UPDATE pending_turns
-             SET status = 'queued', started_at = NULL
-             WHERE status = 'running'",
-            [],
-        )?;
-        for key in &keys {
-            conn.execute(
-                "UPDATE sessions
-                 SET busy = 0,
-                     state = 'interrupted',
-                     state_detail = 'Recovered after a process restart before the previous turn finished.',
-                     last_summary = COALESCE(last_summary, 'Recovered interrupted work after restart.'),
-                     last_activity_at = ?3,
-                     updated_at = ?3
-                 WHERE chat_id = ?1 AND thread_id = ?2",
-                params![key.chat_id, key.thread_id, now],
-            )?;
-        }
-        Ok(keys)
-    }
-
     pub fn record_turn_started(&self, session_id: i64, request: &TurnRequest) -> Result<i64> {
         let review_json = serde_json::to_string(&request.review_mode)?;
         let now = now_string();
@@ -575,6 +416,80 @@ impl Store {
         Ok(())
     }
 
+    pub fn record_runner_event(
+        &self,
+        key: SessionKey,
+        codex_thread_id: Option<&str>,
+        event_kind: &str,
+        text: &str,
+    ) -> Result<()> {
+        let now = now_string();
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        if event_kind == "assistant" {
+            let latest = conn
+                .query_row(
+                    "SELECT id, event_kind
+                     FROM runner_events
+                     WHERE chat_id = ?1 AND thread_id = ?2
+                     ORDER BY id DESC
+                     LIMIT 1",
+                    params![key.chat_id, key.thread_id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if let Some((latest_id, latest_kind)) = latest {
+                if latest_kind == "assistant" {
+                    conn.execute(
+                        "UPDATE runner_events
+                         SET codex_thread_id = COALESCE(?2, codex_thread_id),
+                             text = ?3,
+                             created_at = ?4
+                         WHERE id = ?1",
+                        params![latest_id, codex_thread_id, text, now],
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+        conn.execute(
+            "INSERT INTO runner_events(chat_id, thread_id, codex_thread_id, event_kind, text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                key.chat_id,
+                key.thread_id,
+                codex_thread_id,
+                event_kind,
+                text,
+                now
+            ],
+        )?;
+        conn.execute(
+            "DELETE FROM runner_events
+             WHERE id IN (
+                SELECT id FROM runner_events
+                WHERE chat_id = ?1 AND thread_id = ?2
+                ORDER BY id DESC
+                LIMIT -1 OFFSET 5000
+             )",
+            params![key.chat_id, key.thread_id],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn list_runner_events(&self, key: SessionKey) -> Result<Vec<RunnerEventRecord>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, chat_id, thread_id, codex_thread_id, event_kind, text, created_at
+             FROM runner_events
+             WHERE chat_id = ?1 AND thread_id = ?2
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(params![key.chat_id, key.thread_id], map_runner_event)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn set_last_assistant_text(&self, key: SessionKey, text: Option<&str>) -> Result<()> {
         self.update_session_field(
             key,
@@ -595,6 +510,102 @@ impl Store {
         .map_err(Into::into)
     }
 
+    pub fn runner_state(&self) -> Result<RunnerStateRecord> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row(
+            "SELECT automation_enabled, state, controller_chat_id, controller_thread_id,
+                    active_codex_thread_id, generation_id, current_step, runner_scope_issue, last_footer,
+                    stop_requested, started_at, updated_at
+             FROM runner_state
+             WHERE id = 1",
+            [],
+            map_runner_state,
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn save_runner_state(&self, state: &RunnerStateRecord) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO runner_state(
+                id, automation_enabled, state, controller_chat_id, controller_thread_id,
+                active_codex_thread_id, generation_id, current_step, runner_scope_issue, last_footer,
+                stop_requested, started_at, updated_at
+             )
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+                automation_enabled = excluded.automation_enabled,
+                state = excluded.state,
+                controller_chat_id = excluded.controller_chat_id,
+                controller_thread_id = excluded.controller_thread_id,
+                active_codex_thread_id = excluded.active_codex_thread_id,
+                generation_id = excluded.generation_id,
+                current_step = excluded.current_step,
+                runner_scope_issue = excluded.runner_scope_issue,
+                last_footer = excluded.last_footer,
+                stop_requested = excluded.stop_requested,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at",
+            params![
+                bool_to_i64(state.automation_enabled),
+                state.state.as_str(),
+                state.controller_chat_id,
+                state.controller_thread_id,
+                state.active_codex_thread_id,
+                state.generation_id,
+                state.current_step.map(AutomationStep::as_str),
+                state.runner_scope_issue,
+                state.last_footer,
+                bool_to_i64(state.stop_requested),
+                state.started_at,
+                state.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn reset_runner_state(&self) -> Result<RunnerStateRecord> {
+        let state = RunnerStateRecord {
+            automation_enabled: false,
+            state: RunnerState::Idle,
+            controller_chat_id: None,
+            controller_thread_id: None,
+            active_codex_thread_id: None,
+            generation_id: None,
+            current_step: None,
+            runner_scope_issue: None,
+            last_footer: None,
+            stop_requested: false,
+            started_at: None,
+            updated_at: now_string(),
+        };
+        self.save_runner_state(&state)?;
+        Ok(state)
+    }
+
+    pub fn reconcile_runner_state_on_startup(&self) -> Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "UPDATE sessions SET busy = 0, updated_at = ?1 WHERE busy != 0",
+            params![now_string()],
+        )?;
+        drop(conn);
+
+        let mut state = self.runner_state()?;
+        if matches!(
+            state.state,
+            RunnerState::Running | RunnerState::Reviewing | RunnerState::Stopping
+        ) {
+            state.state = RunnerState::Paused;
+            state.automation_enabled = false;
+            state.stop_requested = false;
+            state.current_step = None;
+            state.updated_at = now_string();
+            self.save_runner_state(&state)?;
+        }
+        Ok(())
+    }
+
     pub fn audit(
         &self,
         actor_user_id: Option<i64>,
@@ -608,62 +619,6 @@ impl Store {
             params![actor_user_id, action, details.to_string(), now_string()],
         )?;
         Ok(())
-    }
-
-    pub fn append_telegram_transcript_entry(
-        &self,
-        key: SessionKey,
-        telegram_message_id: Option<i64>,
-        direction: TelegramTranscriptDirection,
-        text: &str,
-    ) -> Result<()> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        conn.execute(
-            "INSERT INTO telegram_transcript(
-                chat_id,
-                thread_id,
-                telegram_message_id,
-                direction,
-                text,
-                created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                key.chat_id,
-                key.thread_id,
-                telegram_message_id,
-                direction.as_str(),
-                text,
-                now_string()
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn recent_telegram_transcript(
-        &self,
-        key: SessionKey,
-        limit: usize,
-    ) -> Result<Vec<TelegramTranscriptEntry>> {
-        let conn = self.conn.lock().expect("store mutex poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT telegram_message_id, direction, text, created_at
-             FROM telegram_transcript
-             WHERE chat_id = ?1 AND thread_id = ?2
-             ORDER BY id DESC
-             LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![key.chat_id, key.thread_id, limit as i64], |row| {
-            let direction: String = row.get(1)?;
-            Ok(TelegramTranscriptEntry {
-                telegram_message_id: row.get(0)?,
-                direction: TelegramTranscriptDirection::from_db(&direction),
-                text: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
-        let mut entries = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        entries.reverse();
-        Ok(entries)
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -696,11 +651,6 @@ impl Store {
                 creator_user_id INTEGER NOT NULL,
                 busy INTEGER NOT NULL DEFAULT 0,
                 last_assistant_text TEXT,
-                state TEXT NOT NULL DEFAULT 'idle',
-                state_detail TEXT,
-                last_status_message_id INTEGER,
-                last_activity_at TEXT,
-                last_summary TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(chat_id, thread_id)
@@ -719,17 +669,6 @@ impl Store {
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
-            CREATE TABLE IF NOT EXISTS pending_turns(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL,
-                request_json TEXT NOT NULL,
-                chat_kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                enqueued_at TEXT NOT NULL,
-                started_at TEXT,
-                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-            );
-
             CREATE TABLE IF NOT EXISTS bot_state(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -743,18 +682,34 @@ impl Store {
                 created_at TEXT NOT NULL
             );
 
-            CREATE TABLE IF NOT EXISTS telegram_transcript(
+            CREATE TABLE IF NOT EXISTS runner_state(
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                automation_enabled INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                controller_chat_id INTEGER,
+                controller_thread_id INTEGER,
+                active_codex_thread_id TEXT,
+                generation_id TEXT,
+                current_step TEXT,
+                runner_scope_issue TEXT,
+                last_footer TEXT,
+                stop_requested INTEGER NOT NULL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS runner_events(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 thread_id INTEGER NOT NULL,
-                telegram_message_id INTEGER,
-                direction TEXT NOT NULL,
+                codex_thread_id TEXT,
+                event_kind TEXT NOT NULL,
                 text TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_telegram_transcript_chat_thread_id
-            ON telegram_transcript(chat_id, thread_id, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_runner_events_session_id
+                ON runner_events(chat_id, thread_id, id);
             ",
         )?;
         add_column_if_missing(&conn, "sessions", "session_title", "TEXT")?;
@@ -766,11 +721,16 @@ impl Store {
             "force_fresh_thread",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
-        add_column_if_missing(&conn, "sessions", "state", "TEXT NOT NULL DEFAULT 'idle'")?;
-        add_column_if_missing(&conn, "sessions", "state_detail", "TEXT")?;
-        add_column_if_missing(&conn, "sessions", "last_status_message_id", "INTEGER")?;
-        add_column_if_missing(&conn, "sessions", "last_activity_at", "TEXT")?;
-        add_column_if_missing(&conn, "sessions", "last_summary", "TEXT")?;
+        add_column_if_missing(&conn, "runner_state", "runner_scope_issue", "TEXT")?;
+        conn.execute(
+            "INSERT OR IGNORE INTO runner_state(
+                id, automation_enabled, state, controller_chat_id, controller_thread_id,
+                active_codex_thread_id, generation_id, current_step, runner_scope_issue, last_footer,
+                stop_requested, started_at, updated_at
+             )
+             VALUES (1, 0, 'idle', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?1)",
+            params![now_string()],
+        )?;
         Ok(())
     }
 
@@ -816,7 +776,6 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let search_mode: String = row.get(12)?;
-    let state: String = row.get(18)?;
     Ok(SessionRecord {
         id: row.get(0)?,
         key: SessionKey {
@@ -844,13 +803,56 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
             .map(normalize_path)
             .collect(),
         busy: row.get::<_, i64>(15)? != 0,
-        state: SessionState::from_db(&state),
-        state_detail: row.get(19)?,
-        last_status_message_id: row.get(20)?,
-        last_activity_at: row.get(21)?,
-        last_summary: row.get(22)?,
-        pending_turns: row.get::<_, i64>(23)? as usize,
     })
+}
+
+fn map_runner_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunnerStateRecord> {
+    let state: String = row.get(1)?;
+    let current_step: Option<String> = row.get(6)?;
+    Ok(RunnerStateRecord {
+        automation_enabled: row.get::<_, i64>(0)? != 0,
+        state: RunnerState::try_from(state.as_str()).map_err(to_sql_conversion_error)?,
+        controller_chat_id: row.get(2)?,
+        controller_thread_id: row.get(3)?,
+        active_codex_thread_id: row.get(4)?,
+        generation_id: row.get(5)?,
+        current_step: current_step
+            .as_deref()
+            .map(AutomationStep::try_from)
+            .transpose()
+            .map_err(to_sql_conversion_error)?,
+        runner_scope_issue: row.get(7)?,
+        last_footer: row.get(8)?,
+        stop_requested: row.get::<_, i64>(9)? != 0,
+        started_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+#[cfg(test)]
+fn map_runner_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunnerEventRecord> {
+    Ok(RunnerEventRecord {
+        id: row.get(0)?,
+        key: SessionKey {
+            chat_id: row.get(1)?,
+            thread_id: row.get(2)?,
+        },
+        codex_thread_id: row.get(3)?,
+        event_kind: row.get(4)?,
+        text: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn to_sql_conversion_error(error: anyhow::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(io::Error::new(
+            io::ErrorKind::InvalidData,
+            error.to_string(),
+        )),
+    )
 }
 
 fn add_column_if_missing(
@@ -959,6 +961,7 @@ mod tests {
                 prompt: None,
             }),
             override_search_mode: None,
+            automation: None,
         };
         let turn_id = store.record_turn_started(session.id, &request).unwrap();
         store
@@ -969,49 +972,99 @@ mod tests {
     }
 
     #[test]
-    fn persists_pending_turns_and_recovery_state() {
+    fn stores_runner_state_singleton() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let mut state = store.runner_state().unwrap();
+        assert_eq!(state.state, RunnerState::Idle);
+
+        state.automation_enabled = true;
+        state.state = RunnerState::Running;
+        state.controller_chat_id = Some(1);
+        state.controller_thread_id = Some(2);
+        state.generation_id = Some("gen-1".to_string());
+        state.current_step = Some(AutomationStep::Run);
+        state.runner_scope_issue = Some("PRO-123".to_string());
+        store.save_runner_state(&state).unwrap();
+
+        let loaded = store.runner_state().unwrap();
+        assert!(loaded.automation_enabled);
+        assert_eq!(loaded.state, RunnerState::Running);
+        assert_eq!(loaded.controller_chat_id, Some(1));
+        assert_eq!(loaded.controller_thread_id, Some(2));
+        assert_eq!(loaded.generation_id.as_deref(), Some("gen-1"));
+        assert_eq!(loaded.current_step, Some(AutomationStep::Run));
+        assert_eq!(loaded.runner_scope_issue.as_deref(), Some("PRO-123"));
+    }
+
+    #[test]
+    fn reconciles_active_runner_state_on_startup() {
         let tmp = NamedTempFile::new().unwrap();
         let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
         let session = store
             .ensure_session(SessionKey::new(1, Some(10)), 100, &defaults())
             .unwrap();
-        let request = TurnRequest {
-            session_key: session.key,
-            from_user_id: 100,
-            prompt: "hello".to_string(),
-            runtime_instructions: None,
-            attachments: vec![],
-            review_mode: None,
-            override_search_mode: None,
-        };
+        store.set_session_busy(session.key, true).unwrap();
+        let mut state = store.runner_state().unwrap();
+        state.automation_enabled = true;
+        state.state = RunnerState::Reviewing;
+        state.current_step = Some(AutomationStep::Review);
+        store.save_runner_state(&state).unwrap();
+
+        store.reconcile_runner_state_on_startup().unwrap();
+
+        let loaded = store.runner_state().unwrap();
+        assert_eq!(loaded.state, RunnerState::Paused);
+        assert!(!loaded.automation_enabled);
+        assert_eq!(loaded.current_step, None);
+        let session = store.get_session(session.key).unwrap().unwrap();
+        assert!(!session.busy);
+    }
+
+    #[test]
+    fn records_runner_events_for_viewer() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let key = SessionKey::new(1, Some(10));
 
         store
-            .set_session_busy(session.key, true)
-            .expect("mark busy");
+            .record_runner_event(key, Some("thread-1"), "status", "Runner started")
+            .unwrap();
         store
-            .enqueue_pending_turn(session.id, &request, "private")
-            .expect("enqueue");
+            .record_runner_event(key, Some("thread-1"), "assistant", "Working")
+            .unwrap();
 
-        let pending = store
-            .claim_next_pending_turn(session.key)
-            .expect("claim")
-            .expect("pending turn");
-        assert_eq!(pending.request.prompt, "hello");
+        let events = store.list_runner_events(key).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_kind, "status");
+        assert_eq!(events[0].codex_thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(events[1].text, "Working");
+    }
 
-        let recovered = store.recover_interrupted_work().expect("recover");
-        assert_eq!(recovered, vec![session.key]);
+    #[test]
+    fn coalesces_consecutive_runner_assistant_snapshots() {
+        let tmp = NamedTempFile::new().unwrap();
+        let store = Store::open(tmp.path(), &[100], &defaults()).unwrap();
+        let key = SessionKey::new(1, Some(10));
 
-        let recovered_session = store
-            .get_session(session.key)
-            .expect("load session")
-            .expect("session");
-        assert_eq!(recovered_session.state, SessionState::Interrupted);
-        assert_eq!(recovered_session.pending_turns, 1);
+        store
+            .record_runner_event(key, Some("thread-1"), "assistant", "I")
+            .unwrap();
+        store
+            .record_runner_event(key, Some("thread-1"), "assistant", "I am working")
+            .unwrap();
+        store
+            .record_runner_event(key, Some("thread-1"), "progress", "Running test")
+            .unwrap();
+        store
+            .record_runner_event(key, Some("thread-1"), "assistant", "Done")
+            .unwrap();
 
-        let queued_again = store
-            .claim_next_pending_turn(session.key)
-            .expect("claim after recover")
-            .expect("pending turn after recover");
-        assert_eq!(queued_again.chat_kind, "private");
+        let events = store.list_runner_events(key).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].event_kind, "assistant");
+        assert_eq!(events[0].text, "I am working");
+        assert_eq!(events[1].event_kind, "progress");
+        assert_eq!(events[2].text, "Done");
     }
 }

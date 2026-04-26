@@ -19,9 +19,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 mod auth;
+mod automation;
 mod forum;
 mod io;
-mod orx_control;
 mod presentation;
 mod support;
 mod turns;
@@ -46,10 +46,9 @@ use crate::{
         format_limits_summary,
     },
     models::{
-        AttachmentKind, LocalAttachment, SessionKey, SessionState, TelegramMessageRef, TurnRequest,
-        UserRole,
+        AttachmentKind, AutomationStep, AutomationTurn, LocalAttachment, RunnerState, SessionKey,
+        TelegramMessageRef, TurnRequest, UserRole,
     },
-    orx::OrxClient,
     render::{render_markdown_to_html, split_text},
     store::{SessionDefaults, Store},
     telegram::{
@@ -73,30 +72,25 @@ struct AppShared {
     store: Store,
     telegram: TelegramClient,
     codex: CodexRunner,
-    orx: Option<OrxClient>,
     bot_username: Option<String>,
-    bot_identity: String,
     service_user_id: i64,
     handy_model_dir: Option<PathBuf>,
     session_defaults: SessionDefaults,
     limits_cache: Mutex<Option<CachedLimitsSnapshot>>,
     history_page_cache: Mutex<HistoryPageCache>,
     pending_approvals: Mutex<HashMap<String, PendingApproval>>,
-    pending_intake_approvals: Mutex<HashMap<String, PendingIntakeApproval>>,
     pending_codex_login: Mutex<Option<PendingCodexLogin>>,
     codex_login_backoff_until: Mutex<Option<Instant>>,
-    recovered_sessions: Vec<SessionKey>,
 }
 
 #[derive(Clone)]
 struct SessionWorkerHandle {
-    sender: mpsc::UnboundedSender<()>,
+    sender: mpsc::UnboundedSender<QueuedTurn>,
     cancel: Arc<StdMutex<Option<CancellationToken>>>,
 }
 
 #[derive(Clone)]
 struct QueuedTurn {
-    pending_turn_id: i64,
     request: TurnRequest,
     chat_kind: String,
 }
@@ -189,17 +183,6 @@ struct PendingApproval {
     responder: oneshot::Sender<CodexApprovalDecision>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OrxIntakeDecision {
-    Approve,
-    Reject,
-}
-
-struct PendingIntakeApproval {
-    requester_user_id: i64,
-    intake_key: String,
-}
-
 struct TurnWorkspace {
     root: PathBuf,
     out_dir: PathBuf,
@@ -214,29 +197,6 @@ impl App {
         let token = config.telegram.resolve_token()?;
         let telegram = TelegramClient::new(token, config.telegram.api_base.clone());
         let me = telegram.get_me().await.context("telegram getMe failed")?;
-        let bot_identity = me
-            .username
-            .clone()
-            .unwrap_or_else(|| format!("telegram-bot-{}", me.id));
-        let orx = if let Some(orx_config) = config.orx.as_ref() {
-            let client = OrxClient::new(orx_config.api_base.clone());
-            let default_display_name = orx_config
-                .default_display_name
-                .as_deref()
-                .unwrap_or(&me.first_name);
-            client
-                .register_bot(
-                    &bot_identity,
-                    default_display_name,
-                    orx_config.owner_chat_id,
-                    orx_config.owner_thread_id,
-                )
-                .await
-                .context("failed to register telecodex bot with ORX")?;
-            Some(client)
-        } else {
-            None
-        };
         let handy_model_dir = detect_handy_parakeet_model_dir();
         let session_defaults = SessionDefaults::from(&config.codex);
         let store = Store::open(
@@ -244,7 +204,7 @@ impl App {
             &config.startup_admin_ids,
             &session_defaults,
         )?;
-        let recovered_sessions = store.recover_interrupted_work()?;
+        store.reconcile_runner_state_on_startup()?;
         let codex = CodexRunner::new(config.codex.binary.clone());
         let service_user_id = config.startup_admin_ids.first().copied().unwrap_or(0);
 
@@ -254,19 +214,15 @@ impl App {
                 store,
                 telegram,
                 codex,
-                orx,
                 bot_username: me.username,
-                bot_identity,
                 service_user_id,
                 handy_model_dir,
                 session_defaults,
                 limits_cache: Mutex::new(None),
                 history_page_cache: Mutex::new(HistoryPageCache::default()),
                 pending_approvals: Mutex::new(HashMap::new()),
-                pending_intake_approvals: Mutex::new(HashMap::new()),
                 pending_codex_login: Mutex::new(None),
                 codex_login_backoff_until: Mutex::new(None),
-                recovered_sessions,
             }),
             workers: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -279,16 +235,8 @@ impl App {
             .await
             .context("failed to register bot commands")?;
 
-        self.resume_recovered_sessions().await?;
-
-        let mut startup_message = format!("🟢 Telecodex {} started", app_version_label());
-        if !self.shared.recovered_sessions.is_empty() {
-            startup_message.push_str(&format!(
-                "\nRecovered {} interrupted session(s) after restart.",
-                self.shared.recovered_sessions.len()
-            ));
-        }
-        self.notify_primary_user(&startup_message).await;
+        self.notify_primary_user(&format!("🟢 Telecodex {} started", app_version_label()))
+            .await;
 
         let maintenance_app = self.clone();
         tokio::spawn(async move {
@@ -324,11 +272,13 @@ impl App {
                         }
                         Err(error) => {
                             if telegram_status(&error) == Some(reqwest::StatusCode::CONFLICT) {
-                                self.notify_primary_user(&format!("🔴 Telecodex {} stopped: getUpdates conflict", app_version_label()))
+                                tracing::warn!(
+                                    "telegram getUpdates conflict: another bot instance is already running; backing off before retry"
+                                );
+                                self.notify_primary_user(&format!("🟡 Telecodex {} paused: getUpdates conflict; retrying", app_version_label()))
                                     .await;
-                                return Err(anyhow!(
-                                    "telegram getUpdates conflict: another bot instance is already running"
-                                ));
+                                sleep(Duration::from_secs(15)).await;
+                                continue;
                             }
                             if let Some(retry_after) = telegram_retry_after(&error) {
                                 tracing::warn!("telegram asked to back off for {retry_after}s");
@@ -439,6 +389,7 @@ impl App {
             attachments,
             review_mode: None,
             override_search_mode: auto_search_mode_for_prompt(text),
+            automation: None,
         };
         self.enqueue_turn(request, &message.chat.kind).await?;
         Ok(())
@@ -460,118 +411,6 @@ impl App {
         let Some(data) = callback.data else {
             return Ok(());
         };
-        if let Some((token, decision)) = parse_orx_intake_callback_data(&data) {
-            let pending = {
-                let mut approvals = self.shared.pending_intake_approvals.lock().await;
-                match approvals.remove(&token) {
-                    Some(pending)
-                        if pending.requester_user_id == callback.from.id
-                            || user.role == UserRole::Admin =>
-                    {
-                        Some(pending)
-                    }
-                    Some(pending) => {
-                        approvals.insert(token.clone(), pending);
-                        None
-                    }
-                    None => None,
-                }
-            };
-            match pending {
-                Some(pending) => {
-                    let Some(orx_client) = self.shared.orx.as_ref() else {
-                        self.send_status(
-                            message.chat.id,
-                            message.message_thread_id,
-                            "ORX is not configured for intake approvals on this bot.",
-                        )
-                        .await?;
-                        return Ok(());
-                    };
-                    let payload = match decision {
-                        OrxIntakeDecision::Approve => {
-                            orx_client.approve_intake(&pending.intake_key).await?
-                        }
-                        OrxIntakeDecision::Reject => {
-                            orx_client.reject_intake(&pending.intake_key, None).await?
-                        }
-                    };
-                    let body = summarize_orx_intake_result(&payload);
-                    self.send_status(message.chat.id, message.message_thread_id, &body)
-                        .await?;
-                }
-                None if user.role != UserRole::Admin => {
-                    self.send_status(
-                        message.chat.id,
-                        message.message_thread_id,
-                        "This intake approval belongs to another user or is already closed.",
-                    )
-                    .await?;
-                }
-                None => {
-                    self.send_status(
-                        message.chat.id,
-                        message.message_thread_id,
-                        "Intake approval is already closed.",
-                    )
-                    .await?;
-                }
-            }
-            return Ok(());
-        }
-        if let Some((project_key, decision)) = parse_orx_operator_callback_data(&data) {
-            let Some(orx_client) = self.shared.orx.as_ref() else {
-                self.send_status(
-                    message.chat.id,
-                    message.message_thread_id,
-                    "ORX is not configured for operator actions on this bot.",
-                )
-                .await?;
-                return Ok(());
-            };
-            let payload = match decision {
-                OrxOperatorDecision::ApproveDesign => orx_client
-                    .resume_reviewed_lane(
-                        &project_key,
-                        Some("Implement the approved design reference and verify it with Playwright."),
-                    )
-                    .await?,
-                OrxOperatorDecision::RequestUiEvidence => orx_client
-                    .resume_reviewed_lane(
-                        &project_key,
-                        Some("Collect Playwright evidence for the current UI behavior and report the result without broad redesign."),
-                    )
-                    .await?,
-                OrxOperatorDecision::MergeAndRelease => orx_client
-                    .release_feature_lane(&project_key, "merge_to_main_and_release", None)
-                    .await?,
-                OrxOperatorDecision::CherryPickAndRelease => orx_client
-                    .release_feature_lane(&project_key, "cherry_pick_and_release", None)
-                    .await?,
-                OrxOperatorDecision::DiscardAndRelease => orx_client
-                    .release_feature_lane(&project_key, "discard_and_release", None)
-                    .await?,
-                OrxOperatorDecision::KeepReserved => orx_client
-                    .release_feature_lane(&project_key, "keep_reserved", None)
-                    .await?,
-            };
-            let body = if payload.get("dispatch").is_some() {
-                summarize_orx_dispatch(&payload)
-            } else if payload.get("project").is_some() {
-                summarize_orx_status(&payload)
-            } else {
-                format!("ORX action completed for `{project_key}`.")
-            };
-            let keyboard = orx_operator_keyboard_for_payload(&payload);
-            self.send_markdown_with_audit(
-                message.chat.id,
-                message.message_thread_id,
-                &body,
-                keyboard,
-            )
-            .await?;
-            return Ok(());
-        }
         if let Some((token, decision)) = parse_approval_callback_data(&data) {
             let pending = {
                 let mut approvals = self.shared.pending_approvals.lock().await;
@@ -729,18 +568,14 @@ impl App {
                 return Ok(true);
             }
         };
-        let orx_handles_add = matches!(&parsed, ParsedInput::Bridge(BridgeCommand::Add { .. }))
-            && self.shared.orx.is_some()
-            && self.shared.config.orx.is_some();
         if parsed_input_requires_codex_auth(&parsed)
-            && !orx_handles_add
             && !self
                 .ensure_codex_authenticated(message.chat.id, message.message_thread_id)
                 .await?
         {
             return Ok(true);
         }
-        if command_uses_session_context(&parsed) && !orx_handles_add {
+        if command_uses_session_context(&parsed) {
             let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
             self.announce_session_if_switched(
                 user.tg_user_id,
@@ -775,6 +610,7 @@ impl App {
                     override_search_mode: auto_search_mode_for_prompt(
                         message.text.as_deref().unwrap_or(""),
                     ),
+                    automation: None,
                 };
                 self.enqueue_turn(request, &message.chat.kind).await?;
             }
@@ -847,7 +683,7 @@ impl App {
                         .await?;
                     }
                 }
-                BridgeCommand::Review(review) => {
+                BridgeCommand::CodexReview(review) => {
                     let request = TurnRequest {
                         session_key,
                         from_user_id: user.tg_user_id,
@@ -856,8 +692,36 @@ impl App {
                         attachments: vec![],
                         review_mode: Some(review),
                         override_search_mode: None,
+                        automation: None,
                     };
                     self.enqueue_turn(request, &message.chat.kind).await?;
+                }
+                BridgeCommand::RunnerAdd { context } => {
+                    self.start_runner_add(user, message, session_key, context)
+                        .await?;
+                }
+                BridgeCommand::RunnerRun { issue } => {
+                    self.start_runner_loop(user, message, session_key, issue)
+                        .await?;
+                }
+                BridgeCommand::RunnerReview { context } => {
+                    self.start_runner_review(user, message, session_key, context)
+                        .await?;
+                }
+                BridgeCommand::LoopStatus => {
+                    let state = self.shared.store.runner_state()?;
+                    self.send_status(
+                        message.chat.id,
+                        message.message_thread_id,
+                        &automation::runner_status_text(&state),
+                    )
+                    .await?;
+                }
+                BridgeCommand::LoopStop => {
+                    self.stop_runner_loop(message, session_key).await?;
+                }
+                BridgeCommand::LoopClear => {
+                    self.clear_runner_loop(message).await?;
                 }
                 BridgeCommand::Cd { path } => {
                     let path = validate_directory(&path)?;
@@ -917,7 +781,8 @@ impl App {
                             .await?;
                         } else {
                             let body = format_environment_dashboard(&environments);
-                            self.send_markdown_with_audit(
+                            send_markdown_message(
+                                &self.shared.telegram,
                                 message.chat.id,
                                 message.message_thread_id,
                                 &body,
@@ -953,7 +818,8 @@ impl App {
                         } else {
                             let body =
                                 format_sessions_overview(&sessions, session_key, &message.chat);
-                            self.send_markdown_with_audit(
+                            send_markdown_message(
+                                &self.shared.telegram,
                                 message.chat.id,
                                 message.message_thread_id,
                                 &body,
@@ -966,7 +832,8 @@ impl App {
                         let sessions =
                             list_threads_for_cwd(&default_codex_home(), &session.cwd, 20)?;
                         let body = format_codex_sessions_overview(&sessions);
-                        self.send_markdown_with_audit(
+                        send_markdown_message(
+                            &self.shared.telegram,
                             message.chat.id,
                             message.message_thread_id,
                             &body,
@@ -1009,16 +876,7 @@ impl App {
                     }
                 }
                 BridgeCommand::Status => {
-                    if self.orx_binding().is_some() {
-                        let response = self.orx_status_response(message, session_key).await?;
-                        self.send_markdown_with_audit(
-                            message.chat.id,
-                            message.message_thread_id,
-                            &response.body,
-                            response.keyboard,
-                        )
-                        .await?;
-                    } else if is_primary_forum_dashboard(
+                    if is_primary_forum_dashboard(
                         &self.shared.config,
                         &message.chat,
                         message.message_thread_id,
@@ -1031,58 +889,10 @@ impl App {
                         .await?;
                     } else {
                         let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
-                        let status = format_session_status(&session, &message.chat);
-                        self.send_status(message.chat.id, message.message_thread_id, &status)
-                            .await?;
-                    }
-                }
-                BridgeCommand::Kanban => {
-                    if self.shared.orx.is_some() {
-                        let response = self.orx_dispatch_run_response(message).await?;
-                        self.send_markdown_with_audit(
-                            message.chat.id,
-                            message.message_thread_id,
-                            &response.body,
-                            response.keyboard,
-                        )
-                        .await?;
-                    } else if is_primary_forum_dashboard(
-                        &self.shared.config,
-                        &message.chat,
-                        message.message_thread_id,
-                    ) {
                         self.send_status(
                             message.chat.id,
                             message.message_thread_id,
-                            "Open a work topic first, then run `/run` there to let ORX pick the next Linear-backed slice.",
-                        )
-                        .await?;
-                    } else {
-                        self.send_status(
-                            message.chat.id,
-                            message.message_thread_id,
-                            "ORX is required for `/run` on this bot. Repair or configure ORX, then retry the managed run.",
-                        )
-                        .await?;
-                    }
-                }
-                BridgeCommand::Add { request } => {
-                    if self.orx_binding().is_some() {
-                        let response = self
-                            .orx_submit_intake_response(user, message, &request)
-                            .await?;
-                        self.send_markdown_with_audit(
-                            message.chat.id,
-                            message.message_thread_id,
-                            &response.body,
-                            response.keyboard,
-                        )
-                        .await?;
-                    } else {
-                        self.send_status(
-                            message.chat.id,
-                            message.message_thread_id,
-                            "ORX intake is not configured for this bot.",
+                            &format_session_status(&session, &message.chat),
                         )
                         .await?;
                     }
@@ -1095,30 +905,11 @@ impl App {
                             "Stop signal sent.",
                         )
                         .await?;
-                    } else if !is_primary_forum_dashboard(
-                        &self.shared.config,
-                        &message.chat,
-                        message.message_thread_id,
-                    ) {
-                        let session = self.ensure_resolved_session(session_key, user.tg_user_id)?;
-                        let workspace = resolve_runner_workspace(&session.cwd)?;
-                        let outcome = stop_tmux_codex_runner(&workspace)?;
-                        let mut body = format!(
-                            "Stopped local runner for `{}`.\nProject root: `{}`",
-                            workspace.project,
-                            workspace.project_root.display()
-                        );
-                        if !outcome.stdout.is_empty() {
-                            body.push_str("\n\n");
-                            body.push_str(&outcome.stdout);
-                        }
-                        self.send_status(message.chat.id, message.message_thread_id, &body)
-                            .await?;
                     } else {
                         self.send_status(
                             message.chat.id,
                             message.message_thread_id,
-                            "No active turn or local runner in this session.",
+                            "No active turn in this session.",
                         )
                         .await?;
                     }
@@ -1691,39 +1482,268 @@ impl App {
         self.send_status(
             chat.id,
             Some(session_key.thread_id).filter(|value| *value != 0),
-            &format_current_session_notice(session, chat),
+            &format!(
+                "Current Codex session: **{}**",
+                escape_markdown_label(&current_session_label(session, chat))
+            ),
         )
         .await
     }
 
     async fn enqueue_turn(&self, request: TurnRequest, chat_kind: &str) -> Result<()> {
-        let session = self.ensure_session(request.session_key, request.from_user_id)?;
-        self.shared
-            .store
-            .enqueue_pending_turn(session.id, &request, chat_kind)?;
-        self.shared.store.set_session_runtime_state(
-            request.session_key,
-            if session.busy {
-                SessionState::Running
-            } else {
-                SessionState::Planning
-            },
-            Some("Turn queued from Telegram."),
-            None,
-        )?;
+        self.ensure_session(request.session_key, request.from_user_id)?;
         let handle = self.worker_for(request.session_key).await?;
         handle
             .sender
-            .send(())
+            .send(QueuedTurn {
+                request,
+                chat_kind: chat_kind.to_string(),
+            })
             .map_err(|_| anyhow!("session worker dropped"))?;
         Ok(())
     }
 
-    async fn resume_recovered_sessions(&self) -> Result<()> {
-        for key in self.shared.recovered_sessions.iter().copied() {
-            self.worker_for(key).await?;
+    async fn start_runner_add(
+        &self,
+        user: &crate::models::UserRecord,
+        message: &Message,
+        session_key: SessionKey,
+        context: String,
+    ) -> Result<()> {
+        let state = self.shared.store.runner_state()?;
+        if state.state.is_active() {
+            self.send_status(
+                message.chat.id,
+                message.message_thread_id,
+                "A runner turn is already active. Use `/loop_status` or `/loop_stop` before starting `/add`.",
+            )
+            .await?;
+            return Ok(());
         }
-        Ok(())
+
+        let generation_id = Uuid::now_v7().to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut next_state = self.shared.store.reset_runner_state()?;
+        next_state.state = RunnerState::Running;
+        next_state.controller_chat_id = Some(session_key.chat_id);
+        next_state.controller_thread_id = Some(session_key.thread_id);
+        next_state.generation_id = Some(generation_id.clone());
+        next_state.current_step = Some(AutomationStep::Add);
+        next_state.started_at = Some(now.clone());
+        next_state.updated_at = now;
+        self.shared.store.save_runner_state(&next_state)?;
+        self.shared.store.clear_session_conversation(session_key)?;
+
+        let prompt =
+            automation::build_runner_prompt(AutomationStep::Add, Some(&context), &next_state);
+        let session = self.ensure_session(session_key, user.tg_user_id)?;
+        let request = TurnRequest {
+            session_key,
+            from_user_id: user.tg_user_id,
+            prompt,
+            runtime_instructions: None,
+            attachments: self.download_attachments(message, &session).await?,
+            review_mode: None,
+            override_search_mode: None,
+            automation: Some(AutomationTurn {
+                generation_id,
+                step: AutomationStep::Add,
+            }),
+        };
+        automation::send_runner_update(
+            &self.shared,
+            session_key,
+            "Starting `/add` in a fresh Codex session to create or update Linear work.",
+        )
+        .await?;
+        self.enqueue_turn(request, &message.chat.kind).await
+    }
+
+    async fn start_runner_loop(
+        &self,
+        user: &crate::models::UserRecord,
+        message: &Message,
+        session_key: SessionKey,
+        issue: Option<String>,
+    ) -> Result<()> {
+        let state = self.shared.store.runner_state()?;
+        if state.state.is_active() {
+            self.send_status(
+                message.chat.id,
+                message.message_thread_id,
+                &format!(
+                    "A runner is already active.\n\n{}",
+                    automation::runner_status_text(&state)
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let generation_id = Uuid::now_v7().to_string();
+        let now = Utc::now().to_rfc3339();
+        let mut next_state = self.shared.store.reset_runner_state()?;
+        next_state.automation_enabled = true;
+        next_state.state = RunnerState::Running;
+        next_state.controller_chat_id = Some(session_key.chat_id);
+        next_state.controller_thread_id = Some(session_key.thread_id);
+        next_state.generation_id = Some(generation_id.clone());
+        next_state.current_step = Some(AutomationStep::Run);
+        next_state.runner_scope_issue = issue;
+        next_state.started_at = Some(now.clone());
+        next_state.updated_at = now;
+        self.shared.store.save_runner_state(&next_state)?;
+        self.shared.store.clear_session_conversation(session_key)?;
+
+        automation::send_runner_update(
+            &self.shared,
+            session_key,
+            &runner_started_message(next_state.runner_scope_issue.as_deref()),
+        )
+        .await?;
+        self.enqueue_runner_step(
+            user.tg_user_id,
+            session_key,
+            AutomationStep::Run,
+            generation_id,
+            None,
+            &message.chat.kind,
+        )
+        .await
+    }
+
+    async fn start_runner_review(
+        &self,
+        user: &crate::models::UserRecord,
+        message: &Message,
+        session_key: SessionKey,
+        context: Option<String>,
+    ) -> Result<()> {
+        let mut state = self.shared.store.runner_state()?;
+        if state.state.is_active() && !runner_state_matches_session(&state, session_key) {
+            self.send_status(
+                message.chat.id,
+                message.message_thread_id,
+                "A different Telegram topic owns the active runner. Use `/loop_status` in the controller topic.",
+            )
+            .await?;
+            return Ok(());
+        }
+        let generation_id = state
+            .generation_id
+            .clone()
+            .unwrap_or_else(|| Uuid::now_v7().to_string());
+        state.state = RunnerState::Reviewing;
+        state.controller_chat_id = Some(session_key.chat_id);
+        state.controller_thread_id = Some(session_key.thread_id);
+        state.generation_id = Some(generation_id.clone());
+        state.current_step = Some(AutomationStep::Review);
+        state.updated_at = Utc::now().to_rfc3339();
+        self.shared.store.save_runner_state(&state)?;
+
+        automation::send_runner_update(
+            &self.shared,
+            session_key,
+            "Starting `/review` for the current runner context.",
+        )
+        .await?;
+        self.enqueue_runner_step(
+            user.tg_user_id,
+            session_key,
+            AutomationStep::Review,
+            generation_id,
+            context.as_deref(),
+            &message.chat.kind,
+        )
+        .await
+    }
+
+    async fn enqueue_runner_step(
+        &self,
+        user_id: i64,
+        session_key: SessionKey,
+        step: AutomationStep,
+        generation_id: String,
+        user_context: Option<&str>,
+        chat_kind: &str,
+    ) -> Result<()> {
+        let state = self.shared.store.runner_state()?;
+        let prompt = automation::build_runner_prompt(step, user_context, &state);
+        let request = TurnRequest {
+            session_key,
+            from_user_id: user_id,
+            prompt,
+            runtime_instructions: None,
+            attachments: vec![],
+            review_mode: None,
+            override_search_mode: None,
+            automation: Some(AutomationTurn {
+                generation_id,
+                step,
+            }),
+        };
+        self.enqueue_turn(request, chat_kind).await
+    }
+
+    async fn stop_runner_loop(&self, message: &Message, session_key: SessionKey) -> Result<()> {
+        let mut state = self.shared.store.runner_state()?;
+        if !state.state.is_active() {
+            self.send_status(
+                message.chat.id,
+                message.message_thread_id,
+                "No runner is active.",
+            )
+            .await?;
+            return Ok(());
+        }
+        state.stop_requested = true;
+        state.state = RunnerState::Stopping;
+        state.updated_at = Utc::now().to_rfc3339();
+        self.shared.store.save_runner_state(&state)?;
+        let stopped = if let (Some(chat_id), thread_id) =
+            (state.controller_chat_id, state.controller_thread_id)
+        {
+            self.stop_session(SessionKey {
+                chat_id,
+                thread_id: thread_id.unwrap_or(0),
+            })
+            .await
+        } else {
+            self.stop_session(session_key).await
+        };
+        let text = if stopped {
+            "Stop signal sent to the active runner turn."
+        } else {
+            state.state = RunnerState::Paused;
+            state.automation_enabled = false;
+            state.current_step = None;
+            state.stop_requested = false;
+            state.updated_at = Utc::now().to_rfc3339();
+            self.shared.store.save_runner_state(&state)?;
+            "Runner stop requested. No active Codex child was found in memory."
+        };
+        self.send_status(message.chat.id, message.message_thread_id, text)
+            .await
+    }
+
+    async fn clear_runner_loop(&self, message: &Message) -> Result<()> {
+        let state = self.shared.store.runner_state()?;
+        if state.state.is_active() {
+            self.send_status(
+                message.chat.id,
+                message.message_thread_id,
+                "Runner is active. Use `/loop_stop` before `/loop_clear`.",
+            )
+            .await?;
+            return Ok(());
+        }
+        self.shared.store.reset_runner_state()?;
+        self.send_status(
+            message.chat.id,
+            message.message_thread_id,
+            "Runner state cleared.",
+        )
+        .await
     }
 
     async fn worker_for(&self, key: SessionKey) -> Result<SessionWorkerHandle> {
@@ -1731,7 +1751,7 @@ impl App {
             return Ok(existing);
         }
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        let (tx, mut rx) = mpsc::unbounded_channel::<QueuedTurn>();
         let cancel = Arc::new(StdMutex::new(None));
         let handle = SessionWorkerHandle {
             sender: tx.clone(),
@@ -1741,47 +1761,20 @@ impl App {
 
         let shared = self.shared.clone();
         tokio::spawn(async move {
-            loop {
-                loop {
-                    let next_turn = match shared.store.claim_next_pending_turn(key) {
-                        Ok(next) => next,
+            while let Some(turn) = rx.recv().await {
+                let mut next_turn = Some(turn);
+                while let Some(turn) = next_turn {
+                    match process_turn(shared.clone(), cancel.clone(), turn).await {
+                        Ok(next) => next_turn = next,
                         Err(error) => {
-                            tracing::error!(
-                                "failed to claim pending turn for {:?}: {error:#}",
-                                key
-                            );
-                            break;
+                            tracing::error!("turn failed for {:?}: {error:#}", key);
+                            next_turn = None;
                         }
-                    };
-                    let Some(next_turn) = next_turn else {
-                        break;
-                    };
-                    let queued = QueuedTurn {
-                        pending_turn_id: next_turn.id,
-                        request: next_turn.request,
-                        chat_kind: next_turn.chat_kind,
-                    };
-                    if let Err(error) =
-                        process_turn(shared.clone(), cancel.clone(), queued.clone()).await
-                    {
-                        tracing::error!("turn failed for {:?}: {error:#}", key);
                     }
-                    if let Err(error) = shared.store.complete_pending_turn(queued.pending_turn_id) {
-                        tracing::error!(
-                            "failed to clear pending turn {} for {:?}: {error:#}",
-                            queued.pending_turn_id,
-                            key
-                        );
-                    }
-                }
-
-                if rx.recv().await.is_none() {
-                    break;
                 }
             }
         });
 
-        let _ = tx.send(());
         Ok(handle)
     }
 
@@ -1928,6 +1921,25 @@ fn history_thread_title(thread_id: &str) -> String {
         .map(|summary| summary.title)
         .filter(|title| !title.trim().is_empty())
         .unwrap_or_else(|| short_codex_thread_id(thread_id))
+}
+
+fn runner_state_matches_session(
+    state: &crate::models::RunnerStateRecord,
+    session_key: SessionKey,
+) -> bool {
+    state.controller_chat_id == Some(session_key.chat_id)
+        && state.controller_thread_id.unwrap_or(0) == session_key.thread_id
+}
+
+fn runner_started_message(scope: Option<&str>) -> String {
+    match scope {
+        Some(issue) => format!(
+            "Runner started for `{issue}`. I’m opening a fresh Codex session and asking `/run` to work only that Linear ticket."
+        ),
+        None => {
+            "Runner started. I’m opening a fresh Codex session and asking `/run` to pick the next Linear slice.".to_string()
+        }
+    }
 }
 
 fn load_history_page(thread_id: &str) -> Result<HistoryPageData> {

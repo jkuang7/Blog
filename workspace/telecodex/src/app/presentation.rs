@@ -1,10 +1,7 @@
-use std::{fs, path::Path};
-
-use super::support::{derive_session_title_from_text, is_message_thread_not_found};
+use super::support::is_message_thread_not_found;
 use super::*;
 use crate::codex::CodexApprovalRequest;
 use html_escape::encode_safe;
-use serde_json::Value;
 use uuid::Uuid;
 
 pub(super) fn approval_waiting_text(kind: CodexApprovalKind) -> String {
@@ -61,50 +58,6 @@ pub(super) fn parse_approval_callback_data(data: &str) -> Option<(String, CodexA
     Some((token, decision))
 }
 
-pub(super) fn parse_orx_intake_callback_data(data: &str) -> Option<(String, OrxIntakeDecision)> {
-    let mut parts = data.split(':');
-    if parts.next()? != "int" {
-        return None;
-    }
-    let token = parts.next()?.to_string();
-    let decision = match parts.next()? {
-        "a" => OrxIntakeDecision::Approve,
-        "r" => OrxIntakeDecision::Reject,
-        _ => return None,
-    };
-    Some((token, decision))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum OrxOperatorDecision {
-    ApproveDesign,
-    RequestUiEvidence,
-    MergeAndRelease,
-    CherryPickAndRelease,
-    DiscardAndRelease,
-    KeepReserved,
-}
-
-pub(super) fn parse_orx_operator_callback_data(
-    data: &str,
-) -> Option<(String, OrxOperatorDecision)> {
-    let mut parts = data.split(':');
-    if parts.next()? != "orx" {
-        return None;
-    }
-    let project_key = parts.next()?.to_string();
-    let decision = match parts.next()? {
-        "ad" => OrxOperatorDecision::ApproveDesign,
-        "ui" => OrxOperatorDecision::RequestUiEvidence,
-        "mr" => OrxOperatorDecision::MergeAndRelease,
-        "cr" => OrxOperatorDecision::CherryPickAndRelease,
-        "dr" => OrxOperatorDecision::DiscardAndRelease,
-        "kr" => OrxOperatorDecision::KeepReserved,
-        _ => return None,
-    };
-    Some((project_key, decision))
-}
-
 pub(super) fn parse_history_callback_data(data: &str) -> Option<(String, usize)> {
     let mut parts = data.split(':');
     if parts.next()? != "his" {
@@ -136,81 +89,6 @@ pub(super) fn approval_keyboard(
         .map(|chunk| chunk.to_vec())
         .collect::<Vec<_>>();
     Some(InlineKeyboardMarkup { inline_keyboard })
-}
-
-pub(super) fn orx_intake_keyboard(token: &str) -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup {
-        inline_keyboard: vec![vec![
-            InlineKeyboardButton {
-                text: "Create tickets".to_string(),
-                callback_data: Some(format!("int:{token}:a")),
-                url: None,
-            },
-            InlineKeyboardButton {
-                text: "Reject".to_string(),
-                callback_data: Some(format!("int:{token}:r")),
-                url: None,
-            },
-        ]],
-    }
-}
-
-pub(super) fn orx_operator_keyboard(
-    project_key: &str,
-    lane_state: Option<&str>,
-    review_kind: Option<&str>,
-) -> Option<InlineKeyboardMarkup> {
-    let mut inline_keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
-    if lane_state == Some("awaiting_orx_review") {
-        match review_kind {
-            Some("design_review_required") => {
-                inline_keyboard.push(vec![InlineKeyboardButton {
-                    text: "Approve design".to_string(),
-                    callback_data: Some(format!("orx:{project_key}:ad")),
-                    url: None,
-                }]);
-            }
-            Some("ui_evidence_missing") => {
-                inline_keyboard.push(vec![InlineKeyboardButton {
-                    text: "Request Playwright evidence".to_string(),
-                    callback_data: Some(format!("orx:{project_key}:ui")),
-                    url: None,
-                }]);
-            }
-            _ => {}
-        }
-    }
-    if lane_state == Some("awaiting_hil_release") {
-        inline_keyboard.push(vec![
-            InlineKeyboardButton {
-                text: "Merge + release".to_string(),
-                callback_data: Some(format!("orx:{project_key}:mr")),
-                url: None,
-            },
-            InlineKeyboardButton {
-                text: "Keep reserved".to_string(),
-                callback_data: Some(format!("orx:{project_key}:kr")),
-                url: None,
-            },
-        ]);
-        inline_keyboard.push(vec![
-            InlineKeyboardButton {
-                text: "Cherry-pick + release".to_string(),
-                callback_data: Some(format!("orx:{project_key}:cr")),
-                url: None,
-            },
-            InlineKeyboardButton {
-                text: "Discard + release".to_string(),
-                callback_data: Some(format!("orx:{project_key}:dr")),
-                url: None,
-            },
-        ]);
-    }
-    if inline_keyboard.is_empty() {
-        None
-    } else {
-        Some(InlineKeyboardMarkup { inline_keyboard })
-    }
 }
 
 pub(super) fn history_keyboard(
@@ -786,7 +664,7 @@ pub(super) fn session_title_label(
 ) -> String {
     if let Some(title) = session.session_title.as_deref().map(str::trim) {
         if !title.is_empty() {
-            return derive_session_title_from_text(title).unwrap_or_else(|| title.to_string());
+            return title.to_string();
         }
     }
     if session.key.thread_id == 0 {
@@ -868,90 +746,11 @@ pub(super) fn current_session_label(
         if let Ok(Some(summary)) = find_thread_by_id(&default_codex_home(), thread_id) {
             let title = summary.title.trim();
             if !title.is_empty() {
-                return derive_session_title_from_text(title).unwrap_or_else(|| title.to_string());
+                return title.to_string();
             }
         }
     }
     session_title_label(session, chat)
-}
-
-fn session_next_step(session: &crate::models::SessionRecord) -> String {
-    if let Some(detail) = session
-        .state_detail
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return detail.to_string();
-    }
-
-    match session.state {
-        crate::models::SessionState::Idle => {
-            if session.pending_turns > 0 {
-                "Queued turn is waiting to run.".to_string()
-            } else {
-                "Ready for the next turn.".to_string()
-            }
-        }
-        crate::models::SessionState::Planning => "Preparing the next turn.".to_string(),
-        crate::models::SessionState::Coding | crate::models::SessionState::Running => {
-            "Working on the current turn.".to_string()
-        }
-        crate::models::SessionState::WaitingApproval => "Waiting for your approval.".to_string(),
-        crate::models::SessionState::Blocked => "Blocked for now.".to_string(),
-        crate::models::SessionState::Interrupted => "Turn was interrupted.".to_string(),
-        crate::models::SessionState::Completed => "Turn completed.".to_string(),
-        crate::models::SessionState::Failed => "Turn failed.".to_string(),
-    }
-}
-
-fn session_change_summary(session: &crate::models::SessionRecord) -> String {
-    if let Some(summary) = session
-        .last_summary
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return summary.to_string();
-    }
-
-    if let Some(detail) = session
-        .state_detail
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return detail.to_string();
-    }
-
-    match session.state {
-        crate::models::SessionState::Idle => {
-            if session.pending_turns > 0 {
-                "Queued turn is waiting to run.".to_string()
-            } else {
-                "No active changes yet.".to_string()
-            }
-        }
-        crate::models::SessionState::Planning => "Preparing the next turn.".to_string(),
-        crate::models::SessionState::Coding | crate::models::SessionState::Running => {
-            "Working on the current turn.".to_string()
-        }
-        crate::models::SessionState::WaitingApproval => "Waiting for your approval.".to_string(),
-        crate::models::SessionState::Blocked => "Blocked for now.".to_string(),
-        crate::models::SessionState::Interrupted => "Turn was interrupted.".to_string(),
-        crate::models::SessionState::Completed => "Turn completed.".to_string(),
-        crate::models::SessionState::Failed => "Turn failed.".to_string(),
-    }
-}
-
-pub(super) fn format_current_session_notice(
-    session: &crate::models::SessionRecord,
-    chat: &crate::telegram::Chat,
-) -> String {
-    let title = escape_markdown_label(&current_session_label(session, chat));
-    let changed = escape_markdown_label(&session_change_summary(session));
-    let next_step = escape_markdown_label(&session_next_step(session));
-    format!("**Current session:** {title}\n- changed: {changed}\n- next: {next_step}")
 }
 
 pub(super) fn format_session_status(
@@ -970,7 +769,7 @@ pub(super) fn format_session_status(
                 "unbound"
             })
         });
-    let state = session.state.as_str();
+    let state = if session.busy { "busy" } else { "idle" };
     let codex_thread = session
         .codex_thread_id
         .as_deref()
@@ -989,282 +788,15 @@ pub(super) fn format_session_status(
     } else {
         "none"
     };
-    let state_detail = session
-        .state_detail
-        .as_deref()
-        .map(escape_markdown_label)
-        .unwrap_or_else(|| "-".to_string());
-    let last_activity = session
-        .last_activity_at
-        .as_deref()
-        .unwrap_or(&session.updated_at);
-    let last_summary = session
-        .last_summary
-        .as_deref()
-        .map(escape_markdown_label)
-        .unwrap_or_else(|| "-".to_string());
-    let runner_section = format_runner_status(&session.cwd)
-        .map(|value| format!("\n\n{value}"))
-        .unwrap_or_default();
 
     format!(
-        "**Current Telegram session:** {telegram_title}\n- codex session title: {codex_title}\n- state: `{state}`\n- detail: {state_detail}\n- queued turns: `{}`\n- cwd: `{}`\n- codex thread: `{}`\n- model: `{model}`\n- reasoning: `{reasoning}`\n- approval: `{}`\n- sandbox: `{}`\n- search: `{}`\n- prompt: `{prompt}`\n- last activity: `{last_activity}`\n- last summary: {last_summary}{runner_section}",
-        session.pending_turns,
+        "**Current Telegram session:** {telegram_title}\n- codex session title: {codex_title}\n- state: `{state}`\n- cwd: `{}`\n- codex thread: `{}`\n- model: `{model}`\n- reasoning: `{reasoning}`\n- approval: `{}`\n- sandbox: `{}`\n- search: `{}`\n- prompt: `{prompt}`",
         session.cwd.display(),
         codex_thread,
         session.approval_policy,
         session.sandbox_mode,
         session.search_mode.as_codex_value(),
     )
-}
-
-fn format_runner_status(cwd: &Path) -> Option<String> {
-    let runner_status = runner_status_snapshot(cwd);
-    if let Some(status) = runner_status {
-        return format_runner_status_snapshot(&status);
-    }
-    let runner_dir = cwd.join(".memory").join("runner");
-    let runtime_state = read_json_value(&runner_dir.join("runtime").join("RUNNER_STATE.json"))?;
-    let kanban_state = read_json_value(&runner_dir.join("KANBAN_STATE.json"));
-
-    let runner_mode = runtime_state
-        .get("runtime_policy")
-        .and_then(|value| value.get("runner_mode"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let current_phase = runtime_state
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let phase_status = runtime_state
-        .get("phase_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let done_gate_status = runtime_state
-        .get("done_gate_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let next_task = runtime_state
-        .get("next_task")
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let next_task_reason = runtime_state
-        .get("next_task_reason")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let current_goal = runtime_state
-        .get("current_goal")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-
-    let mut lines = vec![
-        "**Local runner:**".to_string(),
-        format!("- mode: `{runner_mode}`"),
-        format!("- phase: `{current_phase}`"),
-        format!("- phase status: `{phase_status}`"),
-        format!("- done gate: `{done_gate_status}`"),
-        format!("- next task: {next_task}"),
-        format!("- next reason: {}", escape_markdown_label(next_task_reason)),
-        format!("- current goal: {}", escape_markdown_label(current_goal)),
-    ];
-
-    if let Some(kanban_state) = kanban_state {
-        let runner_phase = kanban_state
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let continue_until = kanban_state
-            .get("loop")
-            .and_then(|value| value.get("continue_until"))
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let active_issue_url = kanban_state
-            .get("active_issue")
-            .and_then(|value| value.get("url"))
-            .and_then(Value::as_str)
-            .unwrap_or("-");
-        lines.push(format!("- queue phase: `{runner_phase}`"));
-        lines.push(format!("- continue until: `{continue_until}`"));
-        lines.push(format!("- active Linear issue: {active_issue_url}"));
-    }
-
-    Some(lines.join("\n"))
-}
-
-fn format_runner_status_snapshot(status: &Value) -> Option<String> {
-    let runtime_policy = status.get("runtime_policy")?;
-    let kanban = status.get("kanban");
-    let runner_mode = runtime_policy
-        .get("runner_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let current_phase = status
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let phase_status = status
-        .get("phase_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let done_gate_status = status
-        .get("done_gate_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let next_task = status
-        .get("next_task")
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let next_task_reason = status
-        .get("next_task_reason")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let current_goal = status
-        .get("current_goal")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-
-    let mut lines = vec![
-        "**Local runner:**".to_string(),
-        format!("- mode: `{runner_mode}`"),
-        format!("- phase: `{current_phase}`"),
-        format!("- phase status: `{phase_status}`"),
-        format!("- done gate: `{done_gate_status}`"),
-        format!("- next task: {next_task}"),
-        format!("- next reason: {}", escape_markdown_label(next_task_reason)),
-        format!("- current goal: {}", escape_markdown_label(current_goal)),
-    ];
-
-    if let Some(kanban) = kanban {
-        let runner_phase = kanban
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let continue_until = kanban
-            .get("continue_until")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let active_issue_url = kanban
-            .get("active_issue_url")
-            .and_then(Value::as_str)
-            .unwrap_or("-");
-        lines.push(format!("- queue phase: `{runner_phase}`"));
-        lines.push(format!("- continue until: `{continue_until}`"));
-        lines.push(format!("- active Linear issue: {active_issue_url}"));
-    }
-
-    Some(lines.join("\n"))
-}
-
-pub(super) fn runner_status_snapshot(cwd: &Path) -> Option<Value> {
-    read_json_value(
-        &cwd.join(".memory")
-            .join("runner")
-            .join("RUNNER_STATUS.json"),
-    )
-}
-
-pub(super) fn runner_notification_fingerprint(status: &Value) -> Option<String> {
-    let runtime_policy = status.get("runtime_policy")?;
-    let kanban = status.get("kanban");
-    let runner_mode = runtime_policy
-        .get("runner_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let current_phase = status
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let phase_status = status
-        .get("phase_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let done_gate_status = status
-        .get("done_gate_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let next_task = status
-        .get("next_task")
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let runner_phase = kanban
-        .and_then(|value| value.get("phase"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let active_issue = kanban
-        .and_then(|value| value.get("active_issue_url"))
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    Some(format!(
-        "{runner_mode}|{current_phase}|{phase_status}|{done_gate_status}|{next_task}|{runner_phase}|{active_issue}"
-    ))
-}
-
-pub(super) fn format_runner_notification(status: &Value) -> Option<String> {
-    let runtime_policy = status.get("runtime_policy")?;
-    let kanban = status.get("kanban");
-    let project = status
-        .get("project")
-        .and_then(Value::as_str)
-        .unwrap_or("runner");
-    let runner_mode = runtime_policy
-        .get("runner_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let current_phase = status
-        .get("current_phase")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let phase_status = status
-        .get("phase_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let done_gate_status = status
-        .get("done_gate_status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let next_task = status
-        .get("next_task")
-        .and_then(Value::as_str)
-        .unwrap_or("none");
-    let next_task_reason = status
-        .get("next_task_reason")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let current_goal = status
-        .get("current_goal")
-        .and_then(Value::as_str)
-        .unwrap_or("-");
-    let mut lines = vec![
-        format!("Runner update for `{project}`"),
-        format!("- mode: `{runner_mode}`"),
-        format!("- phase: `{current_phase}`"),
-        format!("- phase status: `{phase_status}`"),
-        format!("- done gate: `{done_gate_status}`"),
-        format!("- next task: {}", escape_markdown_label(next_task)),
-        format!("- next reason: {}", escape_markdown_label(next_task_reason)),
-        format!("- current goal: {}", escape_markdown_label(current_goal)),
-    ];
-    if let Some(kanban) = kanban {
-        let runner_phase = kanban
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let active_issue_url = kanban
-            .get("active_issue_url")
-            .and_then(Value::as_str)
-            .unwrap_or("-");
-        lines.push(format!("- queue phase: `{runner_phase}`"));
-        lines.push(format!(
-            "- issue: {}",
-            escape_markdown_label(active_issue_url)
-        ));
-    }
-    Some(lines.join("\n"))
-}
-
-fn read_json_value(path: &Path) -> Option<Value> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
 }
 
 pub(super) fn format_history_page(

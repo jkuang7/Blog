@@ -10,7 +10,6 @@ use serde::Deserialize;
 pub struct Config {
     pub telegram: TelegramConfig,
     pub codex: CodexConfig,
-    pub orx: Option<OrxConfig>,
     #[serde(default = "default_db_path")]
     pub db_path: PathBuf,
     #[serde(default)]
@@ -68,8 +67,6 @@ pub struct CodexConfig {
     pub default_cwd: PathBuf,
     pub default_model: Option<String>,
     pub default_reasoning_effort: Option<String>,
-    pub execution_model: Option<String>,
-    pub execution_reasoning_effort: Option<String>,
     #[serde(default = "default_sandbox")]
     pub default_sandbox: String,
     #[serde(default = "default_approval")]
@@ -86,21 +83,7 @@ pub struct CodexConfig {
     pub import_cli_history: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct OrxConfig {
-    #[serde(default = "default_orx_api_base")]
-    pub api_base: String,
-    pub project_key: Option<String>,
-    pub project_display_name: Option<String>,
-    pub default_display_name: Option<String>,
-    pub repo_root: Option<PathBuf>,
-    pub owner_chat_id: Option<i64>,
-    pub owner_thread_id: Option<i64>,
-    pub linear_team_id: Option<String>,
-    pub linear_project_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     Disabled,
@@ -214,56 +197,6 @@ impl Config {
         }
         self.codex.binary = resolve_binary_path(&self.codex.binary)?;
 
-        if let Some(orx) = &mut self.orx {
-            if let Some(key) = &mut orx.project_key {
-                let trimmed = key.trim();
-                if trimmed.is_empty() {
-                    orx.project_key = None;
-                } else {
-                    *key = trimmed.to_string();
-                }
-            }
-            if let Some(display_name) = &mut orx.default_display_name {
-                let trimmed = display_name.trim();
-                if trimmed.is_empty() {
-                    orx.default_display_name = None;
-                } else {
-                    *display_name = trimmed.to_string();
-                }
-            }
-            if let Some(repo_root) = &mut orx.repo_root {
-                if !repo_root.is_absolute() {
-                    bail!("orx.repo_root must be an absolute path");
-                }
-                *repo_root = normalize_path(
-                    fs::canonicalize(&*repo_root)
-                        .with_context(|| format!("failed to canonicalize {}", repo_root.display()))?,
-                );
-                if !repo_root.is_dir() {
-                    bail!("orx.repo_root is not a directory: {}", repo_root.display());
-                }
-            }
-            if orx.owner_chat_id.is_none() {
-                orx.owner_chat_id = self.telegram.primary_forum_chat_id;
-            }
-            if let Some(team_id) = &mut orx.linear_team_id {
-                let trimmed = team_id.trim();
-                if trimmed.is_empty() {
-                    orx.linear_team_id = None;
-                } else {
-                    *team_id = trimmed.to_string();
-                }
-            }
-            if let Some(project_id) = &mut orx.linear_project_id {
-                let trimmed = project_id.trim();
-                if trimmed.is_empty() {
-                    orx.linear_project_id = None;
-                } else {
-                    *project_id = trimmed.to_string();
-                }
-            }
-        }
-
         Ok(())
     }
 }
@@ -278,20 +211,6 @@ impl TelegramConfig {
                 .with_context(|| format!("failed to read telegram token from env {env_name}"));
         }
         bail!("configure telegram.bot_token or telegram.bot_token_env")
-    }
-}
-
-impl CodexConfig {
-    pub fn execution_model_or_default(&self) -> Option<String> {
-        self.execution_model
-            .clone()
-            .or_else(|| self.default_model.clone())
-    }
-
-    pub fn execution_reasoning_effort_or_default(&self) -> Option<String> {
-        self.execution_reasoning_effort
-            .clone()
-            .or_else(|| self.default_reasoning_effort.clone())
     }
 }
 
@@ -337,10 +256,6 @@ fn default_approval() -> String {
 
 fn default_search_mode() -> SearchMode {
     SearchMode::Disabled
-}
-
-fn default_orx_api_base() -> String {
-    "http://127.0.0.1:9467".to_string()
 }
 
 fn resolve_binary_path(input: &Path) -> Result<PathBuf> {

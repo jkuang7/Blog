@@ -2,25 +2,24 @@
 
 ## Role
 
-- tmux-codex is the execute-only worker for ORX-managed work.
-- `runner-<project>` sessions are the canonical execution sessions for ORX-managed projects.
+- tmux-codex is a local tmux viewer/launcher for interactive Codex sessions.
+- It does not own Telegram execution or start background runner loops.
+- Telecodex owns Telegram-triggered Codex work.
 
-## Execution Contract
+## Runner View
 
-- The ORX execution packet is the only live objective source.
-- Report factual slice results:
-  - what changed
-  - what was verified
-  - blockers, risks, and lessons
-- Do not decide routing, follow-up creation, packet resequencing, or model-tier changes locally.
+- In tmux-codex, "runner" means a Telecodex Telegram session that is busy or automation-active.
+- Read runner status from Telecodex SQLite profile databases under `workspace/telecodex/.telecodex/`.
+- Runner rows in `cl`/`clls` are status-only; do not try to attach to them as tmux sessions.
 
-## Runner Memory
+## Durable Work State
 
-- Treat `.memory/runner` as cache and recovery breadcrumbs, not truth.
-- Stale local runner files must never override fresh ORX state.
-- Keep `.memory/**` ephemeral except for intentional checked-in guidance such as `lessons.md`.
+- Linear issues and `telecodex:phase` comments are the durable execution brief.
+- Telecodex SQLite state is local session/controller state.
+- `.memory/**` is cache or recovery context unless a deeper repo explicitly documents a checked-in guidance file.
 
 ## Avoid
 
-- Do not rebuild a competing planner from local task files for ORX-managed work.
-- Do not force model-tier authority back into local prompts or local runner state.
+- Do not recreate tmux-codex background execution loops.
+- Do not add `runner-*` tmux session launch paths.
+- Do not treat local runner files as the planner of record.

@@ -6,7 +6,5 @@ telecodex.toml
 tmp-config.toml
 .env
 .env.*
-!.env.example
 .telecodex/
-.runtime/
 .build-number

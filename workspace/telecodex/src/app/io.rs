@@ -4,124 +4,8 @@ use super::support::{
 };
 use super::turns::{classify_document_kind, sanitize_file_name};
 use super::*;
-use crate::models::TelegramTranscriptDirection;
 
 impl App {
-    pub(super) fn append_outbound_transcript(
-        &self,
-        chat_id: i64,
-        thread_id: Option<i64>,
-        telegram_message_id: Option<i64>,
-        markdown: &str,
-    ) {
-        if let Err(error) = self.shared.store.append_telegram_transcript_entry(
-            SessionKey::new(chat_id, thread_id),
-            telegram_message_id,
-            TelegramTranscriptDirection::Outbound,
-            markdown,
-        ) {
-            tracing::warn!(
-                "failed to append outbound telegram transcript for {}:{:?}: {error:#}",
-                chat_id,
-                thread_id
-            );
-        }
-    }
-
-    pub(super) async fn send_markdown_with_audit(
-        &self,
-        chat_id: i64,
-        thread_id: Option<i64>,
-        markdown: &str,
-        reply_markup: Option<InlineKeyboardMarkup>,
-    ) -> Result<Message> {
-        send_markdown_with_shared_audit(&self.shared, chat_id, thread_id, markdown, reply_markup)
-            .await
-    }
-
-    pub(super) async fn send_notification(
-        &self,
-        chat_id: i64,
-        thread_id: Option<i64>,
-        markdown: &str,
-    ) -> Result<Message> {
-        self.send_markdown_with_audit(chat_id, thread_id, markdown, None)
-            .await
-    }
-
-    async fn send_or_edit_session_status_html(
-        &self,
-        chat_id: i64,
-        thread_id: Option<i64>,
-        html: &str,
-        fallback_markdown: &str,
-    ) -> Result<bool> {
-        let key = SessionKey::new(chat_id, thread_id);
-        let Some(session) = self.shared.store.get_session(key)? else {
-            return Ok(false);
-        };
-        let should_edit_existing = session.busy
-            || matches!(
-                session.state,
-                crate::models::SessionState::Planning
-                    | crate::models::SessionState::Coding
-                    | crate::models::SessionState::Running
-                    | crate::models::SessionState::WaitingApproval
-                    | crate::models::SessionState::Blocked
-            );
-        if should_edit_existing {
-            if let Some(message_id) = session.last_status_message_id {
-                let edit_result = self
-                    .shared
-                    .telegram
-                    .edit_message_text(EditMessageText::html(chat_id, message_id, html.to_string()))
-                    .await;
-                match edit_result {
-                    Ok(_) => {
-                        self.append_outbound_transcript(
-                            chat_id,
-                            thread_id,
-                            Some(message_id),
-                            fallback_markdown,
-                        );
-                        return Ok(true);
-                    }
-                    Err(error) if is_message_not_modified(&error) => return Ok(true),
-                    Err(error) if is_message_thread_not_found(&error) => {
-                        tracing::debug!(
-                            "session status message edit fell back to resend due to missing thread: {error:#}"
-                        );
-                        self.shared
-                            .store
-                            .set_session_last_status_message(key, None)?;
-                    }
-                    Err(error) => {
-                        tracing::debug!("session status message edit failed, resending: {error:#}");
-                        self.shared
-                            .store
-                            .set_session_last_status_message(key, None)?;
-                    }
-                }
-            }
-        }
-
-        let message = self
-            .shared
-            .telegram
-            .send_message(SendMessage::html(chat_id, thread_id, html.to_string()))
-            .await?;
-        self.shared
-            .store
-            .set_session_last_status_message(key, Some(message.message_id))?;
-        self.append_outbound_transcript(
-            chat_id,
-            thread_id,
-            Some(message.message_id),
-            fallback_markdown,
-        );
-        Ok(true)
-    }
-
     pub(super) async fn download_attachments(
         &self,
         message: &Message,
@@ -269,27 +153,13 @@ impl App {
         markdown: &str,
     ) -> Result<()> {
         let html = render_markdown_to_html(markdown);
-        if self
-            .send_or_edit_session_status_html(chat_id, thread_id, &html, markdown)
-            .await?
-        {
-            return Ok(());
-        }
         match self
             .shared
             .telegram
             .send_message(SendMessage::html(chat_id, thread_id, html))
             .await
         {
-            Ok(message) => {
-                self.append_outbound_transcript(
-                    chat_id,
-                    thread_id,
-                    Some(message.message_id),
-                    markdown,
-                );
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(error) => {
                 if should_drop_telegram_rate_limited_send(&error) {
                     tracing::warn!("dropping status send due to Telegram rate limit");
@@ -308,14 +178,7 @@ impl App {
                     .send_message(SendMessage::html(chat_id, thread_id, fallback))
                     .await
                 {
-                    Ok(message) => {
-                        self.append_outbound_transcript(
-                            chat_id,
-                            thread_id,
-                            Some(message.message_id),
-                            markdown,
-                        );
-                    }
+                    Ok(_) => {}
                     Err(fallback_error)
                         if should_drop_telegram_rate_limited_send(&fallback_error) =>
                     {
@@ -339,33 +202,19 @@ impl App {
         html: &str,
         fallback_text: Option<&str>,
     ) -> Result<()> {
-        let fallback = fallback_text.unwrap_or_default();
-        if self
-            .send_or_edit_session_status_html(chat_id, thread_id, html, fallback)
-            .await?
-        {
-            return Ok(());
-        }
         match self
             .shared
             .telegram
             .send_message(SendMessage::html(chat_id, thread_id, html.to_string()))
             .await
         {
-            Ok(message) => {
-                self.append_outbound_transcript(
-                    chat_id,
-                    thread_id,
-                    Some(message.message_id),
-                    fallback,
-                );
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(error) => {
                 if should_drop_telegram_rate_limited_send(&error) {
                     tracing::warn!("dropping html status send due to Telegram rate limit");
                     return Ok(());
                 }
+                let fallback = fallback_text.unwrap_or_default();
                 if self
                     .retry_status_without_missing_thread(chat_id, thread_id, fallback, &error)
                     .await?
@@ -379,15 +228,7 @@ impl App {
                     .send_message(SendMessage::html(chat_id, thread_id, fallback))
                     .await
                 {
-                    Ok(message) => {
-                        self.append_outbound_transcript(
-                            chat_id,
-                            thread_id,
-                            Some(message.message_id),
-                            fallback_text.unwrap_or_default(),
-                        );
-                        Ok(())
-                    }
+                    Ok(_) => Ok(()),
                     Err(fallback_error)
                         if should_drop_telegram_rate_limited_send(&fallback_error) =>
                     {
@@ -413,15 +254,7 @@ impl App {
         let mut request = SendMessage::html(chat_id, thread_id, html);
         request.reply_markup = keyboard.clone();
         match self.shared.telegram.send_message(request).await {
-            Ok(message) => {
-                self.append_outbound_transcript(
-                    chat_id,
-                    thread_id,
-                    Some(message.message_id),
-                    &help.text,
-                );
-                Ok(())
-            }
+            Ok(_) => Ok(()),
             Err(error) => {
                 if should_drop_telegram_rate_limited_send(&error) {
                     tracing::warn!("dropping command help due to Telegram rate limit");
@@ -443,14 +276,7 @@ impl App {
                 let mut fallback_request = SendMessage::html(chat_id, thread_id, fallback);
                 fallback_request.reply_markup = keyboard;
                 match self.shared.telegram.send_message(fallback_request).await {
-                    Ok(message) => {
-                        self.append_outbound_transcript(
-                            chat_id,
-                            thread_id,
-                            Some(message.message_id),
-                            &help.text,
-                        );
-                    }
+                    Ok(_) => {}
                     Err(fallback_error)
                         if should_drop_telegram_rate_limited_send(&fallback_error) =>
                     {
@@ -580,34 +406,4 @@ impl App {
         }
         Ok(snapshot)
     }
-}
-
-pub(super) async fn send_markdown_with_shared_audit(
-    shared: &Arc<AppShared>,
-    chat_id: i64,
-    thread_id: Option<i64>,
-    markdown: &str,
-    reply_markup: Option<InlineKeyboardMarkup>,
-) -> Result<Message> {
-    let message = send_markdown_message(
-        &shared.telegram,
-        chat_id,
-        thread_id,
-        markdown,
-        reply_markup,
-    )
-    .await?;
-    if let Err(error) = shared.store.append_telegram_transcript_entry(
-        SessionKey::new(chat_id, thread_id),
-        Some(message.message_id),
-        TelegramTranscriptDirection::Outbound,
-        markdown,
-    ) {
-        tracing::warn!(
-            "failed to append outbound telegram transcript for {}:{:?}: {error:#}",
-            chat_id,
-            thread_id
-        );
-    }
-    Ok(message)
 }

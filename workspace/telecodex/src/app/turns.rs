@@ -4,67 +4,11 @@ use super::*;
 use std::path::Path;
 use uuid::Uuid;
 
-pub(super) fn should_use_execution_profile(request: &TurnRequest) -> bool {
-    if request.review_mode.is_some() {
-        return true;
-    }
-
-    let prompt = request.prompt.trim().to_ascii_lowercase();
-    [
-        "/plan",
-        "/kanban",
-        "kanban",
-        "plan ",
-        "planning pass",
-        "i'm treating this as a planning pass",
-        "i am treating this as a planning pass",
-        "treat this as a planning pass",
-        "continue kanban",
-        "run kanban",
-        "/run",
-        "/prompts:run_",
-        "/integrate",
-        "/spec",
-        "/refactor",
-        "/commit-main",
-        "/enhance",
-        "/prune",
-        "/yeet",
-    ]
-    .iter()
-    .any(|prefix| prompt.starts_with(prefix))
-}
-
-pub(super) fn apply_execution_profile(
-    session: &crate::models::SessionRecord,
-    codex_config: &crate::config::CodexConfig,
-    request: &TurnRequest,
-) -> crate::models::SessionRecord {
-    let mut runtime_session = session.clone();
-    if !should_use_execution_profile(request) {
-        return runtime_session;
-    }
-
-    let uses_default_model =
-        runtime_session.model.as_deref() == codex_config.default_model.as_deref();
-    if uses_default_model {
-        runtime_session.model = codex_config.execution_model_or_default();
-    }
-
-    let uses_default_effort = runtime_session.reasoning_effort.as_deref()
-        == codex_config.default_reasoning_effort.as_deref();
-    if uses_default_effort {
-        runtime_session.reasoning_effort = codex_config.execution_reasoning_effort_or_default();
-    }
-
-    runtime_session
-}
-
 pub(super) async fn process_turn(
     shared: Arc<AppShared>,
     cancel_slot: Arc<StdMutex<Option<CancellationToken>>>,
     queued: QueuedTurn,
-) -> Result<()> {
+) -> Result<Option<QueuedTurn>> {
     let session = shared.store.ensure_session(
         queued.request.session_key,
         queued.request.from_user_id,
@@ -72,12 +16,6 @@ pub(super) async fn process_turn(
     )?;
     let session = resolve_session_codex_binding_from_history(&shared, session)?;
     shared.store.set_session_busy(session.key, true)?;
-    shared.store.set_session_runtime_state(
-        session.key,
-        crate::models::SessionState::Planning,
-        Some("Preparing Codex turn."),
-        None,
-    )?;
     let turn_id = shared
         .store
         .record_turn_started(session.id, &queued.request)?;
@@ -122,9 +60,6 @@ pub(super) async fn process_turn(
         ))
         .await
         .context("failed to create placeholder message")?;
-    shared
-        .store
-        .set_session_last_status_message(session.key, Some(placeholder.message_id))?;
     let sink = Arc::new(Mutex::new(LiveTurnSink::new(
         shared.clone(),
         &session,
@@ -138,23 +73,41 @@ pub(super) async fn process_turn(
     enrich_audio_transcripts(&shared, &mut runtime_request, &turn_workspace, &sink).await;
     let runtime_request = prepare_runtime_request(&session, &runtime_request, &turn_workspace);
     let runtime_request = enrich_runtime_request_with_codex_history(&session, runtime_request);
-    let runtime_session = apply_execution_profile(&session, &shared.config.codex, &runtime_request);
+    let automation_turn_for_events = queued.request.automation.clone();
+    if let Some(automation_turn) = automation_turn_for_events.as_ref() {
+        if let Err(error) = shared.store.record_runner_event(
+            session.key,
+            session.codex_thread_id.as_deref(),
+            "turn_started",
+            &format!("Starting /{}", automation_turn.step.as_str()),
+        ) {
+            tracing::debug!("failed to record runner start event: {error:#}");
+        }
+    }
 
     let run_result = shared
         .codex
-        .run_turn(&runtime_session, &runtime_request, cancel.clone(), {
+        .run_turn(&session, &runtime_request, cancel.clone(), {
             let sink = sink.clone();
             let shared = shared.clone();
             let approval_cancel = cancel.clone();
             let requester_user_id = queued.request.from_user_id;
             let session_key = session.key;
+            let automation_turn = automation_turn_for_events.clone();
             move |event| {
                 let sink = sink.clone();
                 let shared = shared.clone();
                 let cancel = approval_cancel.clone();
+                let automation_turn = automation_turn.clone();
                 async move {
                     match event {
                         CodexEvent::ApprovalRequest(request) => {
+                            record_runner_codex_event(
+                                &shared,
+                                session_key,
+                                automation_turn.as_ref(),
+                                &CodexEvent::ApprovalRequest(request.clone()),
+                            );
                             if let Err(error) = sink
                                 .lock()
                                 .await
@@ -177,7 +130,39 @@ pub(super) async fn process_turn(
                             .await?;
                             Ok(CodexEventOutcome::Approval(decision))
                         }
+                        CodexEvent::ThreadStarted(thread_id) => {
+                            shared
+                                .store
+                                .set_session_codex_thread(session_key, &thread_id)?;
+                            if let Some(automation_turn) = automation_turn.as_ref() {
+                                let mut state = shared.store.runner_state()?;
+                                if state.generation_id.as_deref()
+                                    == Some(automation_turn.generation_id.as_str())
+                                {
+                                    state.active_codex_thread_id = Some(thread_id.clone());
+                                    state.updated_at = Utc::now().to_rfc3339();
+                                    shared.store.save_runner_state(&state)?;
+                                }
+                            }
+                            record_runner_codex_event(
+                                &shared,
+                                session_key,
+                                automation_turn.as_ref(),
+                                &CodexEvent::ThreadStarted(thread_id.clone()),
+                            );
+                            sink.lock()
+                                .await
+                                .handle_event(CodexEvent::ThreadStarted(thread_id))
+                                .await?;
+                            Ok(CodexEventOutcome::None)
+                        }
                         other => {
+                            record_runner_codex_event(
+                                &shared,
+                                session_key,
+                                automation_turn.as_ref(),
+                                &other,
+                            );
                             sink.lock().await.handle_event(other).await?;
                             Ok(CodexEventOutcome::None)
                         }
@@ -194,13 +179,6 @@ pub(super) async fn process_turn(
         match run_result {
             Ok(summary) => {
                 shared.store.set_session_busy(session.key, false)?;
-                let summary_preview = summarize_for_status(&summary.assistant_text);
-                shared.store.set_session_runtime_state(
-                    session.key,
-                    crate::models::SessionState::Completed,
-                    Some("Turn completed."),
-                    Some(&summary_preview),
-                )?;
                 let sink_for_success = sink.clone();
                 let sink_for_failure = sink.clone();
                 finalize_foreground_turn(
@@ -220,18 +198,14 @@ pub(super) async fn process_turn(
                             sink_for_failure.lock().await.finish(Some(message)).await
                         },
                     )
-                    .await
+                    .await?;
+                handle_runner_turn_success(&shared, &session, &queued, &summary).await
             }
             Err(error) => {
                 let status = if error.to_string().contains("cancelled") {
                     "cancelled"
                 } else {
                     "failed"
-                };
-                let session_state = if status == "cancelled" {
-                    crate::models::SessionState::Interrupted
-                } else {
-                    crate::models::SessionState::Failed
                 };
                 let recovery_note = if should_reset_session_after_error(&error) {
                     tracing::warn!(
@@ -256,17 +230,10 @@ pub(super) async fn process_turn(
                     shared.store.set_session_busy(session.key, false)?;
                     None
                 };
-                shared.store.set_session_runtime_state(
-                    session.key,
-                    session_state,
-                    Some(match status {
-                        "cancelled" => "Turn interrupted.",
-                        _ => "Turn failed.",
-                    }),
-                    Some(&summarize_for_status(&format!("{error:#}"))),
-                )?;
                 finish_failed_turn(&shared.store, turn_id, &sink, status, &error, recovery_note)
                     .await?;
+                let runner_error = handle_runner_turn_error(&shared, &session, &queued, &error).await;
+                runner_error?;
                 Err(error)
             }
         }
@@ -278,6 +245,355 @@ pub(super) async fn process_turn(
         &turn_workspace.root,
         final_result,
     )
+}
+
+fn record_runner_codex_event(
+    shared: &Arc<AppShared>,
+    session_key: SessionKey,
+    automation_turn: Option<&AutomationTurn>,
+    event: &CodexEvent,
+) {
+    let Some(_) = automation_turn else {
+        return;
+    };
+    let (event_kind, text, codex_thread_id) = match event {
+        CodexEvent::Progress(text) => ("progress", text.as_str(), None),
+        CodexEvent::AssistantText(text) => ("assistant", text.as_str(), None),
+        CodexEvent::ThreadStarted(thread_id) => (
+            "thread_started",
+            thread_id.as_str(),
+            Some(thread_id.as_str()),
+        ),
+        CodexEvent::ApprovalRequest(request) => ("approval", request.prompt.as_str(), None),
+    };
+    if let Err(error) =
+        shared
+            .store
+            .record_runner_event(session_key, codex_thread_id, event_kind, text)
+    {
+        tracing::debug!("failed to record runner event: {error:#}");
+    }
+}
+
+async fn handle_runner_turn_success(
+    shared: &Arc<AppShared>,
+    session: &crate::models::SessionRecord,
+    queued: &QueuedTurn,
+    summary: &crate::codex::RunSummary,
+) -> Result<Option<QueuedTurn>> {
+    let Some(automation_turn) = queued.request.automation.as_ref() else {
+        return Ok(None);
+    };
+    let mut state = shared.store.runner_state()?;
+    if state.generation_id.as_deref() != Some(automation_turn.generation_id.as_str()) {
+        tracing::warn!(
+            "ignoring stale runner completion for generation {}",
+            automation_turn.generation_id
+        );
+        return Ok(None);
+    }
+    if let Some(thread_id) = summary.codex_thread_id.as_deref() {
+        state.active_codex_thread_id = Some(thread_id.to_string());
+    }
+    let Some(footer) = automation::parse_telecodex_footer(&summary.assistant_text) else {
+        if automation_turn.step == AutomationStep::Add {
+            state.state = RunnerState::Idle;
+            state.automation_enabled = false;
+            state.current_step = None;
+            state.active_codex_thread_id = None;
+            state.runner_scope_issue = None;
+            state.stop_requested = false;
+            state.last_footer = Some("add completed without TELECODEX footer".to_string());
+            state.updated_at = Utc::now().to_rfc3339();
+            shared.store.save_runner_state(&state)?;
+            shared.store.clear_session_conversation(session.key)?;
+            automation::send_runner_update(
+                shared,
+                session.key,
+                &automation::add_completion_message(None),
+            )
+            .await?;
+            return Ok(None);
+        }
+        state.state = RunnerState::Paused;
+        state.automation_enabled = false;
+        state.stop_requested = false;
+        state.last_footer = Some("missing TELECODEX footer".to_string());
+        state.updated_at = Utc::now().to_rfc3339();
+        shared.store.save_runner_state(&state)?;
+        automation::send_runner_update(
+            shared,
+            session.key,
+            "Runner paused because the Codex response did not include a `TELECODEX_NEXT` footer. Use `/loop_status`, then `/run` to retry or `/loop_clear` if the state is stale.",
+        )
+        .await?;
+        return Ok(None);
+    };
+
+    state.last_footer = Some(footer.raw.clone());
+    state.updated_at = Utc::now().to_rfc3339();
+    if automation_turn.step != AutomationStep::Add {
+        if let automation::FooterScopeValidation::Mismatch { expected, actual } =
+            automation::validate_footer_scope(&footer, state.runner_scope_issue.as_deref())
+        {
+            state.state = RunnerState::Paused;
+            state.automation_enabled = false;
+            state.current_step = None;
+            state.stop_requested = false;
+            shared.store.save_runner_state(&state)?;
+            automation::send_runner_update(
+                shared,
+                session.key,
+                &format!(
+                    "Runner paused because the footer targeted `{actual}` while this loop is scoped to `{expected}`. Check Linear, then use `/loop_status` before retrying."
+                ),
+            )
+            .await?;
+            return Ok(None);
+        }
+    }
+    if state.stop_requested {
+        state.state = RunnerState::Paused;
+        state.automation_enabled = false;
+        state.current_step = None;
+        state.stop_requested = false;
+        shared.store.save_runner_state(&state)?;
+        automation::send_runner_update(shared, session.key, "Runner stopped.").await?;
+        return Ok(None);
+    }
+
+    match automation_turn.step {
+        AutomationStep::Add => {
+            state.state = RunnerState::Idle;
+            state.automation_enabled = false;
+            state.current_step = None;
+            state.active_codex_thread_id = None;
+            state.runner_scope_issue = None;
+            shared.store.save_runner_state(&state)?;
+            shared.store.clear_session_conversation(session.key)?;
+            automation::send_runner_update(
+                shared,
+                session.key,
+                &automation::add_completion_message(Some(&footer)),
+            )
+            .await?;
+            Ok(None)
+        }
+        AutomationStep::Run => match automation::decide_run_footer_disposition(
+            &footer,
+            state.automation_enabled,
+            state.runner_scope_issue.is_some(),
+        ) {
+            automation::RunFooterDisposition::ReviewCurrentSession => {
+                state.state = RunnerState::Reviewing;
+                state.current_step = Some(AutomationStep::Review);
+                shared.store.save_runner_state(&state)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "`/run` finished. Starting `/review` in the same Codex session so it can use the implementation context.",
+                )
+                .await?;
+                Ok(Some(build_followup_turn(
+                    queued,
+                    AutomationStep::Review,
+                    automation::build_runner_prompt(AutomationStep::Review, None, &state),
+                )))
+            }
+            automation::RunFooterDisposition::FreshRun => {
+                shared.store.clear_session_conversation(session.key)?;
+                state.state = RunnerState::Running;
+                state.current_step = Some(AutomationStep::Run);
+                state.active_codex_thread_id = None;
+                state.updated_at = Utc::now().to_rfc3339();
+                shared.store.save_runner_state(&state)?;
+                let message = if footer.status_is("blocked") {
+                    "`/run` blocked one Linear ticket and recorded the blocker. I’m starting a fresh `/run` to look for the next ticket that can move toward review."
+                } else {
+                    "`/run` recorded follow-up work in Linear. I’m closing this Codex session and starting a fresh `/run`."
+                };
+                automation::send_runner_update(shared, session.key, message).await?;
+                Ok(Some(build_followup_turn(
+                    queued,
+                    AutomationStep::Run,
+                    automation::build_runner_prompt(AutomationStep::Run, None, &state),
+                )))
+            }
+            automation::RunFooterDisposition::Pause => {
+                state.state = RunnerState::Paused;
+                state.automation_enabled = false;
+                state.current_step = None;
+                shared.store.save_runner_state(&state)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "`/run` asked for an unsupported transition. Runner paused for inspection.",
+                )
+                .await?;
+                Ok(None)
+            }
+            automation::RunFooterDisposition::StopIdle => {
+                let scoped_issue = state.runner_scope_issue.clone();
+                state.state = RunnerState::Idle;
+                state.automation_enabled = false;
+                state.current_step = None;
+                state.active_codex_thread_id = None;
+                state.runner_scope_issue = None;
+                shared.store.save_runner_state(&state)?;
+                shared.store.clear_session_conversation(session.key)?;
+                let message = if footer.status_is("no_ready_work") {
+                    scoped_issue
+                        .as_deref()
+                        .map(|issue| {
+                            let issue = automation::linear_issue_markdown_link(issue)
+                                .unwrap_or_else(|| issue.to_string());
+                            format!(
+                                "No ready Linear work found for {issue}. Runner is idle. Regular Codex sessions are unaffected."
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            "No ready Linear work found. Runner is idle. Regular Codex sessions are unaffected.".to_string()
+                        })
+                } else {
+                    "Runner stopped after `/run`. Check Linear for the recorded status.".to_string()
+                };
+                automation::send_runner_update(shared, session.key, &message).await?;
+                Ok(None)
+            }
+            automation::RunFooterDisposition::StopBlocked => {
+                state.state = RunnerState::Blocked;
+                state.automation_enabled = false;
+                state.current_step = None;
+                state.active_codex_thread_id = None;
+                state.runner_scope_issue = None;
+                shared.store.save_runner_state(&state)?;
+                shared.store.clear_session_conversation(session.key)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "Runner stopped because the scoped Linear ticket is blocked. Check Linear for the recorded blocker.",
+                )
+                .await?;
+                Ok(None)
+            }
+        },
+        AutomationStep::Review => match footer.next {
+            automation::FooterNext::Run => {
+                if !state.automation_enabled {
+                    state.state = RunnerState::Idle;
+                    state.current_step = None;
+                    state.active_codex_thread_id = None;
+                    state.runner_scope_issue = None;
+                    shared.store.save_runner_state(&state)?;
+                    shared.store.clear_session_conversation(session.key)?;
+                    return Ok(None);
+                }
+                shared.store.clear_session_conversation(session.key)?;
+                state.state = RunnerState::Running;
+                state.current_step = Some(AutomationStep::Run);
+                state.active_codex_thread_id = None;
+                state.updated_at = Utc::now().to_rfc3339();
+                shared.store.save_runner_state(&state)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "`/review` finished. Linear is updated. I’m closing this Codex session and starting a fresh `/run`.",
+                )
+                .await?;
+                Ok(Some(build_followup_turn(
+                    queued,
+                    AutomationStep::Run,
+                    automation::build_runner_prompt(AutomationStep::Run, None, &state),
+                )))
+            }
+            automation::FooterNext::Review => {
+                state.state = RunnerState::Paused;
+                state.automation_enabled = false;
+                state.current_step = None;
+                shared.store.save_runner_state(&state)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "`/review` asked to review again. Runner paused for inspection.",
+                )
+                .await?;
+                Ok(None)
+            }
+            automation::FooterNext::Stop => {
+                state.state = if footer.status_is("blocked") {
+                    RunnerState::Blocked
+                } else {
+                    RunnerState::Idle
+                };
+                state.automation_enabled = false;
+                state.current_step = None;
+                state.active_codex_thread_id = None;
+                state.runner_scope_issue = None;
+                shared.store.save_runner_state(&state)?;
+                shared.store.clear_session_conversation(session.key)?;
+                automation::send_runner_update(
+                    shared,
+                    session.key,
+                    "Runner stopped after `/review`. Check Linear for the recorded status.",
+                )
+                .await?;
+                Ok(None)
+            }
+        },
+    }
+}
+
+async fn handle_runner_turn_error(
+    shared: &Arc<AppShared>,
+    session: &crate::models::SessionRecord,
+    queued: &QueuedTurn,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let Some(automation_turn) = queued.request.automation.as_ref() else {
+        return Ok(());
+    };
+    let mut state = shared.store.runner_state()?;
+    if state.generation_id.as_deref() != Some(automation_turn.generation_id.as_str()) {
+        return Ok(());
+    }
+    state.state = if state.stop_requested {
+        RunnerState::Paused
+    } else {
+        RunnerState::Blocked
+    };
+    state.automation_enabled = false;
+    state.current_step = None;
+    state.stop_requested = false;
+    state.last_footer = Some(format!("turn failed: {error:#}"));
+    state.updated_at = Utc::now().to_rfc3339();
+    shared.store.save_runner_state(&state)?;
+    automation::send_runner_update(
+        shared,
+        session.key,
+        "Runner paused because the active Codex turn failed or was cancelled. Use `/loop_status` to inspect the controller state.",
+    )
+    .await
+}
+
+fn build_followup_turn(queued: &QueuedTurn, step: AutomationStep, prompt: String) -> QueuedTurn {
+    let mut request = queued.request.clone();
+    request.prompt = prompt;
+    request.runtime_instructions = None;
+    request.attachments = vec![];
+    request.review_mode = None;
+    request.override_search_mode = None;
+    request.automation = queued
+        .request
+        .automation
+        .as_ref()
+        .map(|automation| AutomationTurn {
+            generation_id: automation.generation_id.clone(),
+            step,
+        });
+    QueuedTurn {
+        request,
+        chat_kind: queued.chat_kind.clone(),
+    }
 }
 
 fn cleanup_paths(attachments: &[LocalAttachment], turn_root: &Path) {
@@ -414,7 +730,6 @@ struct LiveTurnSink {
     last_flushed_text: String,
     last_flush_at: Instant,
     edit_backoff_until: Option<Instant>,
-    last_state: crate::models::SessionState,
 }
 
 impl LiveTurnSink {
@@ -434,7 +749,6 @@ impl LiveTurnSink {
             last_flushed_text: String::new(),
             last_flush_at: Instant::now() - Duration::from_secs(60),
             edit_backoff_until: None,
-            last_state: crate::models::SessionState::Planning,
         }
     }
 
@@ -444,17 +758,10 @@ impl LiveTurnSink {
                 if !self.has_assistant_text {
                     self.pending_text = progress_status_text(&text);
                 }
-                self.update_state(classify_progress_state(&text), Some(text.as_str()))
-                    .await?;
             }
             CodexEvent::AssistantText(text) => {
                 self.pending_text = text;
                 self.has_assistant_text = true;
-                self.update_state(
-                    crate::models::SessionState::Coding,
-                    Some("Streaming assistant response."),
-                )
-                .await?;
             }
             CodexEvent::ThreadStarted(thread_id) => {
                 tracing::debug!("codex thread started: {thread_id}");
@@ -463,11 +770,6 @@ impl LiveTurnSink {
                 if !self.has_assistant_text {
                     self.pending_text = approval_waiting_text(request.kind);
                 }
-                self.update_state(
-                    crate::models::SessionState::WaitingApproval,
-                    Some("Waiting for Telegram approval."),
-                )
-                .await?;
             }
         }
         self.flush(false).await
@@ -475,10 +777,7 @@ impl LiveTurnSink {
 
     async fn set_progress(&mut self, text: impl Into<String>) -> Result<()> {
         if !self.has_assistant_text {
-            let text = text.into();
-            self.pending_text = progress_status_text(&text);
-            self.update_state(classify_progress_state(&text), Some(text.as_str()))
-                .await?;
+            self.pending_text = progress_status_text(&text.into());
             self.flush(false).await?;
         }
         Ok(())
@@ -559,14 +858,15 @@ impl LiveTurnSink {
     }
 
     fn visible_text(&self, force: bool) -> String {
+        let pending_text = automation::link_linear_issue_keys_for_markdown(&self.pending_text);
         if force {
-            return self.pending_text.clone();
+            return pending_text;
         }
         match self.limits_inline.as_deref() {
             Some(limits_inline) if !limits_inline.is_empty() => {
-                format!("{limits_inline}\n{}", self.pending_text)
+                format!("{limits_inline}\n{pending_text}")
             }
-            _ => self.pending_text.clone(),
+            _ => pending_text,
         }
     }
 
@@ -629,23 +929,6 @@ impl LiveTurnSink {
         tracing::warn!("{label} hit Telegram rate limit, backing off for {retry_after}s");
         true
     }
-
-    async fn update_state(
-        &mut self,
-        state: crate::models::SessionState,
-        detail: Option<&str>,
-    ) -> Result<()> {
-        if self.last_state == state {
-            return Ok(());
-        }
-        self.last_state = state;
-        self.shared.store.set_session_runtime_state(
-            self.session_key,
-            state,
-            detail.map(summarize_for_status).as_deref(),
-            None,
-        )
-    }
 }
 
 pub(super) fn truncate_for_live_update(text: &str, max_len: usize) -> String {
@@ -677,31 +960,6 @@ fn progress_status_text(text: &str) -> String {
         "⏳".to_string()
     } else {
         format!("⏳ {text}")
-    }
-}
-
-fn classify_progress_state(text: &str) -> crate::models::SessionState {
-    let normalized = text.trim().to_ascii_lowercase();
-    if normalized.contains("approval") {
-        crate::models::SessionState::WaitingApproval
-    } else if normalized.starts_with("running `") || normalized.contains("running ") {
-        crate::models::SessionState::Running
-    } else if normalized.contains("edit") || normalized.contains("patch") {
-        crate::models::SessionState::Coding
-    } else {
-        crate::models::SessionState::Planning
-    }
-}
-
-fn summarize_for_status(text: &str) -> String {
-    const MAX_CHARS: usize = 180;
-    let normalized = text.replace('\n', " ").trim().to_string();
-    let mut chars = normalized.chars();
-    let summary = chars.by_ref().take(MAX_CHARS).collect::<String>();
-    if chars.next().is_some() {
-        format!("{summary}...")
-    } else {
-        summary
     }
 }
 

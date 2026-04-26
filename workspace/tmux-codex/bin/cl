@@ -4,16 +4,10 @@
 Usage:
     cl                              Interactive session menu
     cl ls [selector]                List sessions or attach directly
-    cl loop <project>               Start Codex infinite loop runner
-    cl loop <project> --complexity high
-    cl loop <project> --complexity xhigh
-    cl loop <project> --runner-id alpha
-    cl stop <project>               Stop Codex infinite loop runner
-    cl k <project>                  Alias for stop
-    cl ka <project>                 Alias for stop
-    cl kb <project>                 Alias for stop
-    cl k*                           Stop all infinite loop runners
+    cl <prompt...>                  Create a new Codex session
     cl --help                       Show this help
+
+Telecodex Telegram work appears in cl/clls as read-only runner status.
 """
 
 import os

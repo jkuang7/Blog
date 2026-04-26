@@ -116,7 +116,7 @@ When all planned goals are done, run a short hardening sweep:
 Stop as `complete` only if both pass for `2` consecutive iterations.
 If either fails, open a hardening goal and continue.
 
-This is the default "good enough" bar for infinite runner.
+This is the default "good enough" bar for the evidence-constrained goal runner.
 
 Keep it lean: do not add deeper checks unless evidence says they're needed.
 
