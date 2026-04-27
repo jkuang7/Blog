@@ -1,7 +1,0 @@
-interface:
-  display_name: "Enhance"
-  short_description: "Rewrite weak tickets and split oversized work"
-  default_prompt: "Use $enhance to turn a rough ticket idea, weak issue, or overloaded request into execution-ready GitHub issue drafts. If the user says 'enhance if applicable' without naming a ticket, proactively inspect the default GitHub Project used by $kanban, surface candidate issues in the current repo or local workspace scope, and use GitHub MCP to read those issues before deciding whether enhancement is needed. Then split work when needed, assign each child ticket to the correct repo and project metadata based on that child scope rather than the parent umbrella issue, deprecate stale umbrella-ticket detail when child tickets replace it, ask for approval, then create or update the resulting issues in the same GitHub Project used by $kanban."
-
-policy:
-  allow_implicit_invocation: true

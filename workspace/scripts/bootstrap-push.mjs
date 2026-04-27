@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_DEV_ROOT = path.resolve(__dirname, "../..");
-const AUTO_COMMIT_PATHS = ["workspace/repos.txt", ".bootstrap/codex"];
-const DEFAULT_COMMIT_MESSAGE = "chore: sync bootstrap snapshot";
+const AUTO_COMMIT_PATHS = ["repos.txt", ".codex"];
+const DEFAULT_COMMIT_MESSAGE = "chore: sync codex snapshot";
 
 main();
 
@@ -112,7 +112,7 @@ function maybeCommitSnapshot(devRoot, branchName, preGenerateStatus, commitMessa
 
   const unrelatedEntries = postGenerateStatus.entries.filter((entry) => !isAllowedPath(entry.path));
   if (unrelatedEntries.length > 0) {
-    console.warn("[Dev] warning: auto-commit skipped (unexpected changes outside bootstrap snapshot)");
+    console.warn("[Dev] warning: auto-commit skipped (unexpected changes outside codex snapshot)");
     return;
   }
 

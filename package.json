@@ -8,6 +8,8 @@
     "pull": "node workspace/scripts/bootstrap-pull.mjs",
     "push": "node workspace/scripts/bootstrap-push.mjs",
     "bs:pull": "npm run pull",
-    "bs:push": "npm run push"
+    "bs:push": "npm run push",
+    "harness:check": "node workspace/scripts/harness-check.mjs",
+    "verify": "node --test workspace/scripts/tests/*.test.mjs && npm run harness:check && zsh -n .custom && bash -n workspace/hooks/notify-codex.sh workspace/.githooks/_run-lint.sh workspace/.githooks/pre-commit workspace/.githooks/pre-push"
   }
 }

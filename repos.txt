@@ -1,0 +1,12 @@
+# Managed repositories - one per line
+# Format: <directory>\t<remote-origin-url>[\t<branch>]
+# Remove line to stop bootstrap management (won't auto-delete local folders)
+# Generated from standalone git repos under Repos/*
+
+Banksy	git@github.com:jkuang7/Banksy.git
+create-t3-jian	git@github.com:jkuang7/create-t3-jian.git
+recert-studio	git@github.com:jkuang7/recert-studio.git
+stonks	git@github.com:jkuang7/stonks-workbench.git
+telecodex	git@github.com:jkuang7/telecodex.git	master
+tmux-codex	git@github.com:jkuang7/tmux-codex.git
+time-track	git@github.com:jkuang7/time-track.git

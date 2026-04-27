@@ -20,13 +20,13 @@ const CONFIG_HEADER = [
 const DEFAULT_BRANCH = "main";
 const DEV_BOOTSTRAP_BLOCK_START = "# >>> dev-bootstrap >>>";
 const DEV_BOOTSTRAP_BLOCK_END = "# <<< dev-bootstrap <<<";
-const CODEX_SNAPSHOT_ROOT_PARTS = [".bootstrap", "codex"];
+const CODEX_SNAPSHOT_ROOT_PARTS = [".codex"];
 const CODEX_SNAPSHOT_MANIFEST = "manifest.json";
 const CODEX_MANAGED_ENTRIES = [
   "bin",
   "commands",
   "config.toml",
-  "plugins",
+  "docs",
   "rules",
   "skills",
 ];
@@ -133,7 +133,7 @@ function parseArgs(argv) {
 
   args.devRoot = path.resolve(args.devRoot);
   args.reposRoot = path.resolve(args.reposRoot ?? path.join(args.devRoot, "Repos"));
-  args.configPath = path.resolve(args.configPath ?? path.join(args.devRoot, "workspace", "repos.txt"));
+  args.configPath = path.resolve(args.configPath ?? path.join(args.devRoot, "repos.txt"));
 
   return args;
 }
