@@ -1,4 +1,0 @@
-interface:
-  display_name: "Runner Setup"
-  short_description: "Set up runner state and approvals"
-  default_prompt: "Use $run-runner to set up runner state deterministically, prefer --project-root for active worktree continuity, approve returned tokens exactly, and only start loops when explicitly requested."

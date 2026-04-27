@@ -1,4 +1,0 @@
-interface:
-  display_name: "Runner Add"
-  short_description: "Queue follow-up runner work"
-  default_prompt: "Use $runner-add to add a follow-up task to the active repo's runner backlog from the current conversation context, without interrupting the current cycle unless I explicitly ask to preempt."

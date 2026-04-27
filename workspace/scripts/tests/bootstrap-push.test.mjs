@@ -29,9 +29,9 @@ function git(args, cwd) {
 function initDevRepo(tempRoot) {
   const devRoot = path.join(tempRoot, "Dev");
   fs.mkdirSync(path.join(devRoot, "workspace"), { recursive: true });
-  fs.mkdirSync(path.join(devRoot, ".bootstrap", "codex"), { recursive: true });
-  writeFile(path.join(devRoot, "workspace", "repos.txt"), "old\n");
-  writeFile(path.join(devRoot, ".bootstrap", "codex", "manifest.json"), '{"version":1}\n');
+  fs.mkdirSync(path.join(devRoot, ".codex"), { recursive: true });
+  writeFile(path.join(devRoot, "repos.txt"), "old\n");
+  writeFile(path.join(devRoot, ".codex", "manifest.json"), '{"version":1}\n');
   git(["init"], devRoot);
   git(["config", "user.name", "Test User"], devRoot);
   git(["config", "user.email", "test@example.com"], devRoot);
@@ -70,10 +70,10 @@ test("bootstrap push commits snapshot changes on clean main", () => {
       `import fs from "node:fs";
 import path from "node:path";
 const devRoot = ${JSON.stringify(devRoot)};
-fs.writeFileSync(path.join(devRoot, "workspace", "repos.txt"), "new\\n");
-fs.mkdirSync(path.join(devRoot, ".bootstrap", "codex", "skills", "enhance"), { recursive: true });
-fs.writeFileSync(path.join(devRoot, ".bootstrap", "codex", "skills", "enhance", "SKILL.md"), "# updated\\n");
-fs.writeFileSync(path.join(devRoot, ".bootstrap", "codex", "manifest.json"), '{"version":2}\\n');
+fs.writeFileSync(path.join(devRoot, "repos.txt"), "new\\n");
+fs.mkdirSync(path.join(devRoot, ".codex", "skills", "enhance"), { recursive: true });
+fs.writeFileSync(path.join(devRoot, ".codex", "skills", "enhance", "SKILL.md"), "# updated\\n");
+fs.writeFileSync(path.join(devRoot, ".codex", "manifest.json"), '{"version":2}\\n');
 `,
     );
 
@@ -82,7 +82,7 @@ fs.writeFileSync(path.join(devRoot, ".bootstrap", "codex", "manifest.json"), '{"
     assert.match(result.stdout, /\[Dev\] bootstrap push committed 3 path\(s\) on main/);
     assert.equal(git(["rev-list", "--count", "HEAD"], devRoot).trim(), "2");
     assert.equal(git(["status", "--short"], devRoot).trim(), "");
-    assert.match(git(["log", "-1", "--pretty=%s"], devRoot), /chore: sync bootstrap snapshot/);
+    assert.match(git(["log", "-1", "--pretty=%s"], devRoot), /chore: sync codex snapshot/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -97,7 +97,7 @@ test("bootstrap push skips auto-commit when worktree is dirty before generate", 
     const generateScript = createFakeGenerateScript(
       tempRoot,
       `import fs from "node:fs";
-fs.writeFileSync(${JSON.stringify(path.join(devRoot, "workspace", "repos.txt"))}, "new\\n");
+fs.writeFileSync(${JSON.stringify(path.join(devRoot, "repos.txt"))}, "new\\n");
 `,
     );
 
@@ -106,7 +106,7 @@ fs.writeFileSync(${JSON.stringify(path.join(devRoot, "workspace", "repos.txt"))}
     assert.match(result.stderr, /\[Dev\] warning: auto-commit skipped \(dirty worktree before push\)/);
     assert.equal(git(["rev-list", "--count", "HEAD"], devRoot).trim(), "1");
     assert.match(git(["status", "--short"], devRoot), /README\.md/);
-    assert.match(git(["status", "--short"], devRoot), /workspace\/repos\.txt/);
+    assert.match(git(["status", "--short"], devRoot), /repos\.txt/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -121,7 +121,7 @@ test("bootstrap push skips auto-commit when branch is not main", () => {
     const generateScript = createFakeGenerateScript(
       tempRoot,
       `import fs from "node:fs";
-fs.writeFileSync(${JSON.stringify(path.join(devRoot, "workspace", "repos.txt"))}, "new\\n");
+fs.writeFileSync(${JSON.stringify(path.join(devRoot, "repos.txt"))}, "new\\n");
 `,
     );
 
@@ -129,7 +129,7 @@ fs.writeFileSync(${JSON.stringify(path.join(devRoot, "workspace", "repos.txt"))}
     assertSuccess(result);
     assert.match(result.stderr, /\[Dev\] warning: auto-commit skipped \(branch is feature\/bootstrap, expected main\)/);
     assert.equal(git(["rev-list", "--count", "HEAD"], devRoot).trim(), "1");
-    assert.match(git(["status", "--short"], devRoot), /workspace\/repos\.txt/);
+    assert.match(git(["status", "--short"], devRoot), /repos\.txt/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

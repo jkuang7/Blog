@@ -1,0 +1,82 @@
+personality = "pragmatic"
+model = "gpt-5.4-mini"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "high"
+notify = [ "/Users/jian/Dev/workspace/hooks/notify-codex.sh" ]
+
+[tui]
+notifications = [
+  "agent-turn-complete",
+  "approval-requested",
+  "input-requested",
+  "user-input-requested",
+  "question-asked",
+  "question-requested",
+  "question.asked",
+]
+notification_method = "auto"
+
+[projects."/Users/jian/Dev"]
+trust_level = "trusted"
+
+[projects."/Users/jian/Dev/Repos/Blog"]
+trust_level = "trusted"
+
+[projects."/Users/jian/Dev/Repos/Banksy"]
+trust_level = "trusted"
+
+[projects."/Users/jian/Dev/Repos/time-track"]
+trust_level = "trusted"
+
+[projects."/Users/jian/Dev/Repos/create-t3-jian"]
+trust_level = "trusted"
+
+[projects."/Users/jian/Dev/Repos/stonks"]
+trust_level = "trusted"
+
+[mcp_servers.playwright]
+command = "/Users/jian/.nvm/versions/node/v23.11.0/bin/npx"
+args = [
+  "@playwright/mcp@latest",
+  "--cdp-endpoint",
+  "http://127.0.0.1:9222",
+]
+
+  [mcp_servers.playwright.env]
+  PATH = "/Users/jian/.nvm/versions/node/v23.11.0/bin:/usr/local/bin:/usr/bin:/bin"
+  NODE_PATH = "/Users/jian/.nvm/versions/node/v23.11.0/lib/node_modules"
+
+[mcp_servers.context7]
+command = "/Users/jian/.nvm/versions/node/v23.11.0/bin/npx"
+args = [ "-y", "@upstash/context7-mcp@latest" ]
+
+  [mcp_servers.context7.env]
+  PATH = "/Users/jian/.nvm/versions/node/v23.11.0/bin:/usr/local/bin:/usr/bin:/bin"
+  NODE_PATH = "/Users/jian/.nvm/versions/node/v23.11.0/lib/node_modules"
+
+[mcp_servers.tauri-mcp]
+command = "/Users/jian/.cargo/bin/tauri-mcp"
+args = [ "serve" ]
+
+  [mcp_servers.tauri-mcp.env]
+  TAURI_MCP_LOG_LEVEL = "info"
+
+[mcp_servers.Neon]
+type = "http"
+url = "https://mcp.neon.tech/mcp"
+
+  [mcp_servers.Neon.http_headers]
+  Authorization = "Bearer napi_w4cvd6tfzp4f3348wexmps13p471tzx0vsrrnlkx4f76y6jrh9kqq5tz7efozpxs"
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+  [notice.model_migrations]
+  "gpt-5.1-codex-mini" = "gpt-5.3-codex"
+  "gpt-5.3-codex" = "gpt-5.4"
+
+[plugins."github@openai-curated"]
+enabled = true
+
+[plugins."stripe@openai-curated"]
+enabled = true

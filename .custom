@@ -15,6 +15,12 @@ export WORKSPACE_HOME="$DEV/workspace"
 export CODEX_HOME="$HOME/.codex"
 unset _this
 export REPOS_HOME="$DEV/Repos"
+export CODEX_GLOBAL_AGENTS_FILE="$CODEX_HOME/AGENTS.md"
+
+# New interactive terminals launched at $HOME should default to the Dev root.
+if [[ -o interactive ]] && [[ "${PWD:A}" == "${HOME:A}" ]]; then
+    builtin cd "$DEV"
+fi
 
 alias cdd='cd $DEV'
 alias ze="code ~/.zshrc"
@@ -42,6 +48,10 @@ export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH"
 export NODE_OPTIONS=--max-http-header-size=32768
 export PATH="$HOME/.local/bin:$PATH"
 
+_codex_mcp_secrets="$CODEX_HOME/config/mcp-secrets.zsh"
+[[ -r "$_codex_mcp_secrets" ]] && source "$_codex_mcp_secrets"
+unset _codex_mcp_secrets
+
 #=======================================
 # General Aliases
 #=======================================
@@ -55,26 +65,72 @@ alias sshjk='ssh -t jian@Mac-mini "cd ~/Dev && clear && exec zsh -l"'
 # Codex shortcuts
 #=======================================
 codex() {
-    command codex --yolo "$@"
+    local -a args
+    args=(--yolo)
+
+    local global_agents_file="${CODEX_GLOBAL_AGENTS_FILE:-$CODEX_HOME/AGENTS.md}"
+    if [[ -r "$global_agents_file" ]]; then
+        local developer_instructions
+        developer_instructions="$(
+            python3 - "$global_agents_file" <<'PY'
+import json
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+if text:
+    print(f"developer_instructions={json.dumps(text)}")
+PY
+        )"
+        [[ -n "$developer_instructions" ]] && args+=(-c "$developer_instructions")
+    fi
+
+    command codex "${args[@]}" "$@"
 }
 
 # Avoid alias/function name conflict when this file is re-sourced.
 unalias ol 2>/dev/null
 unalias olh 2>/dev/null
 unalias cl 2>/dev/null
-unalias clh 2>/dev/null
 unalias clls 2>/dev/null
 
 cl() {
     # Standalone tmux-codex entrypoint.
-    python3 "$WORKSPACE_HOME/tmux-codex/bin/cl" "$@"
+    python3 "$REPOS_HOME/tmux-codex/bin/cl" "$@"
 }
 clls() {
     cl ls "$@"
 }
 
-# Helix-work Codex shortcut
-alias clh='codex "$REPOS_HOME/helix-work"'
+tcls() {
+    local uid plist svc_label
+    uid="$(id -u)"
+    for plist in "$HOME"/Library/LaunchAgents/dev.jian.telecodex*.plist; do
+        [[ -f "$plist" ]] || continue
+        svc_label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null)" || continue
+        if launchctl print "gui/$uid/$svc_label" >/dev/null 2>&1; then
+            printf '%s\n' "$svc_label"
+            launchctl print "gui/$uid/$svc_label" 2>/dev/null | grep -E 'state =|working directory =|stdout path =|stderr path =|last exit code' | sed 's/^/  /'
+        else
+            printf '%s\n  not loaded\n' "$svc_label"
+        fi
+    done
+}
+
+tcrestart() {
+    local uid plist svc_label
+    uid="$(id -u)"
+    for plist in "$HOME"/Library/LaunchAgents/dev.jian.telecodex*.plist; do
+        [[ -f "$plist" ]] || continue
+        svc_label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null)" || continue
+        launchctl bootout "gui/$uid/$svc_label" >/dev/null 2>&1 || true
+    done
+    for plist in "$HOME"/Library/LaunchAgents/dev.jian.telecodex*.plist; do
+        [[ -f "$plist" ]] || continue
+        launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1 || true
+    done
+    tcls
+}
 
 #=======================================
 # Package Manager Aliases
@@ -106,7 +162,6 @@ alias gall='git add . && git status'
 alias gb='git branch'
 alias gbd='git branch -D'
 alias gbc='git checkout -b'
-alias gce='git checkout'
 alias gc='git commit -m'
 alias gca='git commit -am'
 alias gs='git status'
@@ -128,6 +183,55 @@ alias gurl='echo "$(git config --get remote.origin.url | sed "s/\.git$//" | sed 
 # Functions
 #=======================================
 
+gce() {
+    if [[ $# -eq 0 ]]; then
+        git checkout
+        return $?
+    fi
+
+    if [[ $# -ne 1 || "$1" == -* ]]; then
+        git checkout "$@"
+        return $?
+    fi
+
+    local target="$1"
+    local current_top
+    current_top=$(git rev-parse --show-toplevel 2>/dev/null) || {
+        git checkout "$@"
+        return $?
+    }
+
+    if ! git show-ref --verify --quiet "refs/heads/$target"; then
+        git checkout "$@"
+        return $?
+    fi
+
+    local holder_path=""
+    local line=""
+    local wt_path=""
+    local branch=""
+
+    while IFS= read -r line; do
+        if [[ "$line" == worktree\ * ]]; then
+            wt_path="${line#worktree }"
+            branch=""
+        elif [[ "$line" == branch\ refs/heads/* ]]; then
+            branch="${line#branch refs/heads/}"
+            if [[ "$branch" == "$target" && "$wt_path" != "$PWD" && "$wt_path" != "$current_top" ]]; then
+                holder_path="$wt_path"
+                break
+            fi
+        fi
+    done < <(git worktree list --porcelain)
+
+    if [[ -n "$holder_path" ]]; then
+        echo "Detaching $target from worktree: $holder_path"
+        git -C "$holder_path" checkout --detach || return $?
+    fi
+
+    git checkout "$target"
+}
+
 ti() {
     if [[ $# -eq 0 ]]; then
         echo "Usage: ti <env_number>"
@@ -138,24 +242,6 @@ ti() {
     [[ -z "$CURR" ]] && { echo "Error: CURR environment variable not set"; return 1; }
     cd "$CURR/terraform" || { echo "Error: Could not find terraform directory at $CURR/terraform"; return 1; }
     terraform init -backend-config="backend-dev${env_num}.hcl" -reconfigure
-}
-
-newapp() {
-    if [[ $# -eq 0 ]]; then
-        echo "Usage: newapp <folder-name-or-path> [create-jian-app args...]"
-        echo "Example: newapp my-app"
-        echo "Example: newapp /Users/jian/Dev/Repos/my-app --skip-verify"
-        return 1
-    fi
-
-    local target="$1"
-    shift
-
-    if [[ "$target" != /* && "$target" != */* ]]; then
-        target="$REPOS_HOME/$target"
-    fi
-
-    node "$WORKSPACE_HOME/scripts/create-jian-app.mjs" "$target" "$@"
 }
 
 repos() {
@@ -189,4 +275,29 @@ $output
 
 Summarize briefly. For each repo: what changed, intentional or drift? End with TLDR - one sentence per repo."
     fi
+}
+
+k() {
+    if [[ $# -ne 1 ]]; then
+        echo "Usage: k <port>"
+        echo "Example: k 3000"
+        return 1
+    fi
+
+    local port="$1"
+    if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+        echo "Port must be a number: $port"
+        return 1
+    fi
+
+    local pids
+    pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN)"
+
+    if [[ -z "$pids" ]]; then
+        echo "No listening process found on port $port"
+        return 0
+    fi
+
+    echo "Killing process(es) on port $port: ${pids//$'\n'/ }"
+    kill $=pids
 }

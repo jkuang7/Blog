@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sourceRoot": "/Users/jian/.codex",
+  "exportedAt": "2026-04-13T12:16:53.033Z",
+  "entries": [
+    "bin",
+    "commands",
+    "config.toml",
+    "docs",
+    "rules",
+    "skills"
+  ]
+}

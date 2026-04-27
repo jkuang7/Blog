@@ -71,7 +71,7 @@ function createBareOrigin(tempRoot, name, files) {
 function createDevLayout(tempRoot) {
   const devRoot = path.join(tempRoot, "Dev");
   const reposRoot = path.join(devRoot, "Repos");
-  const configPath = path.join(devRoot, "workspace", "repos.txt");
+  const configPath = path.join(devRoot, "repos.txt");
   fs.mkdirSync(reposRoot, { recursive: true });
   return { devRoot, reposRoot, configPath };
 }
@@ -79,13 +79,13 @@ function createDevLayout(tempRoot) {
 function createFreshCloneLayout(tempRoot) {
   const devRoot = path.join(tempRoot, "Dev");
   const reposRoot = path.join(devRoot, "Repos");
-  const configPath = path.join(devRoot, "workspace", "repos.txt");
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const configPath = path.join(devRoot, "repos.txt");
+  fs.mkdirSync(devRoot, { recursive: true });
   return { devRoot, reposRoot, configPath };
 }
 
 function codexSnapshotRoot(devRoot) {
-  return path.join(devRoot, ".bootstrap", "codex");
+  return path.join(devRoot, ".codex");
 }
 
 function createHomeEnv(tempRoot, extraEnv = {}) {
@@ -238,7 +238,7 @@ test("generate leaves existing config untouched when zero valid repos are found"
   }
 });
 
-test("generate mirrors managed .codex entries into the hidden bootstrap snapshot", () => {
+test("generate mirrors managed .codex entries into the tracked codex snapshot", () => {
   const tempRoot = makeTempDir("repos-bootstrap-codex-generate-");
   const { devRoot, reposRoot, configPath } = createDevLayout(tempRoot);
   const home = createHomeEnv(tempRoot);
@@ -253,6 +253,7 @@ test("generate mirrors managed .codex entries into the hidden bootstrap snapshot
     writeFile(path.join(codexRoot, "bin", "launch-playwright-chrome.sh"), "#!/bin/sh\n");
     writeFile(path.join(codexRoot, "config.toml"), "model = 'gpt-5.4'\n");
     writeFile(path.join(codexRoot, "commands", "commit.md"), "# commit\n");
+    writeFile(path.join(codexRoot, "docs", "agent-harness.md"), "# harness\n");
     writeFile(path.join(codexRoot, "skills", "kanban", "SKILL.md"), "# kanban\n");
     writeFile(path.join(codexRoot, "plugins", "local", "plugin.json"), "{}\n");
     writeFile(path.join(codexRoot, "rules", "context7.md"), "# rules\n");
@@ -271,18 +272,19 @@ test("generate mirrors managed .codex entries into the hidden bootstrap snapshot
     assert.equal(fs.readFileSync(path.join(snapshotRoot, "bin", "launch-playwright-chrome.sh"), "utf8"), "#!/bin/sh\n");
     assert.equal(fs.readFileSync(path.join(snapshotRoot, "config.toml"), "utf8"), "model = 'gpt-5.4'\n");
     assert.equal(fs.readFileSync(path.join(snapshotRoot, "commands", "commit.md"), "utf8"), "# commit\n");
+    assert.equal(fs.readFileSync(path.join(snapshotRoot, "docs", "agent-harness.md"), "utf8"), "# harness\n");
     assert.equal(fs.readFileSync(path.join(snapshotRoot, "skills", "kanban", "SKILL.md"), "utf8"), "# kanban\n");
-    assert.equal(fs.readFileSync(path.join(snapshotRoot, "plugins", "local", "plugin.json"), "utf8"), "{}\n");
     assert.equal(fs.readFileSync(path.join(snapshotRoot, "rules", "context7.md"), "utf8"), "# rules\n");
     assert.equal(fs.existsSync(path.join(snapshotRoot, "config")), false);
     assert.equal(fs.existsSync(path.join(snapshotRoot, "logs")), false);
+    assert.equal(fs.existsSync(path.join(snapshotRoot, "plugins")), false);
     assert.equal(fs.existsSync(path.join(snapshotRoot, "prompts")), false);
     assert.equal(fs.existsSync(path.join(snapshotRoot, "session-tags.json")), false);
     assert.equal(fs.existsSync(path.join(snapshotRoot, "AGENTS.md")), false);
     assert.equal(fs.existsSync(path.join(snapshotRoot, "stale.txt")), false);
 
     const manifest = JSON.parse(fs.readFileSync(path.join(snapshotRoot, "manifest.json"), "utf8"));
-    assert.deepEqual(manifest.entries, ["bin", "commands", "config.toml", "plugins", "rules", "skills"]);
+    assert.deepEqual(manifest.entries, ["bin", "commands", "config.toml", "docs", "rules", "skills"]);
     assert.match(result.stdout, /codex snapshot entries: 6/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -367,7 +369,7 @@ test("bootstrap creates the Repos root for a fresh clone layout", () => {
   }
 });
 
-test("bootstrap mirrors the hidden .codex snapshot back into HOME", () => {
+test("bootstrap mirrors the tracked .codex snapshot back into HOME", () => {
   const tempRoot = makeTempDir("repos-bootstrap-codex-bootstrap-");
   const { devRoot, configPath } = createDevLayout(tempRoot);
   const home = createHomeEnv(tempRoot);
