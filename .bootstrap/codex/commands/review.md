@@ -2,239 +2,171 @@
 model: opus
 ---
 
-Resource Hint: sonnet
+# /review - Review Telecodex Linear Work
 
-# /review - Review + Feedback
+Use this command to review the current feature branch against Linear, update the ticket/comment context, and prepare the next clean `/run`.
 
-> **Inherits**: `problem-solving.md` (Two-Phase Model)
-> **Terminology**: See `_task_lifecycle.md`
+Reference: read `_reference_telecodex_linear.md` before reviewing.
 
-**Purpose**: See goal status, parking lot, judgment calls. Route to appropriate mode.
+## Purpose
 
----
+`/review` verifies whether the active phase satisfies its acceptance criteria. It can use current chat context to understand what happened, but it must write enough Linear context for a future no-memory `/run`.
 
-## Two-Phase Model (inherited from `_task_lifecycle.md`)
+`/review` does not merge, cherry-pick, switch to `main`, or invoke `commit-main`. The human will check out the feature branch, test it, and manually run `commit-main` later.
 
-> **Phase 1**: ORIENT → EXPLORE. Read files, open app, click through, observe actual state. **No status report until you've seen the app.**
+If Telecodex provides controller context from SQLite, use it only as an orientation hint. Linear comments and git state are still the source of truth.
 
----
+Hard controller contract:
 
-## MANDATORY: Explore Before Reporting Status
+- You MUST end the final response with the exact `TELECODEX_*` footer.
+- Before finalizing, verify the footer is present as the last text in your answer.
+- If review validates the phase, use `TELECODEX_STATUS=done` and `TELECODEX_NEXT=run`.
+- If more work is required, update Linear with the checklist and use `TELECODEX_STATUS=needs_followup` and `TELECODEX_NEXT=run`.
+- If no safe follow-up can run, use `TELECODEX_STATUS=blocked` and `TELECODEX_NEXT=stop`.
+- Only use `blocked + stop` when a human decision, dependency, credential, or unsafe repo state prevents any safe Codex continuation. A failed acceptance proof with a concrete next step is `needs_followup + run`, not stop.
+- Never omit the footer because Telecodex uses it as the only loop-control signal.
 
-**Before showing status or giving feedback:**
+Default Linear board:
 
-```
-1. ORIENT: Read GOALS.md, STATE.md, CONTRACTS.md, SPECS.md
-2. EXPLORE:
-   - Start the dev server
-   - Open the app with MCP (headless)
-   - Click through completed goals - verify they work
-   - Take snapshots of current state
-3. THEN report status based on what you observed
-```
+- Team: `PRO` / `Projects`
+- Board: https://linear.app/jkprojects/team/PRO/active
 
-**Don't report "✅" without seeing it work.**
+Review against tickets/phases on this board unless the user explicitly supplies a different Linear team/project.
 
----
+If Telecodex provides `runner_scope_issue`, or the user invokes review after `/run PRO-123`, keep the review scoped to that issue. Do not update or advance unrelated Linear tickets.
 
-## Usage
+Continuous-run invariant:
 
-```
-/review                    # Show all projects
-/review {project}          # Single project
-```
+- `/review` is a transition gate, not the end of the loop.
+- If the phase is done or needs follow-up, return `TELECODEX_NEXT=run` so Telecodex closes this Codex session and starts a fresh `/run`.
+- The fresh `/run` must re-apply the exact `Todo` gate before reading or claiming work. `Backlog` is a human hold state and must remain untouched.
+- Do not return `blocked + stop` for a normal failed proof when a concrete follow-up can be written for `/run`.
 
----
+## Orient First
 
-## Output Format
+Before judging anything:
 
-```
-REVIEW — {project}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Milestone: {milestone name}
-Goals: {done}/{total} ✅  |  {parked} 🅿️  |  {pending} ⬜
+1. Read current branch, git status, and git diff.
+2. Read the active Linear feature ticket in full with `mcp__linear__.get_issue`.
+3. Read all phase comments, progress logs, blocker comments, and review comments with `mcp__linear__.list_comments`.
+4. Read linked/dependent tickets and coordination ticket on the `PRO` active board if present with `get_issue` and `list_comments`.
+5. Use current chat context as additional context when available.
+6. Map branch/diff to the active phase marker.
 
-✅ G1-G3 complete and verified
-🔄 G4 — {name}: in progress
-🅿️ G5 — {name}: "{parking reason}"
-⬜ G6-G8 pending (G6 blocked by G5)
+Stop if the branch/diff cannot be mapped to a Linear ticket and phase.
 
-PARKING LOT:
-  G5: {What's blocked and why}
-      Needs: {what information/decision is required}
-      Route to: {/goals | /spec | /ui | /debug}
+## Review Criteria
 
-JUDGMENT CALLS (flagged for review):
-  G3: {decision made} — {rationale}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Compare the implementation against:
 
-RUN: cd $DEV/Repos/{project} && npm run dev
-```
+- Phase goal and scope.
+- Acceptance criteria.
+- Verification/proof plan.
+- Follow-up requirements from prior review comments.
+- Feature-level definition of done.
+- Scientific proof requirements from the ticket.
 
----
+Acceptance criteria are not complete unless proven.
 
-## ORIENT First
+For sensitive algorithms:
 
-**Always read before showing status:**
+- Confirm evidence covers multiple representative scenarios.
+- Refuse `done` if only a single happy-path case was checked and the ticket called for broader proof.
 
-| File | Purpose |
-|------|---------|
-| GOALS.md | Goal queue, dependencies, acceptance criteria |
-| STATE.md | Current progress, parking lot, judgment calls |
-| CONTRACTS.md | UI promises (data shapes, actions, state machines) |
-| SPECS.md | Backend decisions, intent, judgment boundaries |
-| .memory/ | Recent learnings |
+For UI work:
 
----
+- Verify the real surface when feasible.
+- Refuse `done` if the claim is based only on static code inspection and the UI can be exercised.
 
-## Starting the App
+For an explicitly marked no-code smoke-test phase:
 
-**MANDATORY**: Start the dev server so user can verify.
+- Verify that the phase did not require tracked repo edits.
+- Accept `git status` / git diff evidence showing no tracked code changes when that is the stated acceptance criterion.
+- Still update the Linear phase marker and review handoff context before returning `TELECODEX_NEXT=run`.
 
-### Detection Order
+## Outcomes
 
-1. Check `STATE.md` for `## Environment` section
-2. Check for common patterns:
-   - `package.json` → `npm run dev`
-   - `requirements.txt` → Flask/FastAPI
-   - `Cargo.toml` → `cargo run`
+Choose exactly one outcome.
 
-### Action
+`done`:
 
-1. Use Bash with `run_in_background: true` to start server
-2. Tell user the URL to open
+- Acceptance criteria are met.
+- Proof evidence is recorded.
+- No unresolved follow-up remains for this phase.
+- The issue should be moved to the appropriate review-ready state when the feature/phase is ready for human testing, or the next ready phase must be explicit in Linear.
 
----
+`needs_followup`:
 
-## Goal Status Reference
+- The phase is close but needs concrete fixes.
+- Write a precise checklist into the phase comment.
+- Keep the same feature branch and phase context ready for `/run`.
+- Keep or move the issue/phase into an active/in-progress state so the next `/run` can pick it up deterministically.
 
-| Status | Symbol | Meaning |
-|--------|--------|---------|
-| PENDING | ⬜ | Not started, dependencies may not be met |
-| IN PROGRESS | 🔄 | /run is actively working on it |
-| DONE | ✅ | All acceptance criteria pass |
-| PARKED | 🅿️ | Cannot proceed (reason + routing in parking lot) |
+`blocked`:
 
----
+- A missing decision, dependency, credential, unsafe repo state, or failed proof prevents progress.
+- Write the blocker, required decision, and what `/run` must not attempt.
 
-## Parking Lot
+`new_scope_found`:
 
-When goals are parked, show:
+- Required work is outside the current phase.
+- Create a new phase comment or child ticket with dependencies and full context.
+- Do not silently expand the current phase.
 
-```
-PARKING LOT:
-  G{n}: {brief description of what's blocked}
-      Needs: {what decision/info is required}
-      Route to: {appropriate mode}
-```
+## Next Clean `/run` Setup
 
-### Routing Suggestions
+Before stopping, update Linear so `/run` can resume with no chat memory:
 
-| Situation | Route To |
-|-----------|----------|
-| Contract needs updating (UI behavior wrong) | /ui |
-| Backend decision needed | /spec |
-| Goal needs restructuring | /goals |
-| Bug needs investigation | /debug |
-| Missing dependency goal | /goals |
+- Current outcome.
+- Evidence used for review.
+- Changed files reviewed.
+- Exact follow-up checklist or blocker.
+- Next ready phase, if one exists.
+- Next phase branch, dependencies, acceptance criteria, and verification steps.
+- Coordination ticket status when cross-project work is affected.
+- For no-code smoke tickets, keep phase evidence distinct from final controller stop-check evidence. A phase comment should prove that phase; a later fresh `/run` that finds no remaining work should record a separate non-phase terminal stop-check comment.
 
----
+Use `mcp__linear__.save_comment` to update the phase marker and append review handoff context. Use `mcp__linear__.save_issue` only for feature-level state or cross-ticket relation updates.
 
-## Feedback (Conversational)
+Do not leave a reviewed ticket in `Todo` if work has begun or a proof failed. It must be in a state that reflects reality: ready for human review, needs follow-up, blocked, canceled, or done.
 
-After reviewing, just tell me what you see:
+If the feature is ready for human testing:
 
-```
-"G1-G3 look good"            → confirms ✅ status
-"G4 has a bug"               → /debug investigates
-"approve the timeout call"   → judgment call approved
-"all good"                   → all reviewed goals confirmed
-```
+- Leave the feature branch checked out.
+- Record the branch name and current commit state in Linear.
+- Tell the human the branch is ready for manual checkout/testing and later `commit-main`.
 
-### What Happens on Problems
+## Commit Policy
 
-**Investigation BEFORE implementation.**
+- Do not commit automatically during `/review`.
+- Do not switch to `main`.
+- Do not merge or cherry-pick.
+- Do not run `commit-main`.
+- If the user explicitly asks for a commit during review, make a normal feature-branch commit only after staging the intended ticket changes and recording the commit SHA in Linear.
 
-When you report a problem:
+## Final Response
 
-```
-"G4 has a bug"
-      ↓
-/review identifies goal: G4
-      ↓
-/debug compares to:
-  - CONTRACTS.md: Does UI behavior match?
-  - SPECS.md: Does backend behavior match intent?
-  - GOALS.md: Were constraints followed?
-      ↓
-Investigation → root cause → .memory/
-      ↓
-Fix → verify → mark ✅
+Return:
+
+- Review outcome.
+- Linear ticket/phase updated.
+- Evidence accepted or missing.
+- Next clean `/run` setup.
+- Whether the feature branch is ready for human testing.
+
+End every final response with this exact machine-readable footer. Use `-` for unknown or not applicable values.
+The footer must be the final block in the response, with no prose after it.
+
+When review updated Linear and the runner should ask a fresh `/run` to find the next pickable ticket:
+
+```text
+TELECODEX_STATUS=done
+TELECODEX_NEXT=run
+TELECODEX_LINEAR_ISSUE=<issue key>
+TELECODEX_PHASE=<phase id>
+TELECODEX_BRANCH=<feature branch>
 ```
 
----
+Use `TELECODEX_STATUS=needs_followup` with `TELECODEX_NEXT=run` when `/run` should continue the same phase from Linear follow-up context.
 
-## Explicit Commands
-
-```
-/review pass G1 G2 G3        # Confirm goals as ✅
-/review park G4 "reason"     # Park goal with reason
-/review unpark G4            # Resume parked goal
-```
-
----
-
-## Investigation Flow
-
-```
-/review                     User sees parking lot / reports problem
-    ↓
-Route decision              Which mode handles this?
-    ↓
-/debug                      If bug → isolate, find root cause
-/goals                      If restructure → reorder/split goals
-/spec                       If decision needed → debate, decide
-/ui                         If contract wrong → update UI + contracts
-    ↓
-.memory/                  Capture learning (after loop closes)
-    ↓
-Resume /run                 Continue execution
-```
-
-> See `/debug` for investigation protocol.
-
----
-
-## Post-Review Verification
-
-After implementing a fix, **OBSERVE the result**.
-
-```
-Implementation complete
-    ↓
-OBSERVE: Does it actually work?
-    ↓
-  YES → Mark ✅, clean up
-  NO  → New symptom discovered → /debug again
-```
-
-**Never mark done without observation.**
-
----
-
-## Key Principle
-
-Morning routine:
-1. `/review` — see goal status, parking lot, judgment calls
-2. Try the flows in the browser
-3. Approve judgment calls or override
-4. Route parked goals to appropriate mode
-5. Problems become investigations via /debug
-
----
-
-## Files Read
-
-| File | Location |
-|------|----------|
-| All project files | `$DEV/Repos/{project}/.memory/` |
+Use `TELECODEX_STATUS=blocked` with `TELECODEX_NEXT=stop` when no safe follow-up can be picked without human action.

@@ -1,621 +1,199 @@
-# /run — Evidence-Constrained Goal Runner
-
-Resource Hint: sonnet
-
-> **Requires**: GOALS.md with goal prompts (from /goals)
-> **Inherits**: `problem-solving.md` (Two-Phase Model, Chess Engine Search), `_task_lifecycle.md`
-
-**Purpose**: Execute goals as an evidence-constrained optimizer. /run can explore and close gaps, but only ships progress backed by hard checks and artifacts.
-
-**Input**: GOALS.md (queue), SPECS.md (intent + rubric), CONTRACTS.md (invariants), STATE.md (latest evidence), .memory/ (project learnings)
-**Output**: Working code + STATE.md (evidence ledger, score deltas, stops, judgment calls)
-
+---
+model: opus
 ---
 
-## Two-Phase Model (inherited from `_task_lifecycle.md`)
+# /run - Execute One Telecodex Linear Slice
 
-> **Phase 1**: ORIENT → EXPLORE. Read .memory/ + GOALS/STATE, open app, see current state. **No code until you've seen the app.**
-> **Phase 2**: IMPLEMENT one goal at a time. OBSERVE → ATOMIC STEP → VERIFY (TRUE/FALSE) → ITERATE. Throwaway branches for experiments.
+Use this command to pick work from the Linear board and execute exactly one ready phase slice.
 
----
+Reference: read `_reference_telecodex_linear.md` before selecting work.
 
-## Runner v2 Protocol (Required)
+## Purpose
 
-**Layer 1 — Spec Compiler**
+`/run` is board-driven and must assume no chat memory. It decides what to do from Linear plus git state, not from prior conversation.
 
-Before touching code, compile PRD artifacts into execution primitives:
+If Telecodex provides controller context from SQLite, use it only as an orientation hint. Linear comments and git state are still the source of truth.
 
-1. **Goals**: from GOALS.md (queue + dependencies)
-2. **User flows**: critical paths from SPECS.md/CONTRACTS.md
-3. **Weighted rubric**: scoring axes from SPECS.md (UX, correctness, resilience, perf)
-4. **Invariants**: executable checks from CONTRACTS.md + project scripts
+Hard controller contract:
 
-If any of the four are missing, /run must create a best-effort temporary version in STATE.md and mark confidence as `LOW`.
+- You MUST end the final response with the exact `TELECODEX_*` footer.
+- Before finalizing, verify the footer is present as the last text in your answer.
+- If the phase is implemented or the no-code smoke proof passes, use `TELECODEX_STATUS=implemented` and `TELECODEX_NEXT=review`.
+- If the phase cannot be completed yet but the next step is actionable by Codex, update Linear with a concrete follow-up checklist and use `TELECODEX_STATUS=needs_followup` and `TELECODEX_NEXT=run`.
+- If the selected ticket has a true blocker requiring human input or an external dependency, update Linear with the blocker and use `TELECODEX_STATUS=blocked` and `TELECODEX_NEXT=stop`.
+- Only use `TELECODEX_STATUS=no_ready_work` after inspecting the board and proving there are no pickable nonterminal tickets/phases.
+- Never omit the footer because Telecodex uses it as the only loop-control signal.
 
-**Layer 2 — Objective Loop**
+Default Linear board:
 
-Each iteration follows:
+- Team: `PRO` / `Projects`
+- Board: https://linear.app/jkprojects/team/PRO/active
 
-`observe -> pick gap -> patch -> verify -> score`
+Select work from this board unless the user explicitly supplies a different Linear team/project. Only issues whose Linear state is exactly `Todo` are executable by `/run`. Treat `Backlog` as a human hold state and ignore it completely, even if phase comments look ready.
 
-No score change is allowed unless verify artifacts exist.
+If the command includes a Linear issue key, for example `/run PRO-123`, restrict this invocation to that issue only. First verify that issue is exactly `Todo`; if it is not `Todo`, do not inspect, claim, implement, review, update, block, or advance its phases. Stop with `TELECODEX_STATUS=no_ready_work`, `TELECODEX_NEXT=stop`, and `TELECODEX_LINEAR_ISSUE=<that issue key>`. Do not pick or continue any other ticket, even if other work is ready on the board. In scoped mode, `blocked + stop` stops the controller because the user explicitly selected that one issue.
 
-Implementation path is intentionally flexible: /run may choose its own coding strategy, and may split/merge/reorder pending goals when blocked, as long as dependency safety and invariant gates are preserved.
+Unscoped continuous-run invariant:
 
----
+- Keep advancing PRO active-board tickets until every ticket is either ready for human review, blocked with a real human/external blocker, canceled/duplicate, or no longer actionable.
+- A failed proof with a concrete next action is not terminal. Write the follow-up into Linear and return `needs_followup + run`.
+- A blocked ticket on an unscoped board run is not proof the board is drained. Record the blocker, then the next fresh `/run` must look for other tickets.
+- Only `no_ready_work + stop` may end the unscoped continuous loop normally.
 
-## Strict Truth, Flexible Method
+## Mandatory Orientation
 
-`/run` must be strict about:
+Before doing anything:
 
-- invariant pass/fail
-- evidence quality
-- acceptance criteria
-- stop and park rules
+1. Read the `PRO` active Linear board/project using available Linear MCP context.
+2. Identify candidate feature tickets by status, priority, dependencies, and comments. If a scoped issue key was provided, the candidate set is exactly that issue.
+3. Read the chosen feature ticket in full with `mcp__linear__.get_issue`.
+4. Read all comments, phase markers, progress logs, blockers, and review notes with `mcp__linear__.list_comments`.
+5. Read linked tickets and coordination ticket if present with `get_issue` and `list_comments`.
+6. Read git status, current branch, and relevant git diff.
+7. Map branch/diff to the active Linear feature and phase.
 
-`/run` may be flexible about:
+Stop if:
 
-- implementation strategy
-- local sequencing inside a goal
-- restructuring pending goals for better execution
+- The git diff cannot be mapped to the selected Linear ticket/phase.
+- Another worker owns an unexpired lease.
+- Dependencies are not done.
+- The worktree is unsafe or contains unrelated dirty changes.
+- Acceptance criteria are ambiguous enough that implementation would be guesswork.
 
-If /run restructures goals, it must log rationale and deltas in STATE.md.
+## Selection Rules
 
----
+If current branch/diff maps to an active phase:
 
-## Hard Gates Before Score
+- Continue that phase if the lease/session permits it.
+- Prefer `in_progress` or `needs_followup` over starting new work.
 
-Run invariant suite **first** every iteration:
+If there is no active mapped phase:
 
-1. build
-2. tests
-3. lint
-4. typecheck
-5. contract checks (if present)
+- Select the highest-priority feature ticket whose Linear state is exactly `Todo`.
+- Claim the first phase with `status="ready"` whose dependencies are `done`.
+- If a phase is `needs_followup`, continue it before new ready phases.
+- Ignore `Backlog`, `In Progress`, `In Review`, `Done`, and any other non-`Todo` issue state for new execution.
+- Do not consider the executable board drained while any `Todo` ticket has a ready phase, follow-up checklist, or unblocked acceptance criteria that Codex can act on.
 
-If any invariant fails:
+Claim by updating the phase marker with:
 
-- Iteration is `REJECTED`
-- Score cannot increase
-- Goal stays 🔄 or 🅿️
-- STATE.md records failure evidence and route (`/debug` or `/spec`)
+- `status="claimed"` then `status="in_progress"` once implementation starts.
+- worker/session ID.
+- branch.
+- lease expiration.
 
----
+Use `mcp__linear__.save_comment` with the existing phase comment `id` to update the phase marker. Append a separate progress comment only when it adds useful history.
 
-## Evidence-Only Progress Claims
+## Branch Rules
 
-Progress requires artifacts. Acceptable evidence:
+- Use the feature branch recorded in Linear.
+- Create it only if the worktree is safe.
+- Do not switch to `main` unless needed to create the feature branch safely and there is no dirty work.
+- Do not merge, cherry-pick, or invoke `commit-main`.
 
-- command output (tests/build/lint/typecheck)
-- MCP screenshots/traces
-- API diffs and request/response captures
-- perf numbers (latency, bundle size, memory, etc.)
+## Scientific Execution
 
-Rule: **No artifact = UNKNOWN (never SUCCESS).**
+Before implementation:
 
----
+- Establish the smallest proof path.
+- Capture baseline/control when behavior is hard to predict.
+- For sensitive algorithms, test a representative scenario basket before choosing the algorithm.
+- For UI work, inspect the real surface before changing code.
 
-## Bounded Infinite (Epochs)
+For an explicitly marked no-code smoke-test phase:
 
-- Run in epochs (`10` iterations per epoch by default)
-- Checkpoint + re-plan between epochs
-- Stop when no observable state change for `N` epochs (default `2`) or budget is exhausted
-- Prefer stopping with a crisp reason over endless drift
+- Do not modify tracked repo files.
+- Prove the phase with Linear updates, git status, runner footer behavior, and any requested controller-state observations.
+- Add or update a Linear progress comment during `/run` so the comment stream reconstructs that execution happened.
+- It is valid for the implementation proof to be `git status` showing no tracked changes, as long as the phase acceptance criteria explicitly require no code changes.
 
----
+Implementation:
 
-## Good-Enough Stop Rule (Simple)
+- Execute exactly one coherent phase slice.
+- Stay inside the phase scope.
+- If new scope appears, record it in Linear and stop instead of absorbing it silently.
 
-Avoid both optimism and endless loops.
+Verification:
 
-When all planned goals are done, run a short hardening sweep:
+- Run the phase’s proof plan.
+- Prefer live/runtime verification when the behavior can be exercised.
+- Do not claim acceptance criteria from code inspection alone when a higher-signal proof is available.
 
-1. Full invariant suite (build/test/lint/typecheck/contracts)
-2. Critical flow smoke replay from SPECS.md (MCP/Playwright)
+## Linear Update Before Stopping
 
-Stop as `complete` only if both pass for `2` consecutive iterations.
-If either fails, open a hardening goal and continue.
+Always update the phase comment with:
 
-This is the default "good enough" bar for the evidence-constrained goal runner.
+- Changed files.
+- Checks run and results.
+- Proof evidence.
+- Remaining gaps.
+- Blockers, if any.
+- Next expected action.
 
-Keep it lean: do not add deeper checks unless evidence says they're needed.
+Use `mcp__linear__.save_comment` to update the phase marker and progress body. Use `mcp__linear__.save_issue` only for feature-level state changes.
 
----
+Set the phase to one of:
 
-## Lightweight Audit (Useful, Not Heavy)
+- `implemented`: work is ready for `/review`.
+- `needs_followup`: implementation needs more work in the same phase.
+- `blocked`: execution cannot continue safely.
 
-Runner writes one line per iteration to `.memory/AUDIT.csv`.
+Only `/review` can mark `done`.
 
-Required columns:
+Do not leave an issue in `Todo` after attempting it. If you start work, move the issue/phase to an in-progress state or write a blocker/follow-up state before returning. A failed proof is not completion; it must become `needs_followup` when Codex can continue, or `blocked` when it cannot.
 
-- timestamp
-- iteration
-- invariants pass/fail
-- flow smoke pass/fail
-- hardening streak
-- last decision
-- stop reason
+## Final Stop Check
 
-Use this file for debugging drift and validating stop decisions.
+When a scoped `/run PRO-123` finds all phases already `done` and no ready or follow-up work remains:
 
-CSV values should be sanitized (no raw commas/newlines) to avoid audit contamination.
+- Re-read the issue and all phase comments before concluding there is no work.
+- Record a concise stop-check evidence block in Linear as a separate non-phase terminal comment. Do not append final no-ready-work/controller termination evidence into the last phase comment.
+- Preserve existing phase comments and do not change `done` phase markers back to another state.
+- Move the issue to `In Review` when all acceptance evidence is complete and the ticket is ready for human review.
+- Return `TELECODEX_STATUS=no_ready_work`, `TELECODEX_NEXT=stop`, and keep `TELECODEX_LINEAR_ISSUE` set to the scoped issue key.
 
----
+## Final Response
 
-## Minimum-Sufficient Coverage Ladder
+Return:
 
-Keep complexity only where it buys confidence.
+- Selected Linear ticket and phase.
+- Branch.
+- What was implemented.
+- Verification run and evidence.
+- Linear status written.
+- Next expected command.
 
-- **L1 (always):** invariant suite
-- **L2 (always at completion):** critical flow smoke replay
-- **L3 (risk-based):** negative-path checks for changed/high-risk flows
-- **L4 (rare):** full matrix sweeps only after regressions/incidents
+End every final response with this exact machine-readable footer. Use `-` for unknown or not applicable values.
+The footer must be the final block in the response, with no prose after it.
 
-Default to L1+L2. Escalate to L3/L4 only with evidence.
+For implemented work ready for review:
 
----
-
-## Anti-Hallucination and Contamination Controls
-
-- Score only from observable artifacts produced in current iteration window
-- If evidence is stale/ambiguous/missing, mark `UNKNOWN`
-- Never claim behavior that was not executed or observed
-- Separate facts from assumptions in STATE.md notes
-- Reused evidence is allowed only for unchanged flows and must be labeled `reused`
-
-If contamination risk is detected, reject the iteration and rerun checks.
-
----
-
-## Shadow Invariant Miner
-
-Assume PRDs are incomplete. When a bug slips through:
-
-1. Propose a candidate invariant in STATE.md (`candidate_invariant:`)
-2. Record source in `.memory/lessons.md` (regression/prod bug/review)
-3. After one human approval, promote into CONTRACTS.md + checks
-4. Future runs enforce it automatically
-
----
-
-## Two Modes
-
-| Mode | When | Ceremony | Human |
-|------|------|----------|-------|
-| **Interactive** (default) | Human is available | Lighter | Frequent check-ins |
-| **Autonomous** (`--autonomous`) | Overnight, unattended | Full | None until blocked |
-
-```bash
-/run {project}              # Interactive mode (default)
-/run {project} --autonomous # Full ceremony, overnight work
+```text
+TELECODEX_STATUS=implemented
+TELECODEX_NEXT=review
+TELECODEX_LINEAR_ISSUE=<issue key>
+TELECODEX_PHASE=<phase id>
+TELECODEX_BRANCH=<feature branch>
 ```
 
----
+When no Linear work can be picked up:
 
-## Preflight Gate (Before Autonomous Loop)
-
-Before `--autonomous` execution, /run validates:
-
-1. `SPECS.md` has flows + weighted rubric + invariant suite
-2. `GOALS.md` has runnable goals with acceptance criteria
-3. `CONTRACTS.md` defines non-negotiable behaviors/invariants
-4. `STATE.md` is writable for evidence + score checkpoints
-
-If preflight fails, /run should:
-
-- refuse autonomous execution
-- write failure details in STATE.md
-- route back to `/spec` or `/goals`
-
----
-
-## Human-AI Collaboration Rhythm
-
-Use this default rhythm for robust handoff:
-
-- `/spec`: human decides hard tradeoffs, AI records boundaries
-- `/goals`: human risk-orders and sizes, AI drafts executable prompts
-- `/run` interactive: AI executes canary goal, human validates real UX
-- `cl runner`: autonomous epochs after canary passes
-
-This keeps intent-setting human-led and execution machine-fast.
-
----
-
-## The Decision Framework
-
-```
-Uncertain about something?
-    ↓
-Check goal's PRD ref in SPECS.md
-    ↓
-Still unclear?
-    ↓
-Check Judgment Boundaries:
-    ├── Listed in "MAY decide" → Make the call, document it
-    ├── Listed in "MUST ask" → Park goal, wait for human
-    └── Not listed → Default to park
+```text
+TELECODEX_STATUS=no_ready_work
+TELECODEX_NEXT=stop
+TELECODEX_LINEAR_ISSUE=<scoped issue key or ->
+TELECODEX_PHASE=-
+TELECODEX_BRANCH=-
 ```
 
----
+For follow-up work that a fresh `/run` should continue:
 
-## MANDATORY: Phase 1 First (Explore Before Implementing)
-
-**Before ANY code:**
-
-1. Read GOALS.md, STATE.md, .memory/
-2. Start dev server (if not running)
-3. Open app with MCP (headless)
-4. Navigate to the area you're changing
-5. Take snapshot - see current state
-6. Understand what exists before changing it
-
-**No optimistic coding.** See the app first. Let observations guide what you do.
-
----
-
-## Interactive Mode (Default)
-
-**Lighter ceremony. Human is watching.**
-
-### Step 0: ORIENT
-
-Read files, output brief summary:
-
-```markdown
-## ORIENT: {project}
-
-**Milestone**: {M1 — name}
-**Progress**: {n}/{total} goals | ⬜ {n} | 🔄 {n} | ✅ {n} | 🅿️ {n}
-**Next goal**: G{n} — {name}
-**Dependencies**: {met | blocked by G{x}}
+```text
+TELECODEX_STATUS=needs_followup
+TELECODEX_NEXT=run
+TELECODEX_LINEAR_ISSUE=<issue key>
+TELECODEX_PHASE=<phase id>
+TELECODEX_BRANCH=<feature branch>
 ```
 
-### Step 1: Pick Goal
-
-Find next ⬜ goal with all dependencies ✅.
-
-```
-Goals:
-✅ G1 — Set up Redis cache
-✅ G2 — Parse Yahoo response
-⬜ G3 — Wire StockCard to fetch ← NEXT (deps met)
-⬜ G4 — Handle rate limiting (blocked by G3)
-🅿️ G5 — Error fallback (needs decision)
-```
-
-### Step 2: Read Goal Prompt
-
-The goal prompt in GOALS.md has everything needed:
-- Task (what "done" means)
-- File scope (where to work)
-- Constraints (what NOT to do)
-- Verify (how to test)
-- Acceptance criteria (pass/fail checklist)
-- Risk level (how deep hardening should go)
-
-```markdown
-## Executing: G3 — Wire StockCard to fetch
-
-**Task**: Connect StockCard component to /api/stocks endpoint
-**File scope**: src/components/StockCard.tsx
-**Constraints**:
-- Use existing fetch wrapper
-- Do NOT add new dependencies
-**Verify**: StockCard shows live data after refresh click
-**Verify cmd**: `curl -s localhost:3000/api/stocks | jq .` OR open app and click refresh
-```
-
-> **Verify cmd** = a concrete shell command, curl, OR MCP browser action (playwright snapshot, chrome-devtools check). /run MUST execute it after implementation. If it fails → park or debug. This is the observe→verify philosophy made mechanical.
-
-### Step 3: Implement (Iterative)
-
-**OBSERVE → HYPOTHESIS → ATOMIC STEP → VERIFY → ITERATE**
-
-```markdown
-**HYPOTHESIS**: {what I think will work}
-**ATOMIC STEP**: {one change, one file}
-**VERIFY**: {how to test}
-**EXPECTED**: {observable result}
-```
-
-Make the change. One file. One behavior.
-
-### Step 4: Verify Against Acceptance Criteria
-
-Check each criterion from the goal prompt:
-
-```markdown
-**Acceptance Criteria Check:**
-- [x] StockCard fetches on mount
-- [x] Refresh button triggers new fetch
-- [x] Loading state shows during fetch
-- [ ] Error state on failure ← FAIL
-```
-
-| Result | Action |
-|--------|--------|
-| All pass | Mark ✅, update STATE.md, continue |
-| Any fail | Debug loop or 🅿️ park |
-
-### Step 5: Update STATE.md + .memory/
-
-After goal completes or parks:
-
-1. Update STATE.md with goal status + evidence + score delta
-2. Update .memory/context.md with progress checkpoint (which goal just finished, what's next)
-3. If debugging revealed something → update .memory/lessons.md
-
-```markdown
-## G3 — Wire StockCard to fetch
-**Status**: ✅ DONE
-**Completed**: {timestamp}
-**Notes**: Used existing fetchWrapper, added loading state
-**Evidence**: {artifact ids or paths}
-**Score delta**: {+n | 0 | rejected}
-```
-
-### Step 6: Check In (Interactive Only)
-
-```
-✅ G3 complete
-Verified: StockCard shows live data, refresh works
-Continue to G4? [y/n]
-```
-
-Human can redirect, adjust, or pause.
-
----
-
-## Autonomous Mode (--autonomous)
-
-**Full ceremony. No human until blocked.**
-
-### Full Checkpoint Template (Required)
-
-**Before EVERY goal:**
-
-```markdown
-## CHECKPOINT: G{n}
-
-### Before
-- [ ] Goal status set to 🔄 in STATE.md
-- [ ] Dependencies verified (all ✅)
-- [ ] File scope: `{filepath}`
-- [ ] Acceptance criteria understood
-
-### Implementation
-GOAL: G{n} — {name}
-FILE: {path}
-CHANGE: {one sentence}
-
-### After
-- [ ] All acceptance criteria pass
-- [ ] No regressions in dependent goals
-- [ ] STATE.md updated
-- [ ] .memory/context.md updated (progress checkpoint)
-
-### Gate
-- [ ] **✅ DONE** → update STATE.md + .memory/context.md, next goal
-- [ ] **🅿️ PARK** → document reason + routing, update .memory/context.md
-```
-
-### Judgment Call Documentation
-
-When making a decision within "MAY decide" boundaries:
-
-```markdown
-## JUDGMENT CALL
-
-**Goal**: G{n}
-**Situation**: {what came up}
-**Intent says**: {relevant part from SPECS.md}
-**Decision**: {what I'm doing}
-**Rationale**: {why this aligns with intent}
-**Flag for review**: {YES if uncertain | NO if confident}
-```
-
-Flagged items get human review in `/review`.
-
-### Parking a Goal
-
-When a goal can't be completed:
-
-```markdown
-## 🅿️ PARKING LOT
-
-### G{n} — {goal name}
-**Blocked because**: {what's preventing completion}
-**Tried**: {approaches attempted}
-**Needs**: {what would unblock this}
-**Route to**: {/goals | /spec | /ui | /debug}
-```
-
-Move to next unblocked goal. Don't stop the run.
-
-### Signal File for Runner Loop
-
-Write `$DEV/Repos/{project}/.memory/.runner_stop` when:
-
-| Condition | Signal |
-|-----------|--------|
-| All goals ✅/🅿️ + hardening sweep passes twice | `complete: {summary}` |
-| All remaining blocked | `all_parked: {reasons}` |
-| Hit MUST ASK boundary | `must_ask: {question}` |
-| No observable state change for N epochs | `plateau: no observable state change for {epochs}` |
-| Budget exhausted | `budget_reached: {iterations or time}` |
-| Repeated invariant failures | `invariant_blocked: {failing checks}` |
-| Hardening never stabilizes in budget | `hardening_blocked: {failing flow/check}` |
-
-Runner fallback: if `.runner_stop` is missing but GOALS has no ⬜/🔄 and STATE reports fresh stable hardening for the current iteration (`INVARIANTS_PASS=true`, `FLOW_SMOKE_PASS=true`, `HARDENING_STREAK>=2`), tmux runner may auto-stop as `complete`.
-
-For GOALS parsing, only explicit goal heading states count (e.g., `### G7 ⬜`), not legend/examples.
-
-Fallback must also see `LAST_DECISION=accept` and empty `STOP_REASON`.
-
-If `/run` exits non-zero, runner should stop with `run_failed: ...`.
-
----
-
-## When to Park (Not Debug Forever)
-
-**Park if:**
-- 3+ failed approaches to same goal
-- Needs decision outside judgment boundaries
-- Depends on unresolved [OPEN] in SPECS.md
-- Constraint conflict between goals
-- External blocker (API down, missing credentials)
-- Claimed progress has no verifiable artifact
-
-**Debug if:**
-- Clear bug with identifiable cause
-- Known fix in .memory/
-- Simple implementation error
-
----
-
-## The Debug Loop
-
-```
-Implement → Verify → FAIL
-    ↓
-Check .memory/
-    ├── Known fix → apply
-    └── Unknown → investigate (2-3 attempts)
-    ↓
-Still failing? → 🅿️ Park with learnings
-```
-
-**Mutation discovered = investigate.**
-Don't try to fix without understanding.
-
----
-
-## STATE.md Template
-
-```markdown
-# STATE: {project}
-
-## Overview
-**Milestone**: {M1 — name}
-**Updated**: {timestamp}
-**Goals**: {n} total | ⬜ {n} | 🔄 {n} | ✅ {n} | 🅿️ {n}
-
-## Runner Metrics (machine-readable)
-RUNNER_MODE: evidence_optimizer_v2
-EPOCH: {n}
-ITERATION: {n}
-INVARIANTS_PASS: {true|false}
-HARDENING_STREAK: {0|1|2}
-FLOW_SMOKE_PASS: {true|false}
-EVIDENCE_COUNT: {n}
-EVIDENCE_MODE: {fresh|mixed|reused}
-LAST_DECISION: {accept|reject|park}
-STOP_REASON: {blank|reason}
-
----
-
-## Goal Progress
-
-### G1 ✅ — {name}
-**Completed**: {timestamp}
-**Notes**: {brief summary}
-**Evidence**: {artifacts}
-**Score delta**: {+n}
-
-### G2 ✅ — {name}
-**Completed**: {timestamp}
-
-### G3 🔄 — {name}
-**Started**: {timestamp}
-**Current**: {what's being worked on}
-
-### G4 ⬜ — {name}
-**Blocked by**: G3
-
-### G5 🅿️ — {name}
-**Parked**: {timestamp}
-**Reason**: {why}
-**Route to**: /spec
-
----
-
-## 🅿️ PARKING LOT
-
-### G5 — {name}
-**Blocked because**: {detailed reason}
-**Tried**: {approaches attempted}
-**Needs**: {what would unblock}
-**Route to**: {/goals | /spec | /ui}
-
----
-
-## JUDGMENT CALLS
-
-| Goal | Decision | Rationale | Flagged? |
-|------|----------|-----------|----------|
-| G2 | Used 30s timeout | Matches Yahoo p99 | YES |
-| G3 | Added retry logic | Intent says "resilient" | NO |
-
----
-
-## For Next Session
-**Next goal**: G{n} — {name}
-**Context**: {anything needed to resume}
-**Don't repeat**: {approaches that failed}
-```
-
----
-
-## Invariants (Non-Negotiable)
-
-- **ORIENT first** - Read .memory/ + GOALS/STATE before coding
-- **Explore app before coding** - See it, then change it
-- **One goal at a time** - Complete or park before moving on
-- **Invariant gate first** - Build/tests/lint/typecheck/contracts before scoring
-- **Evidence or unknown** - No artifact means no success claim
-- **Never skip verification** - Acceptance criteria must pass
-- **Respect judgment boundaries** - MAY decide vs MUST ask
-- **Update STATE.md** - After every goal completion or park
-- **Park don't spin** - 3 failures = park, not infinite debug
-- **Clean repo on exit** - No experiment branches left
-
----
-
-## Usage Summary
-
-```bash
-# Interactive (human available)
-/run {project}
-
-# Autonomous (overnight)
-/run {project} --autonomous
-
-# Specific goal
-/run {project} G5
-```
-
-Recommended launch order:
-
-1. `/run {project}` (interactive canary)
-2. `cl runner {project}` (autonomous epochs)
-
-**Interactive:** Lighter ceremony, frequent check-ins, human redirects.
-**Autonomous:** Full checkpoints, judgment documentation, signal file.
-
----
-
-## Key Points
-
-1. **Compile spec first** - goals + flows + rubric + invariants before coding
-2. **Invariant gate first** - failed checks reject iteration regardless of rubric gain
-3. **Evidence-only progress** - no artifact means UNKNOWN
-4. **Objective loop** - observe → gap → patch → verify → score
-5. **Bounded epochs** - checkpoint every 10 iterations, stop on stall/budget
-6. **Goal states** - ⬜ → 🔄 → ✅ or 🅿️
-7. **Park don't spin** - 3 failures = park with learnings
-8. **STATE.md is ledger** - status + evidence + score deltas + stop reasons
-9. **Judgment calls documented** - flagged for human review
-10. **Good-enough completion** - 2-pass hardening sweep before `complete`
-
-> **Detailed examples**: See `_reference_run.md`
+For blocked or unsafe states that need human action, use `TELECODEX_STATUS=blocked` and `TELECODEX_NEXT=stop`.
